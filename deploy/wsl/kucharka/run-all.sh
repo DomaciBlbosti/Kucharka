@@ -6,7 +6,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$DIR/../../.." && pwd)"
 
 echo "==> DB (MariaDB :3306)"
-sudo service mariadb start
+. "$DIR/../db/_lib.sh"
+ensure_mariadb
 
 echo "==> API (uvicorn :8000)"
 cd "$REPO/backend"
