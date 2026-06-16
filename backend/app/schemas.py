@@ -1,0 +1,87 @@
+"""Pydantic schémata pro API."""
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict
+
+
+class IngredientOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name_cs: str
+    name_en: str | None = None
+    category: str | None = None
+    kcal_100g: float | None = None
+
+
+class RecipeIngredientOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    raw_text: str
+    ingredient_id: int | None = None
+    amount: float | None = None
+    unit: str | None = None
+    grams: float | None = None
+    kcal: float | None = None
+
+
+class RecipeCard(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    title: str
+    source_domain: str | None = None
+    image_url: str | None = None
+    servings: int | None = None
+    total_time: int | None = None
+    rating: float | None = None
+    rating_count: int | None = None
+    kcal_per_serving: float | None = None
+    # dopočítané vůči spíži
+    have: int = 0
+    total: int = 0
+    missing_count: int = 0
+    ratio: float = 0.0
+
+
+class RecipeDetail(RecipeCard):
+    source_url: str
+    video_url: str | None = None
+    instructions: str | None = None
+    category: str | None = None
+    ingredients: list[RecipeIngredientOut] = []
+    missing_ingredient_ids: list[int] = []
+
+
+class PantryItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    ingredient_id: int
+    amount: float | None = None
+    unit: str | None = None
+    ingredient: IngredientOut
+
+
+class PantryAdd(BaseModel):
+    ingredient_id: int
+    amount: float | None = None
+    unit: str | None = None
+
+
+class ShoppingItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    label: str
+    ingredient_id: int | None = None
+    checked: bool = False
+
+
+class ShoppingAdd(BaseModel):
+    label: str
+    ingredient_id: int | None = None
+
+
+class IngestRequest(BaseModel):
+    url: str
+
+
+class SearchRequest(BaseModel):
+    query: str

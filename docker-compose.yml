@@ -1,0 +1,48 @@
+name: kucharka
+
+services:
+  kucharka:
+    # Volba A (SSH/lokálně): postav image z repa
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Volba B (TrueNAS Apps UI): zakomentuj 'build' výše a použij hotový image,
+    # který sis postavil a nahrál do Gitea registru, např.:
+    # image: git.aleshulek.cz/tesla/kucharka:latest
+    container_name: kucharka
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql+pymysql://kucharka:${DB_PASSWORD:-kucharka}@mariadb:3306/kucharka?charset=utf8mb4
+      # --- volitelné integrace (necháš prázdné = vypnuté) ---
+      OLLAMA_URL: ${OLLAMA_URL:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+      SEARXNG_URL: ${SEARXNG_URL:-}
+      # whitelist domén pro vyhledávání (čárkou), prázdné = vše co projde scraperem
+      RECIPE_DOMAINS: ${RECIPE_DOMAINS:-}
+      SCRAPE_DELAY: "1.0"
+    ports:
+      - "8975:8000"
+
+  mariadb:
+    image: mariadb:11.4
+    container_name: kucharka-db
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: kucharka
+      MARIADB_USER: kucharka
+      MARIADB_PASSWORD: ${DB_PASSWORD:-kucharka}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-changeme-root}
+    volumes:
+      - kucharka_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  kucharka_db:
+    driver: local

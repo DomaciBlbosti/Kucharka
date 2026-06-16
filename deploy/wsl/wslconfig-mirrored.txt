@@ -1,0 +1,7 @@
+# Zkopíruj obsah do  %UserProfile%\.wslconfig  (na Windows) a pak  wsl --shutdown.
+# Mirrored networking = Windows host i všechna WSL distra se vidí přes localhost.
+# Vyžaduje Windows 11 22H2+.
+
+[wsl2]
+networkingMode=mirrored
+# localhostForwarding se v mirrored režimu ignoruje (localhost funguje nativně)
