@@ -59,11 +59,13 @@ def get_settings():
 @router.put("/settings")
 def put_settings(req: SettingsUpdate, db: Session = Depends(get_db)):
     applied = {}
+    crawler_changed = False
     for key, value in req.values.items():
         if key not in settings.ADMIN_KEYS:
             continue
         settings.set_admin(key, value)
-        # ulož string podobu
+        if key in settings.CRAWLER_KEYS:
+            crawler_changed = True
         sval = value if isinstance(value, str) else json.dumps(value) if isinstance(value, (list, dict)) else str(value)
         row = db.get(AppSetting, key)
         if row is None:
@@ -72,7 +74,23 @@ def put_settings(req: SettingsUpdate, db: Session = Depends(get_db)):
             row.value = sval
         applied[key] = True
     db.commit()
+    if crawler_changed:
+        from .. import scheduler
+
+        scheduler.configure_crawler()
     return {"applied": list(applied), "settings": settings.as_admin()}
+
+
+class PasswordUpdate(BaseModel):
+    password: str  # prázdné = zrušit zabezpečení
+
+
+@router.put("/password")
+def set_password(req: PasswordUpdate):
+    from .. import auth
+
+    auth.set_password(req.password.strip() or None)
+    return {"auth_enabled": settings.auth_enabled}
 
 
 # ----------------------------- RECIPE_DOMAINS -----------------------------

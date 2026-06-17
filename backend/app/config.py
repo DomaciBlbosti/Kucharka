@@ -101,6 +101,10 @@ class Settings:
         )
         self.repo_dir: str = _env("REPO_DIR", "")
 
+        # Zabezpečení heslem (hash se načítá z app_setting při startu)
+        self.auth_password_hash: str | None = None
+        self.auth_secret: str = ""
+
     @property
     def ollama_enabled(self) -> bool:
         return bool(self.ollama_url)
@@ -109,11 +113,18 @@ class Settings:
     def searxng_enabled(self) -> bool:
         return bool(self.searxng_url)
 
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.auth_password_hash)
+
     ADMIN_KEYS = (
         "ollama_url", "ollama_model", "embed_model", "searxng_url",
         "recipe_domains", "translate_to_cs", "auto_ingredients",
         "scraper_verify_ssl", "rag_k",
+        "crawler_enabled", "crawler_interval_min", "crawler_max_per_run",
     )
+
+    CRAWLER_KEYS = ("crawler_enabled", "crawler_interval_min", "crawler_max_per_run")
 
     def as_admin(self) -> dict:
         return {
@@ -126,8 +137,12 @@ class Settings:
             "auto_ingredients": self.auto_ingredients,
             "scraper_verify_ssl": self.scraper_verify is not False,
             "rag_k": self.rag_k,
+            "crawler_enabled": self.crawler_enabled,
+            "crawler_interval_min": self.crawler_interval_min,
+            "crawler_max_per_run": self.crawler_max_per_run,
             "ollama_enabled": self.ollama_enabled,
             "searxng_enabled": self.searxng_enabled,
+            "auth_enabled": self.auth_enabled,
         }
 
     def set_admin(self, key: str, value) -> bool:
@@ -141,7 +156,7 @@ class Settings:
                 for d in str(value or "").replace("\n", ",").split(",")
                 if d.strip()
             }
-        elif key in ("translate_to_cs", "auto_ingredients"):
+        elif key in ("translate_to_cs", "auto_ingredients", "crawler_enabled"):
             setattr(self, key, _truthy(value))
         elif key == "scraper_verify_ssl":
             if not _truthy(value):
@@ -149,9 +164,9 @@ class Settings:
             else:
                 bundle = "/etc/ssl/certs/ca-certificates.crt"
                 self.scraper_verify = bundle if os.path.exists(bundle) else True
-        elif key == "rag_k":
+        elif key in ("rag_k", "crawler_interval_min", "crawler_max_per_run"):
             try:
-                self.rag_k = max(1, int(value))
+                setattr(self, key, max(1, int(value)))
             except (TypeError, ValueError):
                 pass
         return True

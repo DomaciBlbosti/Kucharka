@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import OperationalError
@@ -18,7 +19,8 @@ from sqlalchemy.exc import OperationalError
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .routers import (
-    admin, crawl, generate, ingredients, maintenance, pantry, recipes, search, system,
+    admin, auth as auth_router, crawl, generate, ingredients, maintenance,
+    pantry, recipes, search, system,
 )
 from .seed.starter_ingredients import seed_starter
 
@@ -88,42 +90,40 @@ app.include_router(generate.router)
 app.include_router(maintenance.router)
 app.include_router(system.router)
 app.include_router(admin.router)
+app.include_router(auth_router.router)
 
 
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
-    if settings.crawler_enabled:
-        _start_scheduler()
+    from . import auth as _auth
+    from . import scheduler
 
-
-def _start_scheduler() -> None:
-    """Spustí periodický crawl na pozadí (volitelné, CRAWLER_ENABLED=true)."""
+    db = SessionLocal()
     try:
-        from apscheduler.schedulers.background import BackgroundScheduler
+        _auth.load(db)
+        env_pw = os.environ.get("APP_PASSWORD", "").strip()
+        if env_pw and not settings.auth_password_hash:
+            _auth.set_password(env_pw)
+            log.info("Heslo nastaveno z APP_PASSWORD.")
+    finally:
+        db.close()
+    scheduler.configure_crawler()
 
-        from .modules import crawler
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Plánovač nelze spustit: %s", exc)
-        return
 
-    sched = BackgroundScheduler(daemon=True)
-    sched.add_job(
-        lambda: crawler.crawl_sites(max_recipes=settings.crawler_max_per_run),
-        "interval",
-        minutes=settings.crawler_interval_min,
-        next_run_time=None,  # první běh až po intervalu, ne hned při startu
-        id="crawler",
-        max_instances=1,
-        coalesce=True,
+@app.middleware("http")
+async def _auth_middleware(request, call_next):
+    from . import auth as _auth
+    from .routers.auth import token_from_request
+
+    path = request.url.path
+    protected = path.startswith("/api/") and not (
+        path.startswith("/api/auth/") or path == "/api/health"
     )
-    sched.start()
-    log.info(
-        "Crawler naplánován každých %s min (max %s receptů/běh).",
-        settings.crawler_interval_min,
-        settings.crawler_max_per_run,
-    )
-    app.state.scheduler = sched
+    if settings.auth_enabled and protected:
+        if not _auth.valid_token(token_from_request(request)):
+            return JSONResponse({"detail": "Neautorizováno"}, status_code=401)
+    return await call_next(request)
 
 
 @app.get("/api/health")

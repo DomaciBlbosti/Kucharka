@@ -1,3 +1,29 @@
+const TOKEN_KEY = "kucharka_token";
+export const auth = {
+  get: () => localStorage.getItem(TOKEN_KEY) || "",
+  set: (t) => localStorage.setItem(TOKEN_KEY, t || ""),
+  clear: () => localStorage.removeItem(TOKEN_KEY),
+};
+
+// fetch s tokenem; při 401 token zahodí a oznámí appce (login gate)
+const afetch = (url, opts = {}) => {
+  const t = auth.get();
+  const headers = { ...(opts.headers || {}), ...(t ? { Authorization: `Bearer ${t}` } : {}) };
+  return window.fetch(url, { ...opts, headers }).then((r) => {
+    if (r.status === 401) {
+      auth.clear();
+      window.dispatchEvent(new Event("kucharka-unauth"));
+    }
+    return r;
+  });
+};
+
+// pro <a href> stahování (export) – přidá token do query
+export const withToken = (url) => {
+  const t = auth.get();
+  return t ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(t)}` : url;
+};
+
 const J = (r) => {
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.status === 204 ? null : r.json();
@@ -13,96 +39,96 @@ const qs = (params) => {
 };
 
 export const api = {
-  health: () => fetch("/api/health").then(J),
-  searchStatus: () => fetch("/api/search/status").then(J),
-  ollamaStatus: () => fetch("/api/search/ollama").then(J),
+  health: () => afetch("/api/health").then(J),
+  searchStatus: () => afetch("/api/search/status").then(J),
+  ollamaStatus: () => afetch("/api/search/ollama").then(J),
 
-  crawlStatus: () => fetch("/api/crawl/status").then(J),
+  crawlStatus: () => afetch("/api/crawl/status").then(J),
   crawlRun: (body) =>
-    fetch("/api/crawl/run", {
+    afetch("/api/crawl/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
     }).then(J),
 
-  recipes: (filters) => fetch(`/api/recipes${qs(filters)}`).then(J),
-  recipe: (id) => fetch(`/api/recipes/${id}`).then(J),
-  deleteRecipe: (id) => fetch(`/api/recipes/${id}`, { method: "DELETE" }).then(J),
+  recipes: (filters) => afetch(`/api/recipes${qs(filters)}`).then(J),
+  recipe: (id) => afetch(`/api/recipes/${id}`).then(J),
+  deleteRecipe: (id) => afetch(`/api/recipes/${id}`, { method: "DELETE" }).then(J),
 
   ingest: (url) =>
-    fetch("/api/search/ingest", {
+    afetch("/api/search/ingest", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url }),
     }).then(J),
   discover: (query) =>
-    fetch("/api/search/discover", {
+    afetch("/api/search/discover", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query }),
     }).then(J),
 
-  ingredients: (q) => fetch(`/api/ingredients${qs({ q, limit: 40 })}`).then(J),
+  ingredients: (q) => afetch(`/api/ingredients${qs({ q, limit: 40 })}`).then(J),
 
-  pantry: () => fetch("/api/pantry").then(J),
+  pantry: () => afetch("/api/pantry").then(J),
   addPantry: (body) =>
-    fetch("/api/pantry", {
+    afetch("/api/pantry", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then(J),
   removePantry: (ingredientId) =>
-    fetch(`/api/pantry/${ingredientId}`, { method: "DELETE" }).then(J),
+    afetch(`/api/pantry/${ingredientId}`, { method: "DELETE" }).then(J),
 
-  shopping: () => fetch("/api/shopping").then(J),
+  shopping: () => afetch("/api/shopping").then(J),
   addShopping: (body) =>
-    fetch("/api/shopping", {
+    afetch("/api/shopping", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then(J),
   shoppingFromRecipe: (id) =>
-    fetch(`/api/shopping/from-recipe/${id}`, { method: "POST" }).then(J),
+    afetch(`/api/shopping/from-recipe/${id}`, { method: "POST" }).then(J),
   toggleShopping: (id) =>
-    fetch(`/api/shopping/${id}/toggle`, { method: "PATCH" }).then(J),
+    afetch(`/api/shopping/${id}/toggle`, { method: "PATCH" }).then(J),
   removeShopping: (id) =>
-    fetch(`/api/shopping/${id}`, { method: "DELETE" }).then(J),
+    afetch(`/api/shopping/${id}`, { method: "DELETE" }).then(J),
 
-  genStatus: () => fetch("/api/generate/status").then(J),
+  genStatus: () => afetch("/api/generate/status").then(J),
   genIndex: (rebuild = false) =>
-    fetch("/api/generate/index", {
+    afetch("/api/generate/index", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rebuild }),
     }).then(J),
   generate: (body) =>
-    fetch("/api/generate", {
+    afetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then(J),
   saveGenerated: (recipe) =>
-    fetch("/api/generate/save", {
+    afetch("/api/generate/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ recipe }),
     }).then(J),
 
-  matchStatus: () => fetch("/api/maintenance/match-status").then(J),
+  matchStatus: () => afetch("/api/maintenance/match-status").then(J),
   backfill: (createMissing = true) =>
-    fetch("/api/maintenance/backfill", {
+    afetch("/api/maintenance/backfill", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ create_missing: createMissing }),
     }).then(J),
 
-  sysVersion: () => fetch("/api/system/version").then(J),
-  sysCheck: () => fetch("/api/system/check", { method: "POST" }).then(J),
-  sysUpdate: () => fetch("/api/system/update", { method: "POST" }).then(J),
+  sysVersion: () => afetch("/api/system/version").then(J),
+  sysCheck: () => afetch("/api/system/check", { method: "POST" }).then(J),
+  sysUpdate: () => afetch("/api/system/update", { method: "POST" }).then(J),
 
-  adminSettings: () => fetch("/api/admin/settings").then(J),
+  adminSettings: () => afetch("/api/admin/settings").then(J),
   adminSaveSettings: (values) =>
-    fetch("/api/admin/settings", {
+    afetch("/api/admin/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ values }),
@@ -110,19 +136,33 @@ export const api = {
   domainsImport: (file) => {
     const fd = new FormData();
     fd.append("file", file);
-    return fetch("/api/admin/recipe-domains/import", { method: "POST", body: fd }).then(J);
+    return afetch("/api/admin/recipe-domains/import", { method: "POST", body: fd }).then(J);
   },
   nutridbImport: (file, merge) => {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("merge", merge ? "true" : "false");
-    return fetch("/api/admin/nutridb/import", { method: "POST", body: fd }).then(J);
+    return afetch("/api/admin/nutridb/import", { method: "POST", body: fd }).then(J);
   },
-  nutridbStatus: () => fetch("/api/admin/nutridb/status").then(J),
+  nutridbStatus: () => afetch("/api/admin/nutridb/status").then(J),
   dbImport: (file, mode) => {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("mode", mode);
-    return fetch("/api/admin/db/import", { method: "POST", body: fd }).then(J);
+    return afetch("/api/admin/db/import", { method: "POST", body: fd }).then(J);
   },
+
+  authStatus: () => afetch("/api/auth/status").then(J),
+  login: (password) =>
+    afetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    }).then(J),
+  setPassword: (password) =>
+    afetch("/api/admin/password", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    }).then(J),
 };

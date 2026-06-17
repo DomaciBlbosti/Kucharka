@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, withToken } from "../api";
 import { Button, Spinner } from "../components/ui";
 
 function Field({ label, children, hint }) {
@@ -116,7 +116,7 @@ function DomainsCard() {
         onChange={(e) => { setText(e.target.value); setSaved(false); }} />
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <Button onClick={save}>Uložit</Button>
-        <a href="/api/admin/recipe-domains/export"
+        <a href={withToken("/api/admin/recipe-domains/export")}
           className="rounded-full bg-basil-soft px-4 py-2 text-sm font-semibold text-basil-dark hover:bg-basil/15">
           Export
         </a>
@@ -167,7 +167,7 @@ function NutriCard() {
           {st?.running ? "Importuji…" : "Nahrát CSV a importovat"}
         </Button>
         <input ref={fileRef} type="file" accept=".csv" hidden onChange={onFile} />
-        <a href="/api/admin/ingredients/export"
+        <a href={withToken("/api/admin/ingredients/export")}
           className="rounded-full bg-basil-soft px-4 py-2 text-sm font-semibold text-basil-dark hover:bg-basil/15">
           Export surovin (CSV)
         </a>
@@ -215,7 +215,7 @@ function BackupCard() {
         Kompletní data (recepty, suroviny, spíž, embeddingy) jako jeden JSON.
       </p>
       <div className="flex flex-wrap items-center gap-3">
-        <a href="/api/admin/db/export"
+        <a href={withToken("/api/admin/db/export")}
           className="rounded-full bg-basil px-4 py-2 text-sm font-semibold text-white hover:bg-basil-dark">
           Exportovat zálohu
         </a>
@@ -239,14 +239,106 @@ function BackupCard() {
   );
 }
 
+function CrawlerCard() {
+  const [s, setS] = useState(null);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    api.adminSettings().then(setS).catch(() => {});
+  }, []);
+  if (!s) return null;
+  const set = (k, v) => { setS({ ...s, [k]: v }); setSaved(false); };
+  const save = async () => {
+    const r = await api.adminSaveSettings({
+      crawler_enabled: s.crawler_enabled,
+      crawler_interval_min: Number(s.crawler_interval_min),
+      crawler_max_per_run: Number(s.crawler_max_per_run),
+    });
+    setS({ ...s, ...r.settings });
+    setSaved(true);
+  };
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <h2 className="mb-1 text-lg font-bold">Automatické objevování (crawler)</h2>
+      <p className="mb-4 text-sm text-ink/60">
+        Na pozadí pravidelně prochází weby z domén výše a stahuje nové recepty.
+      </p>
+      <label className="mb-3 flex items-center gap-2 text-sm">
+        <input type="checkbox" className="accent-basil" checked={!!s.crawler_enabled}
+          onChange={(e) => set("crawler_enabled", e.target.checked)} />
+        Zapnout crawler na pozadí
+      </label>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Interval (minuty)" hint="jak často proběhne">
+          <input type="number" className={input} value={s.crawler_interval_min ?? 360}
+            onChange={(e) => set("crawler_interval_min", e.target.value)} />
+        </Field>
+        <Field label="Receptů za běh" hint="strop na jeden průchod">
+          <input type="number" className={input} value={s.crawler_max_per_run ?? 30}
+            onChange={(e) => set("crawler_max_per_run", e.target.value)} />
+        </Field>
+      </div>
+      <div className="mt-4 flex items-center gap-3">
+        <Button onClick={save}>Uložit</Button>
+        {saved && <span className="text-sm text-have">Uloženo ✓ (přeplánováno)</span>}
+      </div>
+    </section>
+  );
+}
+
+function SecurityCard() {
+  const [enabled, setEnabled] = useState(null);
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [msg, setMsg] = useState(null);
+  useEffect(() => {
+    api.adminSettings().then((s) => setEnabled(s.auth_enabled)).catch(() => {});
+  }, []);
+  if (enabled === null) return null;
+
+  const save = async () => {
+    if (pw !== pw2) { setMsg("Hesla se neshodují."); return; }
+    await api.setPassword(pw);
+    setMsg(pw ? "Heslo nastaveno — budeš přihlášen znovu." : "Zabezpečení vypnuto.");
+    setPw(""); setPw2("");
+    setTimeout(() => window.location.reload(), 1200);
+  };
+
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <h2 className="mb-1 text-lg font-bold">Zabezpečení heslem</h2>
+      <p className="mb-4 text-sm text-ink/60">
+        {enabled
+          ? "Aplikace je chráněná heslem. Nové heslo nastavíš níže; prázdné pole zabezpečení vypne."
+          : "Aplikace je teď bez hesla. Nastavením hesla zamkneš celé rozhraní."}
+      </p>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label={enabled ? "Nové heslo (prázdné = vypnout)" : "Heslo"}>
+          <input type="password" className={input} value={pw}
+            onChange={(e) => setPw(e.target.value)} placeholder="••••••••" />
+        </Field>
+        <Field label="Heslo znovu">
+          <input type="password" className={input} value={pw2}
+            onChange={(e) => setPw2(e.target.value)} placeholder="••••••••" />
+        </Field>
+      </div>
+      <div className="mt-4 flex items-center gap-3">
+        <Button onClick={save}>{enabled ? "Změnit / vypnout" : "Nastavit heslo"}</Button>
+        {msg && <span className="text-sm text-ink/60">{msg}</span>}
+      </div>
+    </section>
+  );
+}
+
 export default function Admin() {
   return (
     <div className="space-y-6">
       <h1 className="font-display text-2xl font-extrabold">Administrace</h1>
       <ToolsCard />
+      <CrawlerCard />
       <DomainsCard />
       <NutriCard />
       <BackupCard />
+      <SecurityCard />
     </div>
   );
 }
