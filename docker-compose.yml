@@ -1,8 +1,3 @@
-# Kuchařka na TrueNAS (Docker custom app).
-# DŮLEŽITÉ: TrueNAS custom app neumí "build:", proto se používá hotový image.
-#   - buď z GHCR (postaví GitHub Actions po pushi) – viz image: níže,
-#   - nebo si ho postav lokálně: docker build -t ghcr.io/domaciblbosti/kucharka:latest .
-# App si po startu naklonuje kód z Gitu do volume a umí self-update z WEB UI.
 services:
   db:
     image: mariadb:11
@@ -23,12 +18,13 @@ services:
 
   app:
     image: ${APP_IMAGE:-ghcr.io/domaciblbosti/kucharka:latest}
+    pull_policy: never
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "${APP_PORT:-8080}:8000"
+      - "${APP_PORT:-38080}:8000"
     environment:
       DATABASE_URL: mysql+pymysql://kucharka:${DB_PASSWORD:-kucharkaVychoziHeslo}@db:3306/kucharka
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
