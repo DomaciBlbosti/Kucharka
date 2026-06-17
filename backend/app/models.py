@@ -156,3 +156,12 @@ class RecipeEmbedding(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+
+class AppSetting(Base):
+    """Runtime nastavení (override env), editovatelné z administrace."""
+
+    __tablename__ = "app_setting"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)

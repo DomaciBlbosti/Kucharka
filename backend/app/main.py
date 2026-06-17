@@ -18,7 +18,7 @@ from sqlalchemy.exc import OperationalError
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .routers import (
-    crawl, generate, ingredients, maintenance, pantry, recipes, search, system,
+    admin, crawl, generate, ingredients, maintenance, pantry, recipes, search, system,
 )
 from .seed.starter_ingredients import seed_starter
 
@@ -45,8 +45,23 @@ def init_db(retries: int = 10) -> None:
         n = seed_starter(db)
         if n:
             log.info("Naseedováno %s základních surovin.", n)
+        _load_settings_overrides(db)
     finally:
         db.close()
+
+
+def _load_settings_overrides(db) -> None:
+    """Aplikuj runtime nastavení z tabulky app_setting (override env)."""
+    try:
+        from .models import AppSetting
+
+        rows = db.query(AppSetting).all()
+        for row in rows:
+            settings.set_admin(row.key, row.value)
+        if rows:
+            log.info("Načteno %s uložených nastavení.", len(rows))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Nepodařilo se načíst nastavení: %s", exc)
 
 
 app = FastAPI(title="Kuchařka", version="0.1.0")
@@ -72,6 +87,7 @@ app.include_router(crawl.router)
 app.include_router(generate.router)
 app.include_router(maintenance.router)
 app.include_router(system.router)
+app.include_router(admin.router)
 
 
 @app.on_event("startup")

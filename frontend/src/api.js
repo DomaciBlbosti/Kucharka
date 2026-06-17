@@ -99,4 +99,30 @@ export const api = {
   sysVersion: () => fetch("/api/system/version").then(J),
   sysCheck: () => fetch("/api/system/check", { method: "POST" }).then(J),
   sysUpdate: () => fetch("/api/system/update", { method: "POST" }).then(J),
+
+  adminSettings: () => fetch("/api/admin/settings").then(J),
+  adminSaveSettings: (values) =>
+    fetch("/api/admin/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values }),
+    }).then(J),
+  domainsImport: (file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return fetch("/api/admin/recipe-domains/import", { method: "POST", body: fd }).then(J);
+  },
+  nutridbImport: (file, merge) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("merge", merge ? "true" : "false");
+    return fetch("/api/admin/nutridb/import", { method: "POST", body: fd }).then(J);
+  },
+  nutridbStatus: () => fetch("/api/admin/nutridb/status").then(J),
+  dbImport: (file, mode) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("mode", mode);
+    return fetch("/api/admin/db/import", { method: "POST", body: fd }).then(J);
+  },
 };

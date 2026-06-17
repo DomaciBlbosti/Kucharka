@@ -22,6 +22,10 @@ def _env(key: str, default: str = "") -> str:
     return os.environ.get(key, default).strip()
 
 
+def _truthy(v) -> bool:
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
 class Settings:
     def __init__(self) -> None:
         # --- Databáze ---------------------------------------------------
@@ -104,6 +108,53 @@ class Settings:
     @property
     def searxng_enabled(self) -> bool:
         return bool(self.searxng_url)
+
+    ADMIN_KEYS = (
+        "ollama_url", "ollama_model", "embed_model", "searxng_url",
+        "recipe_domains", "translate_to_cs", "auto_ingredients",
+        "scraper_verify_ssl", "rag_k",
+    )
+
+    def as_admin(self) -> dict:
+        return {
+            "ollama_url": self.ollama_url,
+            "ollama_model": self.ollama_model,
+            "embed_model": self.embed_model,
+            "searxng_url": self.searxng_url,
+            "recipe_domains": ",".join(sorted(self.recipe_domains)),
+            "translate_to_cs": self.translate_to_cs,
+            "auto_ingredients": self.auto_ingredients,
+            "scraper_verify_ssl": self.scraper_verify is not False,
+            "rag_k": self.rag_k,
+            "ollama_enabled": self.ollama_enabled,
+            "searxng_enabled": self.searxng_enabled,
+        }
+
+    def set_admin(self, key: str, value) -> bool:
+        if key not in self.ADMIN_KEYS:
+            return False
+        if key in ("ollama_url", "ollama_model", "embed_model", "searxng_url"):
+            setattr(self, key, str(value or "").strip())
+        elif key == "recipe_domains":
+            self.recipe_domains = {
+                d.strip().lower()
+                for d in str(value or "").replace("\n", ",").split(",")
+                if d.strip()
+            }
+        elif key in ("translate_to_cs", "auto_ingredients"):
+            setattr(self, key, _truthy(value))
+        elif key == "scraper_verify_ssl":
+            if not _truthy(value):
+                self.scraper_verify = False
+            else:
+                bundle = "/etc/ssl/certs/ca-certificates.crt"
+                self.scraper_verify = bundle if os.path.exists(bundle) else True
+        elif key == "rag_k":
+            try:
+                self.rag_k = max(1, int(value))
+            except (TypeError, ValueError):
+                pass
+        return True
 
 
 settings = Settings()

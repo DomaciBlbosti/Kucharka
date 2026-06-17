@@ -7,8 +7,8 @@ services:
     environment:
       MARIADB_DATABASE: kucharka
       MARIADB_USER: kucharka
-      MARIADB_PASSWORD: ${DB_PASSWORD:-AiKucharkaDB}
-      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-AiKucharkaDBRoot}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-kucharka}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-change-me}
     command: ["--innodb-buffer-pool-size=256M"]
     volumes:
       - db_data:/var/lib/mysql
@@ -27,13 +27,13 @@ services:
     ports:
       - "${APP_PORT:-8080}:8000"
     environment:
-      DATABASE_URL: mysql+pymysql://kucharka:${DB_PASSWORD:-AiKucharkaDB}@db:3306/kucharka
+      DATABASE_URL: mysql+pymysql://kucharka:${DB_PASSWORD:-kucharka}@db:3306/kucharka
       # Ollama na hostiteli TrueNAS (nebo jiná adresa)
-      OLLAMA_URL: ${OLLAMA_URL:-http://172.24.1.111:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
       EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
-      SEARXNG_URL: ${SEARXNG_URL:-http://172.24.1.111:30053}
-      RECIPE_DOMAINS: ${RECIPE_DOMAINS:-recepty.cz,toprecepty.cz,apetitonline.cz,vareni.cz,ireceptar.cz,klasicke-recepty.cz,bestrecepty.cz,kucharky.cz,dobruchut.cz,fresh.iprima.cz,recepty.eu,mimibazar.cz,allrecipes.com,bbcgoodfood.com,seriouseats.com,food.com,epicurious.com,simplyrecipes.com,budgetbytes.com,eatingwell.com,delish.com,tasteofhome.com,foodnetwork.com,thekitchn.com,bonappetit.com,kingarthurbaking.com,jamieoliver.com}
+      SEARXNG_URL: ${SEARXNG_URL:-}
+      RECIPE_DOMAINS: ${RECIPE_DOMAINS:-recepty.cz,toprecepty.cz,apetitonline.cz,vareni.cz,ireceptar.cz,klasicke-recepty.cz,bestrecepty.cz,kucharky.cz}
       SCRAPER_VERIFY_SSL: ${SCRAPER_VERIFY_SSL:-true}
       TRANSLATE_TO_CS: ${TRANSLATE_TO_CS:-true}
       AUTO_INGREDIENTS: ${AUTO_INGREDIENTS:-true}
