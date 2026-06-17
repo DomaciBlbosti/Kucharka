@@ -1,5 +1,8 @@
-# Kuchařka na TrueNAS (Docker). App si kód klonuje z Gitu a umí self-update
-# přes WEB UI. Ollama běží mimo (na hostiteli / jiném stroji).
+# Kuchařka na TrueNAS (Docker custom app).
+# DŮLEŽITÉ: TrueNAS custom app neumí "build:", proto se používá hotový image.
+#   - buď z GHCR (postaví GitHub Actions po pushi) – viz image: níže,
+#   - nebo si ho postav lokálně: docker build -t ghcr.io/domaciblbosti/kucharka:latest .
+# App si po startu naklonuje kód z Gitu do volume a umí self-update z WEB UI.
 services:
   db:
     image: mariadb:11
@@ -7,8 +10,8 @@ services:
     environment:
       MARIADB_DATABASE: kucharka
       MARIADB_USER: kucharka
-      MARIADB_PASSWORD: ${DB_PASSWORD:-kucharka}
-      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-change-me}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-kucharkaVychoziHeslo}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-kucharkaVychoziHesloRoot}
     command: ["--innodb-buffer-pool-size=256M"]
     volumes:
       - db_data:/var/lib/mysql
@@ -19,7 +22,7 @@ services:
       retries: 12
 
   app:
-    build: .
+    image: ${APP_IMAGE:-ghcr.io/domaciblbosti/kucharka:latest}
     restart: unless-stopped
     depends_on:
       db:
@@ -27,10 +30,9 @@ services:
     ports:
       - "${APP_PORT:-8080}:8000"
     environment:
-      DATABASE_URL: mysql+pymysql://kucharka:${DB_PASSWORD:-kucharka}@db:3306/kucharka
-      # Ollama na hostiteli TrueNAS (nebo jiná adresa)
+      DATABASE_URL: mysql+pymysql://kucharka:${DB_PASSWORD:-kucharkaVychoziHeslo}@db:3306/kucharka
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
       EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
       SEARXNG_URL: ${SEARXNG_URL:-}
       RECIPE_DOMAINS: ${RECIPE_DOMAINS:-recepty.cz,toprecepty.cz,apetitonline.cz,vareni.cz,ireceptar.cz,klasicke-recepty.cz,bestrecepty.cz,kucharky.cz}
@@ -38,7 +40,6 @@ services:
       TRANSLATE_TO_CS: ${TRANSLATE_TO_CS:-true}
       AUTO_INGREDIENTS: ${AUTO_INGREDIENTS:-true}
       CRAWLER_ENABLED: ${CRAWLER_ENABLED:-false}
-      # self-update z Gitu přes WEB UI
       UPDATE_ENABLED: ${UPDATE_ENABLED:-true}
       REPO_URL: ${REPO_URL:-https://github.com/DomaciBlbosti/Kucharka.git}
       REPO_BRANCH: ${REPO_BRANCH:-main}
