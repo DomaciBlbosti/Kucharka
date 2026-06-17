@@ -107,6 +107,7 @@ Data NutriDatabaze podléhají jejich licenci — používej pro vlastní potře
 Kuchařka umí sama plnit databázi: projde seed dotazy přes SearXNG, stáhne
 recepty, normalizuje je a uloží. Chybějící suroviny umí doplnit přes Ollamu
 (odhad výživy, `source="ollama"` – import z NutriDatabaze je pak zpřesní).
+Zahraniční recepty automaticky přeloží do češtiny (`TRANSLATE_TO_CS=true`).
 
 - **Ručně z UI:** záložka *Přidat* → *Automatické objevování* → „Naplnit databázi".
 - **Z CLI:** `python -m app.modules.crawler "svíčková" "guláš"` (bez argumentů = výchozí sada).

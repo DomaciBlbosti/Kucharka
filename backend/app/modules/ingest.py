@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import Recipe, RecipeIngredient
-from . import scraper
+from . import scraper, translate
 from .normalizer import normalize_lines
 from .nutrition import grams_for, kcal_for, recompute_recipe_kcal
 
@@ -20,6 +20,7 @@ def ingest_url(db: Session, url: str) -> Recipe | None:
     data = scraper.fetch_and_extract(url)
     if data is None:
         return None
+    data = translate.translate_recipe(data)  # cizí recept → čeština
     return _persist(db, data)
 
 

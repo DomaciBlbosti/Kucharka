@@ -38,7 +38,10 @@ def fetch_html(url: str) -> str:
     _throttle(domain_of(url))
     headers = {"User-Agent": settings.user_agent, "Accept-Language": "cs,en;q=0.8"}
     with httpx.Client(
-        follow_redirects=True, timeout=settings.http_timeout, headers=headers
+        follow_redirects=True,
+        timeout=settings.http_timeout,
+        headers=headers,
+        verify=settings.scraper_verify,
     ) as client:
         r = client.get(url)
         r.raise_for_status()

@@ -45,6 +45,16 @@ class Settings:
         self.scrape_delay: float = float(_env("SCRAPE_DELAY", "1.0"))
         self.http_timeout: float = float(_env("HTTP_TIMEOUT", "20"))
 
+        # Ověřování TLS při scrapování. "false" = vypnuto (vhodné za firemní
+        # proxy, kterou nelze obejít). Jinak použij systémový CA bundle, pokud
+        # existuje (zahrne i firemní CA přidanou přes update-ca-certificates).
+        verify = _env("SCRAPER_VERIFY_SSL", "true").lower()
+        if verify in ("0", "false", "no", "off"):
+            self.scraper_verify: bool | str = False
+        else:
+            bundle = "/etc/ssl/certs/ca-certificates.crt"
+            self.scraper_verify = bundle if os.path.exists(bundle) else True
+
         # Whitelist domén pro discovery. Prázdné = ber vše, co projde scraperem.
         wl = _env("RECIPE_DOMAINS")
         self.recipe_domains: set[str] = {
@@ -63,6 +73,10 @@ class Settings:
         ]
         # Dorůstání databáze surovin: chybějící surovinu doplní Ollama (odhad výživy)
         self.auto_ingredients: bool = _env("AUTO_INGREDIENTS", "false").lower() in (
+            "1", "true", "yes", "on"
+        )
+        # Překlad zahraničních receptů do češtiny (vyžaduje Ollamu)
+        self.translate_to_cs: bool = _env("TRANSLATE_TO_CS", "true").lower() in (
             "1", "true", "yes", "on"
         )
 

@@ -88,7 +88,7 @@ def _start_scheduler() -> None:
 
     sched = BackgroundScheduler(daemon=True)
     sched.add_job(
-        lambda: crawler.crawl(max_recipes=settings.crawler_max_per_run),
+        lambda: crawler.crawl_sites(max_recipes=settings.crawler_max_per_run),
         "interval",
         minutes=settings.crawler_interval_min,
         next_run_time=None,  # první běh až po intervalu, ne hned při startu

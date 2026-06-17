@@ -139,12 +139,12 @@ export default function AddRecipe() {
         <p className="mt-4 rounded-lg bg-miss/10 px-4 py-3 text-sm text-miss">{error}</p>
       )}
 
-      <CrawlerPanel searxng={status.searxng} />
+      <CrawlerPanel />
     </div>
   );
 }
 
-function CrawlerPanel({ searxng }) {
+function CrawlerPanel() {
   const [st, setSt] = useState(null);
 
   const refresh = () => api.crawlStatus().then(setSt).catch(() => {});
@@ -155,7 +155,7 @@ function CrawlerPanel({ searxng }) {
   }, []);
 
   const start = async () => {
-    await api.crawlRun({ max_recipes: 30 });
+    await api.crawlRun({ mode: "sites", max_recipes: 40 });
     refresh();
   };
 
@@ -163,7 +163,7 @@ function CrawlerPanel({ searxng }) {
   return (
     <section className="mt-8 rounded-xl2 border border-line bg-white p-5 shadow-card">
       <div className="mb-1 flex items-center justify-between gap-3">
-        <h2 className="text-lg font-bold">Automatické objevování</h2>
+        <h2 className="text-lg font-bold">Objevování receptů</h2>
         {st && (
           <span className="nums text-xs text-ink/50">
             {st.recipes_total} receptů · {st.ingredients_total} surovin
@@ -171,19 +171,15 @@ function CrawlerPanel({ searxng }) {
         )}
       </div>
       <p className="mb-4 text-sm text-ink/60">
-        Nech kuchařku samu projít web, stáhnout recepty a doplnit chybějící
-        suroviny. Běží na pozadí.
+        Projde receptové weby (přes jejich sitemapy) a stahuje nové recepty,
+        které ještě nemáš. Cizí přeloží do češtiny, chybějící suroviny doplní.
       </p>
 
-      {!searxng ? (
-        <p className="text-sm text-ink/50">
-          Pro objevování zapni vyhledávání (nastav <code className="rounded bg-line/60 px-1">SEARXNG_URL</code>).
-        </p>
-      ) : running ? (
+      {running ? (
         <div>
           <div className="mb-3 flex items-center gap-2 text-sm text-basil-dark">
             <span className="h-3 w-3 animate-spin rounded-full border-2 border-basil border-t-transparent" />
-            Objevuji… {st.current_query ? `„${st.current_query}"` : ""}
+            Procházím… {st.current_query ? st.current_query : ""}
           </div>
           <div className="nums mb-3 flex gap-4 text-sm">
             <span>přidáno <b className="text-have">{st.added}</b></span>
@@ -193,7 +189,7 @@ function CrawlerPanel({ searxng }) {
           </div>
           {st.recent?.length > 0 && (
             <ul className="space-y-1 text-sm text-ink/70">
-              {st.recent.slice(-5).reverse().map((r, i) => (
+              {st.recent.slice(-6).reverse().map((r, i) => (
                 <li key={i} className="truncate">
                   <span className="text-have">+</span> {r.title}{" "}
                   <span className="text-ink/40">({r.domain})</span>
@@ -204,7 +200,12 @@ function CrawlerPanel({ searxng }) {
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-3">
-          <Button onClick={start}>Naplnit databázi</Button>
+          <Button onClick={start}>Objevit nové recepty</Button>
+          {st && st.domains_count === 0 && (
+            <span className="text-xs text-ink/50">
+              (bez RECIPE_DOMAINS se použije výchozí sada českých webů)
+            </span>
+          )}
           {st?.finished_at && (
             <span className="text-sm text-ink/50">
               Poslední běh: přidáno {st.added}, nalezeno {st.found}.
