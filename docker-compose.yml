@@ -1,53 +1,53 @@
-name: kucharka
-
+# Kuchařka na TrueNAS (Docker). App si kód klonuje z Gitu a umí self-update
+# přes WEB UI. Ollama běží mimo (na hostiteli / jiném stroji).
 services:
-  kucharka:
-    # Volba A (SSH/lokálně): postav image z repa
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # Volba B (TrueNAS Apps UI): zakomentuj 'build' výše a použij hotový image,
-    # který sis postavil a nahrál do Gitea registru, např.:
-    # image: git.aleshulek.cz/tesla/kucharka:latest
-    container_name: kucharka
-    restart: unless-stopped
-    depends_on:
-      mariadb:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: mysql+pymysql://kucharka:${DB_PASSWORD:-kucharka}@mariadb:3306/kucharka?charset=utf8mb4
-      # --- volitelné integrace (necháš prázdné = vypnuté) ---
-      OLLAMA_URL: ${OLLAMA_URL:-}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
-      SEARXNG_URL: ${SEARXNG_URL:-}
-      # whitelist domén pro vyhledávání (čárkou), prázdné = vše co projde scraperem
-      RECIPE_DOMAINS: ${RECIPE_DOMAINS:-}
-      SCRAPE_DELAY: "1.0"
-      # autonomní crawler
-      CRAWLER_ENABLED: ${CRAWLER_ENABLED:-false}
-      CRAWLER_INTERVAL_MIN: ${CRAWLER_INTERVAL_MIN:-360}
-      CRAWLER_MAX_PER_RUN: ${CRAWLER_MAX_PER_RUN:-15}
-      AUTO_INGREDIENTS: ${AUTO_INGREDIENTS:-false}
-    ports:
-      - "8975:8000"
-
-  mariadb:
-    image: mariadb:11.4
-    container_name: kucharka-db
+  db:
+    image: mariadb:11
     restart: unless-stopped
     environment:
       MARIADB_DATABASE: kucharka
       MARIADB_USER: kucharka
-      MARIADB_PASSWORD: ${DB_PASSWORD:-kucharka}
-      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-changeme-root}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-AiKucharkaDB}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-AiKucharkaDBRoot}
+    command: ["--innodb-buffer-pool-size=256M"]
     volumes:
-      - kucharka_db:/var/lib/mysql
+      - db_data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
       timeout: 5s
       retries: 12
 
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-8080}:8000"
+    environment:
+      DATABASE_URL: mysql+pymysql://kucharka:${DB_PASSWORD:-AiKucharkaDB}@db:3306/kucharka
+      # Ollama na hostiteli TrueNAS (nebo jiná adresa)
+      OLLAMA_URL: ${OLLAMA_URL:-http://172.24.1.111:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      SEARXNG_URL: ${SEARXNG_URL:-http://172.24.1.111:30053}
+      RECIPE_DOMAINS: ${RECIPE_DOMAINS:-recepty.cz,toprecepty.cz,apetitonline.cz,vareni.cz,ireceptar.cz,klasicke-recepty.cz,bestrecepty.cz,kucharky.cz,dobruchut.cz,fresh.iprima.cz,recepty.eu,mimibazar.cz,allrecipes.com,bbcgoodfood.com,seriouseats.com,food.com,epicurious.com,simplyrecipes.com,budgetbytes.com,eatingwell.com,delish.com,tasteofhome.com,foodnetwork.com,thekitchn.com,bonappetit.com,kingarthurbaking.com,jamieoliver.com}
+      SCRAPER_VERIFY_SSL: ${SCRAPER_VERIFY_SSL:-true}
+      TRANSLATE_TO_CS: ${TRANSLATE_TO_CS:-true}
+      AUTO_INGREDIENTS: ${AUTO_INGREDIENTS:-true}
+      CRAWLER_ENABLED: ${CRAWLER_ENABLED:-false}
+      # self-update z Gitu přes WEB UI
+      UPDATE_ENABLED: ${UPDATE_ENABLED:-true}
+      REPO_URL: ${REPO_URL:-https://github.com/DomaciBlbosti/Kucharka.git}
+      REPO_BRANCH: ${REPO_BRANCH:-main}
+      REPO_DIR: /app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - app_code:/app
+
 volumes:
-  kucharka_db:
-    driver: local
+  db_data:
+  app_code:

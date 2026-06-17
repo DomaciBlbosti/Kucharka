@@ -91,6 +91,11 @@ class Settings:
         # RAG generování receptů
         self.embed_model: str = _env("EMBED_MODEL", "nomic-embed-text")
         self.rag_k: int = int(_env("RAG_K", "6"))  # kolik receptů jako kontext
+        # Self-update z Gitu přes WEB UI
+        self.update_enabled: bool = _env("UPDATE_ENABLED", "false").lower() in (
+            "1", "true", "yes", "on"
+        )
+        self.repo_dir: str = _env("REPO_DIR", "")
 
     @property
     def ollama_enabled(self) -> bool:

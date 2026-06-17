@@ -141,7 +141,109 @@ export default function AddRecipe() {
 
       <CrawlerPanel />
       <MatchPanel />
+      <SystemPanel />
     </div>
+  );
+}
+
+function SystemPanel() {
+  const [v, setV] = useState(null);
+  const [chk, setChk] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const loadVersion = () => api.sysVersion().then(setV).catch(() => {});
+  useEffect(() => {
+    loadVersion();
+  }, []);
+
+  if (!v || !v.enabled) return null;
+
+  const check = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      setChk(await api.sysCheck());
+    } catch {
+      setMsg("Kontrola selhala.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const update = async () => {
+    setBusy(true);
+    setMsg("Spouštím aktualizaci…");
+    try {
+      const r = await api.sysUpdate();
+      setMsg(r.message || "Aktualizuji…");
+      // počkej, až se vrátí s novým commitem
+      const before = v.commit;
+      let tries = 0;
+      const poll = setInterval(async () => {
+        tries++;
+        try {
+          const nv = await api.sysVersion();
+          if (nv.commit && nv.commit !== before) {
+            clearInterval(poll);
+            setV(nv);
+            setChk(null);
+            setMsg(`Aktualizováno na ${nv.commit} ✓`);
+            setBusy(false);
+          }
+        } catch {
+          /* API zrovna restartuje */
+        }
+        if (tries > 120) {
+          clearInterval(poll);
+          setMsg("Restart trvá déle – zkontroluj logy kontejneru.");
+          setBusy(false);
+        }
+      }, 2000);
+    } catch {
+      setMsg("Aktualizace selhala.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="mt-6 rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <div className="mb-1 flex items-center justify-between gap-3">
+        <h2 className="text-lg font-bold">Verze a aktualizace</h2>
+        <span className="nums text-xs text-ink/45">
+          {v.branch}@{v.commit || "?"}
+        </span>
+      </div>
+      <p className="mb-1 text-sm text-ink/70">{v.subject || "—"}</p>
+      <p className="mb-4 text-xs text-ink/45">{v.date}</p>
+
+      {chk && (
+        <p className="mb-3 text-sm">
+          {chk.update_available ? (
+            <span className="text-miss">
+              K dispozici je {chk.behind} nových commitů — naposled: „{chk.remote_subject}"
+            </span>
+          ) : (
+            <span className="text-have">Máš nejnovější verzi ✓</span>
+          )}
+        </p>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="ghost" onClick={check} disabled={busy}>
+          Zkontrolovat aktualizace
+        </Button>
+        <Button onClick={update} disabled={busy}>
+          {busy ? "Pracuji…" : "Aktualizovat z Gitu"}
+        </Button>
+        {msg && <span className="text-sm text-ink/60">{msg}</span>}
+      </div>
+      {!v.supervised && (
+        <p className="mt-2 text-xs text-ink/45">
+          Mimo Docker: po stažení je potřeba ručně restartovat API.
+        </p>
+      )}
+    </section>
   );
 }
 

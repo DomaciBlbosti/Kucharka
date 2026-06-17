@@ -95,4 +95,8 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ create_missing: createMissing }),
     }).then(J),
+
+  sysVersion: () => fetch("/api/system/version").then(J),
+  sysCheck: () => fetch("/api/system/check", { method: "POST" }).then(J),
+  sysUpdate: () => fetch("/api/system/update", { method: "POST" }).then(J),
 };
