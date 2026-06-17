@@ -17,7 +17,7 @@ from sqlalchemy.exc import OperationalError
 
 from .config import settings
 from .db import Base, SessionLocal, engine
-from .routers import crawl, ingredients, pantry, recipes, search
+from .routers import crawl, generate, ingredients, maintenance, pantry, recipes, search
 from .seed.starter_ingredients import seed_starter
 
 log = logging.getLogger("kucharka")
@@ -67,6 +67,8 @@ app.include_router(search.router)
 app.include_router(ingredients.router)
 app.include_router(pantry.router)
 app.include_router(crawl.router)
+app.include_router(generate.router)
+app.include_router(maintenance.router)
 
 
 @app.on_event("startup")

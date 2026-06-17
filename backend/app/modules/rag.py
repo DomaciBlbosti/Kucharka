@@ -1,0 +1,237 @@
+"""RAG nad recepty: embedding do MariaDB + vektorové vyhledání + generování.
+
+Žádná externí vektorová DB – embeddingy (nomic-embed-text) se ukládají jako
+float32 bytes k receptu a podobnost se počítá v numpy (pro pár tisíc receptů
+je brute-force kosinová podobnost okamžitá). Filtrování podle kalorií/hodnocení
+řeší SQL nad tabulkou recipe.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import threading
+import time
+import uuid
+
+import httpx
+import numpy as np
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from ..config import settings
+from ..db import SessionLocal
+from ..models import Recipe, RecipeEmbedding
+from .ingest import _persist
+
+log = logging.getLogger("kucharka.rag")
+
+_lock = threading.Lock()
+_index_state: dict = {"running": False, "done": 0, "total": 0, "finished_at": None}
+
+
+# ----------------------------- embedding -----------------------------
+def embed_text(text: str) -> np.ndarray:
+    r = httpx.post(
+        f"{settings.ollama_url}/api/embeddings",
+        json={"model": settings.embed_model, "prompt": text},
+        timeout=60,
+    )
+    r.raise_for_status()
+    vec = np.asarray(r.json()["embedding"], dtype=np.float32)
+    n = np.linalg.norm(vec)
+    return vec / n if n else vec  # normalizace → kosinus = dot
+
+
+def recipe_doc(r: Recipe) -> str:
+    """Textová reprezentace receptu pro embedding."""
+    ings = ", ".join(
+        (ri.ingredient.name_cs if ri.ingredient else ri.raw_text) for ri in r.ingredients
+    )
+    parts = [r.title]
+    if r.category:
+        parts.append(r.category)
+    if ings:
+        parts.append("Suroviny: " + ings)
+    if r.kcal_per_serving:
+        parts.append(f"{round(r.kcal_per_serving)} kcal na porci")
+    return ". ".join(parts)
+
+
+# ----------------------------- indexace -----------------------------
+def index_status() -> dict:
+    with _lock:
+        s = dict(_index_state)
+    db = SessionLocal()
+    try:
+        s["indexed"] = db.scalar(
+            select(func.count(RecipeEmbedding.recipe_id))
+        ) or 0
+        s["recipes_total"] = db.scalar(select(func.count(Recipe.id))) or 0
+    finally:
+        db.close()
+    s["model"] = settings.embed_model
+    return s
+
+
+def index_recipes(rebuild: bool = False, batch_log: int = 50) -> dict:
+    """Zembedduj recepty, které ještě embedding nemají (nebo všechny při rebuild)."""
+    db = SessionLocal()
+    try:
+        if rebuild:
+            db.query(RecipeEmbedding).delete()
+            db.commit()
+        have = set(db.scalars(select(RecipeEmbedding.recipe_id)).all())
+        recipes = db.scalars(select(Recipe)).all()
+        todo = [r for r in recipes if r.id not in have]
+        with _lock:
+            _index_state.update(running=True, done=0, total=len(todo), finished_at=None)
+        for i, r in enumerate(todo, 1):
+            try:
+                vec = embed_text(recipe_doc(r))
+                db.merge(RecipeEmbedding(
+                    recipe_id=r.id, model=settings.embed_model,
+                    dim=int(vec.shape[0]), vec=vec.tobytes(),
+                ))
+                db.commit()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("embedding receptu %s selhal: %s", r.id, exc)
+            with _lock:
+                _index_state["done"] = i
+            if i % batch_log == 0:
+                log.info("indexace %s/%s", i, len(todo))
+    finally:
+        with _lock:
+            _index_state.update(running=False, finished_at=time.time())
+        db.close()
+    return index_status()
+
+
+def index_async(rebuild: bool = False) -> bool:
+    with _lock:
+        if _index_state["running"]:
+            return False
+    threading.Thread(target=index_recipes, kwargs={"rebuild": rebuild}, daemon=True).start()
+    return True
+
+
+# ----------------------------- vyhledání -----------------------------
+def search(
+    db: Session,
+    query: str,
+    k: int = 6,
+    max_kcal: float | None = None,
+    min_rating: float | None = None,
+) -> list[tuple[Recipe, float]]:
+    qvec = embed_text(query)
+
+    stmt = select(Recipe.id).join(RecipeEmbedding, RecipeEmbedding.recipe_id == Recipe.id)
+    if max_kcal is not None:
+        stmt = stmt.where(Recipe.kcal_per_serving.isnot(None),
+                          Recipe.kcal_per_serving <= max_kcal)
+    if min_rating is not None:
+        stmt = stmt.where(Recipe.rating.isnot(None), Recipe.rating >= min_rating)
+    allowed = set(db.scalars(stmt).all())
+    if not allowed:
+        return []
+
+    rows = db.execute(
+        select(RecipeEmbedding.recipe_id, RecipeEmbedding.vec)
+        .where(RecipeEmbedding.recipe_id.in_(allowed))
+    ).all()
+    if not rows:
+        return []
+
+    ids = [rid for rid, _ in rows]
+    mat = np.stack([np.frombuffer(v, dtype=np.float32) for _, v in rows])
+    scores = mat @ qvec  # vektory jsou normalizované → kosinus
+    top = np.argsort(-scores)[:k]
+    top_ids = [ids[i] for i in top]
+    recipes = {r.id: r for r in db.scalars(select(Recipe).where(Recipe.id.in_(top_ids)))}
+    return [(recipes[ids[i]], float(scores[i])) for i in top if ids[i] in recipes]
+
+
+# ----------------------------- generování -----------------------------
+def generate(
+    db: Session,
+    prompt: str,
+    k: int | None = None,
+    max_kcal: float | None = None,
+    min_rating: float | None = None,
+) -> dict:
+    k = k or settings.rag_k
+    hits = search(db, prompt, k=k, max_kcal=max_kcal, min_rating=min_rating)
+
+    context = []
+    for r, _ in hits:
+        ings = "; ".join(
+            (ri.ingredient.name_cs if ri.ingredient else ri.raw_text)
+            for ri in r.ingredients
+        )
+        kcal = f"{round(r.kcal_per_serving)} kcal/porce" if r.kcal_per_serving else "?"
+        context.append(f"- {r.title} ({kcal}). Suroviny: {ings}")
+    context_block = "\n".join(context) if context else "(žádné podobné recepty)"
+
+    limits = []
+    if max_kcal:
+        limits.append(f"maximálně {int(max_kcal)} kcal na porci")
+    if min_rating:
+        limits.append(f"inspiruj se hlavně dobře hodnocenými recepty")
+    limit_block = ("Omezení: " + ", ".join(limits) + ".") if limits else ""
+
+    sys_prompt = (
+        "Jsi zkušený kuchař. Na základě existujících receptů níže vymysli JEDEN "
+        "nový, smysluplný recept podle zadání. Vyjdi z nich stylem a surovinami, "
+        "ale vytvoř původní recept (ne kopii). Měrné jednotky uváděj metricky (g, "
+        "ml, ks, lžíce). Odpověz POUZE JSON objektem bez dalšího textu:\n"
+        '{"title": string, "servings": number, "total_time": number, '
+        '"kcal_per_serving": number, "ingredients": [string], "steps": [string], '
+        '"note": string}\n\n'
+        f"Zadání: {prompt}\n{limit_block}\n\n"
+        f"Existující recepty pro inspiraci:\n{context_block}"
+    )
+    r = httpx.post(
+        f"{settings.ollama_url}/api/generate",
+        json={
+            "model": settings.ollama_model,
+            "prompt": sys_prompt,
+            "stream": False,
+            "format": "json",
+            "think": False,
+            "options": {"temperature": 0.7},
+        },
+        timeout=max(settings.http_timeout, 180),
+    )
+    r.raise_for_status()
+    data = json.loads(r.json()["response"])
+
+    data.setdefault("ingredients", [])
+    data.setdefault("steps", [])
+    return {
+        "recipe": data,
+        "sources": [
+            {"id": r.id, "title": r.title, "domain": r.source_domain,
+             "kcal_per_serving": r.kcal_per_serving, "score": round(score, 3)}
+            for r, score in hits
+        ],
+    }
+
+
+def save_generated(db: Session, gen: dict) -> Recipe:
+    """Ulož vygenerovaný recept do DB (projde normalizací → cook-meter, kcal)."""
+    steps = gen.get("steps") or []
+    instructions = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)) if steps else None
+    data = {
+        "title": gen.get("title", "Vymyšlený recept"),
+        "source_url": f"ai://{uuid.uuid4()}",
+        "source_domain": "ai",
+        "image_url": None,
+        "video_url": None,
+        "instructions": instructions,
+        "servings": gen.get("servings"),
+        "total_time": gen.get("total_time"),
+        "rating": None,
+        "rating_count": None,
+        "category": "Vymyšlené",
+        "ingredients": [str(x) for x in gen.get("ingredients", [])],
+    }
+    return _persist(db, data)

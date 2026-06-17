@@ -16,6 +16,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -139,3 +140,19 @@ class ShoppingItem(Base):
     checked: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     ingredient: Mapped[Ingredient | None] = relationship()
+
+
+class RecipeEmbedding(Base):
+    """Vektorový embedding receptu (pro RAG generování). vec = float32 bytes."""
+
+    __tablename__ = "recipe_embedding"
+
+    recipe_id: Mapped[int] = mapped_column(
+        ForeignKey("recipe.id", ondelete="CASCADE"), primary_key=True
+    )
+    model: Mapped[str] = mapped_column(String(80))
+    dim: Mapped[int] = mapped_column(Integer)
+    vec: Mapped[bytes] = mapped_column(LargeBinary)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )

@@ -140,7 +140,81 @@ export default function AddRecipe() {
       )}
 
       <CrawlerPanel />
+      <MatchPanel />
     </div>
+  );
+}
+
+function MatchPanel() {
+  const [st, setSt] = useState(null);
+  const refresh = () => api.matchStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 1500);
+    return () => clearInterval(t);
+  }, []);
+
+  if (!st) return null;
+  const pct =
+    st.rows_total > 0
+      ? Math.round(((st.rows_total - st.rows_unmatched) / st.rows_total) * 100)
+      : 100;
+  const phaseLabel = { fuzzy: "páruji proti databázi", llm: "doptávám se AI", kcal: "přepočítávám kalorie" };
+
+  const start = async () => {
+    await api.backfill(true);
+    refresh();
+  };
+
+  return (
+    <section className="mt-6 rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <div className="mb-1 flex items-center justify-between gap-3">
+        <h2 className="text-lg font-bold">Párování surovin</h2>
+        <span className="nums text-xs text-ink/50">{pct}% napárováno</span>
+      </div>
+      <p className="mb-4 text-sm text-ink/60">
+        Recepty s nenapárovanými surovinami nemají správný cook-meter ani
+        kalorie. Tohle je zkusí dopárovat a chybějící suroviny nechá doplnit AI.
+      </p>
+
+      <div className="mb-3 h-2 overflow-hidden rounded-full bg-line">
+        <div className="h-full bg-basil transition-all" style={{ width: `${pct}%` }} />
+      </div>
+
+      {st.running ? (
+        <div>
+          <div className="mb-2 flex items-center gap-2 text-sm text-basil-dark">
+            <span className="h-3 w-3 animate-spin rounded-full border-2 border-basil border-t-transparent" />
+            {phaseLabel[st.phase] || "pracuji"}… {st.done}/{st.total}
+          </div>
+          <div className="nums flex gap-4 text-sm text-ink/55">
+            <span>napárováno <b className="text-have">{st.matched}</b></span>
+            <span>nově vytvořeno {st.created}</span>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="nums text-sm">
+            <b className="text-miss">{st.rows_unmatched}</b>
+            <span className="text-ink/55"> nenapárovaných řádků v </span>
+            <b>{st.recipes_unmatched}</b>
+            <span className="text-ink/55"> receptech</span>
+          </div>
+          {st.rows_unmatched > 0 ? (
+            <Button className="ml-auto" onClick={start} disabled={!st.ollama}>
+              Dopárovat přes AI
+            </Button>
+          ) : (
+            <span className="ml-auto text-sm text-have">Vše napárováno ✓</span>
+          )}
+        </div>
+      )}
+      {!st.ollama && st.rows_unmatched > 0 && (
+        <p className="mt-2 text-xs text-ink/45">
+          Pro doplnění chybějících surovin zapni Ollamu (OLLAMA_URL).
+        </p>
+      )}
+    </section>
   );
 }
 

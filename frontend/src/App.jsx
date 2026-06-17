@@ -4,9 +4,11 @@ import RecipeDetail from "./views/RecipeDetail";
 import Pantry from "./views/Pantry";
 import Shopping from "./views/Shopping";
 import AddRecipe from "./views/AddRecipe";
+import Generate from "./views/Generate";
 
 const NAV = [
   { to: "/", label: "Recepty", icon: "🍲", end: true },
+  { to: "/vymyslet", label: "Vymyslet", icon: "✨" },
   { to: "/spiz", label: "Spíž", icon: "🧺" },
   { to: "/nakup", label: "Nákup", icon: "🛒" },
   { to: "/pridat", label: "Přidat", icon: "➕" },
@@ -56,6 +58,7 @@ export default function App() {
       <main className="mx-auto max-w-5xl px-4 py-6">
         <Routes>
           <Route path="/" element={<Recipes />} />
+          <Route path="/vymyslet" element={<Generate />} />
           <Route path="/recept/:id" element={<RecipeDetail />} />
           <Route path="/spiz" element={<Pantry />} />
           <Route path="/nakup" element={<Shopping />} />
@@ -65,7 +68,7 @@ export default function App() {
 
       {/* Spodní taby na mobilu */}
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-paper/95 backdrop-blur md:hidden">
-        <div className="mx-auto grid max-w-5xl grid-cols-4">
+        <div className="mx-auto grid max-w-5xl grid-cols-5">
           {NAV.map((n) => (
             <NavLink
               key={n.to}

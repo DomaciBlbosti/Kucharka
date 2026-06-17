@@ -8,6 +8,15 @@ from __future__ import annotations
 
 import os
 
+try:  # automatické načtení backend/.env, ať funguje i CLI/skripty bez `source`
+    from pathlib import Path
+
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except Exception:  # noqa: BLE001
+    pass
+
 
 def _env(key: str, default: str = "") -> str:
     return os.environ.get(key, default).strip()
@@ -79,6 +88,9 @@ class Settings:
         self.translate_to_cs: bool = _env("TRANSLATE_TO_CS", "true").lower() in (
             "1", "true", "yes", "on"
         )
+        # RAG generování receptů
+        self.embed_model: str = _env("EMBED_MODEL", "nomic-embed-text")
+        self.rag_k: int = int(_env("RAG_K", "6"))  # kolik receptů jako kontext
 
     @property
     def ollama_enabled(self) -> bool:

@@ -67,4 +67,32 @@ export const api = {
     fetch(`/api/shopping/${id}/toggle`, { method: "PATCH" }).then(J),
   removeShopping: (id) =>
     fetch(`/api/shopping/${id}`, { method: "DELETE" }).then(J),
+
+  genStatus: () => fetch("/api/generate/status").then(J),
+  genIndex: (rebuild = false) =>
+    fetch("/api/generate/index", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rebuild }),
+    }).then(J),
+  generate: (body) =>
+    fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(J),
+  saveGenerated: (recipe) =>
+    fetch("/api/generate/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recipe }),
+    }).then(J),
+
+  matchStatus: () => fetch("/api/maintenance/match-status").then(J),
+  backfill: (createMissing = true) =>
+    fetch("/api/maintenance/backfill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ create_missing: createMissing }),
+    }).then(J),
 };
