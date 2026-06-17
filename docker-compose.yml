@@ -23,6 +23,11 @@ services:
       # whitelist domén pro vyhledávání (čárkou), prázdné = vše co projde scraperem
       RECIPE_DOMAINS: ${RECIPE_DOMAINS:-}
       SCRAPE_DELAY: "1.0"
+      # autonomní crawler
+      CRAWLER_ENABLED: ${CRAWLER_ENABLED:-false}
+      CRAWLER_INTERVAL_MIN: ${CRAWLER_INTERVAL_MIN:-360}
+      CRAWLER_MAX_PER_RUN: ${CRAWLER_MAX_PER_RUN:-15}
+      AUTO_INGREDIENTS: ${AUTO_INGREDIENTS:-false}
     ports:
       - "8975:8000"
 

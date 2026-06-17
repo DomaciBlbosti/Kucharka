@@ -17,7 +17,7 @@ from sqlalchemy.exc import OperationalError
 
 from .config import settings
 from .db import Base, SessionLocal, engine
-from .routers import ingredients, pantry, recipes, search
+from .routers import crawl, ingredients, pantry, recipes, search
 from .seed.starter_ingredients import seed_starter
 
 log = logging.getLogger("kucharka")
@@ -66,11 +66,43 @@ app.include_router(recipes.router)
 app.include_router(search.router)
 app.include_router(ingredients.router)
 app.include_router(pantry.router)
+app.include_router(crawl.router)
 
 
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    if settings.crawler_enabled:
+        _start_scheduler()
+
+
+def _start_scheduler() -> None:
+    """Spustí periodický crawl na pozadí (volitelné, CRAWLER_ENABLED=true)."""
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+
+        from .modules import crawler
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Plánovač nelze spustit: %s", exc)
+        return
+
+    sched = BackgroundScheduler(daemon=True)
+    sched.add_job(
+        lambda: crawler.crawl(max_recipes=settings.crawler_max_per_run),
+        "interval",
+        minutes=settings.crawler_interval_min,
+        next_run_time=None,  # první běh až po intervalu, ne hned při startu
+        id="crawler",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.start()
+    log.info(
+        "Crawler naplánován každých %s min (max %s receptů/běh).",
+        settings.crawler_interval_min,
+        settings.crawler_max_per_run,
+    )
+    app.state.scheduler = sched
 
 
 @app.get("/api/health")

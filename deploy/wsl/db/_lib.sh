@@ -4,6 +4,13 @@
 ensure_mariadb() {
   sudo install -d -o mysql -g mysql /run/mysqld 2>/dev/null || true
 
+  # WSL: InnoDB native AIO bývá v kernelu nedostupné → vypnout, jinak mariadbd spadne
+  if [ -d /etc/mysql/mariadb.conf.d ] && [ ! -f /etc/mysql/mariadb.conf.d/99-wsl.cnf ]; then
+    printf '[mariadbd]\ninnodb_use_native_aio=0\n' \
+      | sudo tee /etc/mysql/mariadb.conf.d/99-wsl.cnf >/dev/null
+  fi
+  sudo chown -R mysql:mysql /var/lib/mysql 2>/dev/null || true
+
   # inicializace datadiru, pokud chybí systémové tabulky
   if [ ! -d /var/lib/mysql/mysql ]; then
     echo "==> Inicializuji datadir…"

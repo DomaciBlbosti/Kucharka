@@ -26,7 +26,8 @@ trap cleanup EXIT INT TERM
 echo "==> Web (Vite :5173)"
 cd "$REPO/frontend"
 export VITE_API_TARGET="${VITE_API_TARGET:-http://localhost:8000}"
+export WEB_PORT="${WEB_PORT:-5173}"
 echo ""
-echo "    Otevři http://localhost:5173   (API /docs na :8000)"
+echo "    Otevři http://localhost:$WEB_PORT   (API /docs na :8000)"
 echo ""
 npm run dev

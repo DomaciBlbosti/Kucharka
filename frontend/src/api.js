@@ -17,6 +17,14 @@ export const api = {
   searchStatus: () => fetch("/api/search/status").then(J),
   ollamaStatus: () => fetch("/api/search/ollama").then(J),
 
+  crawlStatus: () => fetch("/api/crawl/status").then(J),
+  crawlRun: (body) =>
+    fetch("/api/crawl/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    }).then(J),
+
   recipes: (filters) => fetch(`/api/recipes${qs(filters)}`).then(J),
   recipe: (id) => fetch(`/api/recipes/${id}`).then(J),
   deleteRecipe: (id) => fetch(`/api/recipes/${id}`, { method: "DELETE" }).then(J),

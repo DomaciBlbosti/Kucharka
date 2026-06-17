@@ -102,6 +102,21 @@ docker exec -it kucharka python -m app.seed.import_nutridb \
 Skript se snaží sloupce odhadnout; mapování lze přepsat přes `--col-*`.
 Data NutriDatabaze podléhají jejich licenci — používej pro vlastní potřebu.
 
+## Autonomní crawler
+
+Kuchařka umí sama plnit databázi: projde seed dotazy přes SearXNG, stáhne
+recepty, normalizuje je a uloží. Chybějící suroviny umí doplnit přes Ollamu
+(odhad výživy, `source="ollama"` – import z NutriDatabaze je pak zpřesní).
+
+- **Ručně z UI:** záložka *Přidat* → *Automatické objevování* → „Naplnit databázi".
+- **Z CLI:** `python -m app.modules.crawler "svíčková" "guláš"` (bez argumentů = výchozí sada).
+- **Na pozadí (plánovaně):** `CRAWLER_ENABLED=true` + `CRAWLER_INTERVAL_MIN` /
+  `CRAWLER_MAX_PER_RUN`. Dorůstání surovin zapíná `AUTO_INGREDIENTS=true`.
+- **API:** `POST /api/crawl/run`, `GET /api/crawl/status`.
+
+Vyžaduje nastavený `SEARXNG_URL`. Doporučeno doplnit `RECIPE_DOMAINS`
+(whitelist), ať crawler zůstane na skutečných receptových webech.
+
 ## Roadmap (další fáze)
 
 - Per-surovina hustoty a převody (přesnější gramáž lžic/kusů)

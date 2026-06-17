@@ -10,5 +10,6 @@ FRONTEND="$REPO_ROOT/frontend"
 export VITE_API_TARGET="${VITE_API_TARGET:-http://localhost:8000}"
 
 cd "$FRONTEND"
-echo "==> Frontend na http://localhost:5173  (API proxy → $VITE_API_TARGET)"
+export WEB_PORT="${WEB_PORT:-5173}"
+echo "==> Frontend na http://localhost:$WEB_PORT  (API proxy → $VITE_API_TARGET)"
 exec npm run dev

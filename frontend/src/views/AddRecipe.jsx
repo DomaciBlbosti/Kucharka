@@ -138,7 +138,81 @@ export default function AddRecipe() {
       {error && (
         <p className="mt-4 rounded-lg bg-miss/10 px-4 py-3 text-sm text-miss">{error}</p>
       )}
+
+      <CrawlerPanel searxng={status.searxng} />
     </div>
+  );
+}
+
+function CrawlerPanel({ searxng }) {
+  const [st, setSt] = useState(null);
+
+  const refresh = () => api.crawlStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 2000);
+    return () => clearInterval(t);
+  }, []);
+
+  const start = async () => {
+    await api.crawlRun({ max_recipes: 30 });
+    refresh();
+  };
+
+  const running = st?.running;
+  return (
+    <section className="mt-8 rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <div className="mb-1 flex items-center justify-between gap-3">
+        <h2 className="text-lg font-bold">Automatické objevování</h2>
+        {st && (
+          <span className="nums text-xs text-ink/50">
+            {st.recipes_total} receptů · {st.ingredients_total} surovin
+          </span>
+        )}
+      </div>
+      <p className="mb-4 text-sm text-ink/60">
+        Nech kuchařku samu projít web, stáhnout recepty a doplnit chybějící
+        suroviny. Běží na pozadí.
+      </p>
+
+      {!searxng ? (
+        <p className="text-sm text-ink/50">
+          Pro objevování zapni vyhledávání (nastav <code className="rounded bg-line/60 px-1">SEARXNG_URL</code>).
+        </p>
+      ) : running ? (
+        <div>
+          <div className="mb-3 flex items-center gap-2 text-sm text-basil-dark">
+            <span className="h-3 w-3 animate-spin rounded-full border-2 border-basil border-t-transparent" />
+            Objevuji… {st.current_query ? `„${st.current_query}"` : ""}
+          </div>
+          <div className="nums mb-3 flex gap-4 text-sm">
+            <span>přidáno <b className="text-have">{st.added}</b></span>
+            <span className="text-ink/50">nalezeno {st.found}</span>
+            <span className="text-ink/50">přeskočeno {st.skipped}</span>
+            {st.errors > 0 && <span className="text-miss">chyby {st.errors}</span>}
+          </div>
+          {st.recent?.length > 0 && (
+            <ul className="space-y-1 text-sm text-ink/70">
+              {st.recent.slice(-5).reverse().map((r, i) => (
+                <li key={i} className="truncate">
+                  <span className="text-have">+</span> {r.title}{" "}
+                  <span className="text-ink/40">({r.domain})</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          <Button onClick={start}>Naplnit databázi</Button>
+          {st?.finished_at && (
+            <span className="text-sm text-ink/50">
+              Poslední běh: přidáno {st.added}, nalezeno {st.found}.
+            </span>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

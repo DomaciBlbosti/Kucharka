@@ -51,6 +51,21 @@ class Settings:
             d.strip().lower() for d in wl.split(",") if d.strip()
         }
 
+        # --- Crawler (autonomní plnění DB) ----------------------------
+        self.crawler_enabled: bool = _env("CRAWLER_ENABLED", "false").lower() in (
+            "1", "true", "yes", "on"
+        )
+        self.crawler_interval_min: int = int(_env("CRAWLER_INTERVAL_MIN", "360"))
+        self.crawler_max_per_run: int = int(_env("CRAWLER_MAX_PER_RUN", "15"))
+        seeds = _env("CRAWLER_SEEDS")
+        self.crawler_seeds: list[str] = [
+            s.strip() for s in seeds.split(",") if s.strip()
+        ]
+        # Dorůstání databáze surovin: chybějící surovinu doplní Ollama (odhad výživy)
+        self.auto_ingredients: bool = _env("AUTO_INGREDIENTS", "false").lower() in (
+            "1", "true", "yes", "on"
+        )
+
     @property
     def ollama_enabled(self) -> bool:
         return bool(self.ollama_url)

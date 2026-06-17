@@ -198,6 +198,70 @@ def ollama_check() -> dict:
         }
 
 
+def create_ingredient_via_llm(db: Session, name: str) -> Ingredient | None:
+    """Vytvoř kanonickou surovinu pomocí Ollamy (odhad výživy /100 g).
+
+    Použije se při dorůstání DB, když se název nenapáruje na existující surovinu.
+    Zdroj se označí 'ollama', takže pozdější import z NutriDatabaze data zpřesní.
+    """
+    if not settings.ollama_enabled:
+        return None
+    clean = _clean_name(name)
+    if not clean:
+        return None
+    prompt = (
+        f"Pro potravinu/surovinu '{name}' vrať typické výživové hodnoty na 100 g. "
+        "Odpověz POUZE JSON objektem "
+        '{"name_cs": string (1. pád j.č.), "category": string, '
+        '"kcal_100g": number, "protein_100g": number, "carbs_100g": number, '
+        '"fat_100g": number, "density": number|null (g na 1 ml, jinak null)}. '
+        "Pokud to není jedlá surovina, vrať name_cs prázdné."
+    )
+    try:
+        r = httpx.post(
+            f"{settings.ollama_url}/api/generate",
+            json={
+                "model": settings.ollama_model,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json",
+                "think": False,
+                "options": {"temperature": 0},
+            },
+            timeout=max(settings.http_timeout, 60),
+        )
+        r.raise_for_status()
+        data = json.loads(r.json()["response"])
+    except Exception:
+        return None
+
+    name_cs = (data.get("name_cs") or "").strip()
+    if not name_cs or data.get("kcal_100g") is None:
+        return None
+
+    ing = Ingredient(
+        name_cs=name_cs,
+        category=(data.get("category") or None),
+        kcal_100g=_num(data.get("kcal_100g")),
+        protein_100g=_num(data.get("protein_100g")),
+        carbs_100g=_num(data.get("carbs_100g")),
+        fat_100g=_num(data.get("fat_100g")),
+        density=_num(data.get("density")),
+        source="ollama",
+    )
+    db.add(ing)
+    db.flush()  # potřebujeme id pro alias
+    db.add(IngredientAlias(alias=clean, ingredient_id=ing.id))
+    return ing
+
+
+def _num(v) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_line(db: Session, text: str) -> dict:
     """Plná normalizace jednoho řádku ingredience."""
     return normalize_lines(db, [text])[0]
@@ -218,6 +282,8 @@ def normalize_lines(db: Session, lines: list[str]) -> list[dict]:
         else:
             amount, unit, name = parse_line_regex(text)
         ing = match_ingredient(db, name)
+        if ing is None and settings.auto_ingredients:
+            ing = create_ingredient_via_llm(db, name)
         results.append(
             {
                 "raw_text": text,
