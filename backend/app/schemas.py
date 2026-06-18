@@ -1,6 +1,8 @@
 """Pydantic schémata pro API."""
 from __future__ import annotations
 
+from datetime import date as _date
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -85,3 +87,33 @@ class IngestRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
+
+
+class MealPlanAdd(BaseModel):
+    date: _date
+    meal: str = "oběd"
+    recipe_id: int
+    servings: int = 1
+
+
+class MealPlanUpdate(BaseModel):
+    date: _date | None = None
+    meal: str | None = None
+    servings: int | None = None
+
+
+class MealPlanEntryOut(BaseModel):
+    id: int
+    date: _date
+    meal: str
+    servings: int
+    recipe_id: int
+    title: str
+    image_url: str | None = None
+    kcal_per_serving: float | None = None
+    kcal: float | None = None  # kcal_per_serving * servings
+
+
+class PlanRange(BaseModel):
+    start: _date
+    days: int = 7

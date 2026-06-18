@@ -8,11 +8,13 @@ import Shopping from "./views/Shopping";
 import AddRecipe from "./views/AddRecipe";
 import Generate from "./views/Generate";
 import Admin from "./views/Admin";
+import MealPlan from "./views/MealPlan";
 
 const NAV = [
   { to: "/", label: "Recepty", icon: "🍲", end: true },
   { to: "/vymyslet", label: "Vymyslet", icon: "✨" },
   { to: "/spiz", label: "Spíž", icon: "🧺" },
+  { to: "/plan", label: "Plán", icon: "📅" },
   { to: "/nakup", label: "Nákup", icon: "🛒" },
   { to: "/pridat", label: "Přidat", icon: "➕" },
   { to: "/admin", label: "Admin", icon: "⚙️" },
@@ -127,6 +129,7 @@ export default function App() {
           <Route path="/vymyslet" element={<Generate />} />
           <Route path="/recept/:id" element={<RecipeDetail />} />
           <Route path="/spiz" element={<Pantry />} />
+          <Route path="/plan" element={<MealPlan />} />
           <Route path="/nakup" element={<Shopping />} />
           <Route path="/pridat" element={<AddRecipe />} />
           <Route path="/admin" element={<Admin />} />
@@ -135,14 +138,14 @@ export default function App() {
 
       {/* Spodní taby na mobilu */}
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-paper/95 backdrop-blur md:hidden">
-        <div className="mx-auto grid max-w-5xl grid-cols-6">
+        <div className="mx-auto grid max-w-5xl grid-cols-7">
           {NAV.map((n) => (
             <NavLink
               key={n.to}
               to={n.to}
               end={n.end}
               className={({ isActive }) =>
-                `flex flex-col items-center gap-0.5 py-2.5 text-[11px] font-medium ${
+                `flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium ${
                   isActive ? "text-basil-dark" : "text-ink/45"
                 }`
               }

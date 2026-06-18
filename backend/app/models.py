@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -165,3 +166,20 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String(80), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
+
+
+class MealPlanEntry(Base):
+    """Položka jídelníčku – recept naplánovaný na konkrétní den a chod."""
+
+    __tablename__ = "meal_plan_entry"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    date: Mapped[Date] = mapped_column(Date, index=True)
+    meal: Mapped[str] = mapped_column(String(20), default="oběd")  # snídaně/svačina/oběd/večeře
+    recipe_id: Mapped[int] = mapped_column(
+        ForeignKey("recipe.id", ondelete="CASCADE"), index=True
+    )
+    servings: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    recipe: Mapped[Recipe] = relationship()

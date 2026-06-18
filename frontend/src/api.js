@@ -55,6 +55,29 @@ export const api = {
   recipe: (id) => afetch(`/api/recipes/${id}`).then(J),
   cookFrom: (ids) =>
     afetch(`/api/recipes/cook-from?${ids.map((i) => `ingredient_ids=${i}`).join("&")}`).then(J),
+
+  mealplan: (start, days = 7) =>
+    afetch(`/api/mealplan?start=${start}&days=${days}`).then(J),
+  addMeal: (body) =>
+    afetch("/api/mealplan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(J),
+  updateMeal: (id, body) =>
+    afetch(`/api/mealplan/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(J),
+  removeMeal: (id) =>
+    afetch(`/api/mealplan/${id}`, { method: "DELETE" }).then(J),
+  mealplanShopping: (start, days = 7) =>
+    afetch("/api/mealplan/shopping", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ start, days }),
+    }).then(J),
   deleteRecipe: (id) => afetch(`/api/recipes/${id}`, { method: "DELETE" }).then(J),
 
   ingest: (url) =>

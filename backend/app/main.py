@@ -20,7 +20,7 @@ from .config import settings
 from .db import Base, SessionLocal, engine
 from .routers import (
     admin, auth as auth_router, crawl, generate, ingredients, maintenance,
-    pantry, recipes, search, system,
+    mealplan, pantry, recipes, search, system,
 )
 from .seed.starter_ingredients import seed_starter
 
@@ -85,6 +85,7 @@ app.include_router(recipes.router)
 app.include_router(search.router)
 app.include_router(ingredients.router)
 app.include_router(pantry.router)
+app.include_router(mealplan.router)
 app.include_router(crawl.router)
 app.include_router(generate.router)
 app.include_router(maintenance.router)
