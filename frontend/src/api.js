@@ -127,6 +127,10 @@ export const api = {
   sysUpdate: () => afetch("/api/system/update", { method: "POST" }).then(J),
 
   adminSettings: () => afetch("/api/admin/settings").then(J),
+  testOllama: () => afetch("/api/admin/test-ollama").then(J),
+  translateStatus: () => afetch("/api/maintenance/translate-status").then(J),
+  runTranslate: () =>
+    afetch("/api/maintenance/translate", { method: "POST" }).then(J),
   adminSaveSettings: (values) =>
     afetch("/api/admin/settings", {
       method: "PUT",

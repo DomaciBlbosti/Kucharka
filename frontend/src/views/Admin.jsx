@@ -18,6 +18,8 @@ const input =
 function ToolsCard() {
   const [s, setS] = useState(null);
   const [saved, setSaved] = useState(false);
+  const [test, setTest] = useState(null);
+  const [testing, setTesting] = useState(false);
   useEffect(() => {
     api.adminSettings().then(setS).catch(() => {});
   }, []);
@@ -26,6 +28,15 @@ function ToolsCard() {
   const set = (k, v) => {
     setS({ ...s, [k]: v });
     setSaved(false);
+  };
+  const testOllama = async () => {
+    setTesting(true);
+    setTest(null);
+    try {
+      setTest(await api.testOllama());
+    } finally {
+      setTesting(false);
+    }
   };
   const save = async () => {
     const keys = ["ollama_url", "ollama_model", "embed_model", "searxng_url",
@@ -80,10 +91,45 @@ function ToolsCard() {
           Ověřovat SSL při stahování
         </label>
       </div>
-      <div className="mt-4 flex items-center gap-3">
+      <div className="mt-4 flex flex-wrap items-center gap-3">
         <Button onClick={save}>Uložit nastavení</Button>
         {saved && <span className="text-sm text-have">Uloženo ✓ (platí ihned)</span>}
+        <Button variant="ghost" onClick={testOllama} disabled={testing}>
+          {testing ? "Testuji…" : "Test připojení Ollama"}
+        </Button>
       </div>
+      {test && (
+        <div className="mt-3 rounded-lg border border-line bg-paper p-3 text-sm">
+          {test.reachable ? (
+            <>
+              <p className="text-have">✓ Ollama odpovídá ({test.url})</p>
+              <p className="mt-1 text-ink/70">
+                Chat model <b>{test.chat_model}</b>:{" "}
+                {test.has_chat_model ? (
+                  <span className="text-have">je k dispozici</span>
+                ) : (
+                  <span className="text-miss">chybí — ollama pull {test.chat_model}</span>
+                )}
+              </p>
+              <p className="text-ink/70">
+                Embed model <b>{test.embed_model}</b>:{" "}
+                {test.has_embed_model ? (
+                  <span className="text-have">je k dispozici</span>
+                ) : (
+                  <span className="text-miss">chybí — ollama pull {test.embed_model}</span>
+                )}
+              </p>
+              {test.models?.length > 0 && (
+                <p className="mt-1 text-xs text-ink/45">Modely: {test.models.join(", ")}</p>
+              )}
+            </>
+          ) : (
+            <p className="text-miss">
+              ✗ Ollama neodpovídá{test.url ? ` (${test.url})` : ""}: {test.error}
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -329,12 +375,69 @@ function SecurityCard() {
   );
 }
 
+function TranslateCard() {
+  const [st, setSt] = useState(null);
+  const timer = useRef(null);
+  const load = () => api.translateStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    load();
+    return () => clearInterval(timer.current);
+  }, []);
+  useEffect(() => {
+    if (st?.running && !timer.current) {
+      timer.current = setInterval(load, 2000);
+    } else if (!st?.running && timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+    }
+  }, [st?.running]);
+
+  const run = async () => {
+    const r = await api.runTranslate();
+    setSt(r.status);
+  };
+
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <h2 className="mb-1 text-lg font-bold">Překlad receptů do češtiny</h2>
+      <p className="mb-4 text-sm text-ink/60">
+        Zpětně přeloží cizojazyčné recepty (titul, postup i suroviny) — hodí se
+        pro recepty stažené, když nebyla dostupná Ollama.
+      </p>
+      {st && (
+        <p className="mb-3 text-sm text-ink/70">
+          Receptů celkem: <b>{st.recipes_total}</b> · pravděpodobně cizích:{" "}
+          <b>{st.foreign_estimate}</b>
+          {st.finished_at && !st.running && (
+            <> · naposledy přeloženo: <b>{st.translated}</b></>
+          )}
+        </p>
+      )}
+      {st?.running ? (
+        <div className="text-sm text-ink/70">
+          <Spinner label={`Překládám… ${st.done}/${st.total} (přeloženo ${st.translated})`} />
+        </div>
+      ) : (
+        <div className="flex items-center gap-3">
+          <Button onClick={run} disabled={!st || !st.ollama}>
+            Přeložit cizí recepty
+          </Button>
+          {st && !st.ollama && (
+            <span className="text-sm text-miss">Ollama není dostupná.</span>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function Admin() {
   return (
     <div className="space-y-6">
       <h1 className="font-display text-2xl font-extrabold">Administrace</h1>
       <ToolsCard />
       <CrawlerCard />
+      <TranslateCard />
       <DomainsCard />
       <NutriCard />
       <BackupCard />

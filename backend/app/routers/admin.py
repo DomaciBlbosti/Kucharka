@@ -47,6 +47,35 @@ _BINARY_COLS = {"vec"}
 
 
 # ----------------------------- nastavení -----------------------------
+@router.get("/test-ollama")
+def test_ollama():
+    import httpx
+
+    url = settings.ollama_url
+    if not url:
+        return {"reachable": False, "error": "OLLAMA_URL není nastaveno."}
+    try:
+        r = httpx.get(f"{url}/api/tags", timeout=5)
+        r.raise_for_status()
+        models = [m.get("name", "") for m in r.json().get("models", [])]
+    except Exception as exc:  # noqa: BLE001
+        return {"reachable": False, "url": url, "error": str(exc)}
+
+    def has(name: str) -> bool:
+        base = name.split(":")[0]
+        return any(m == name or m.split(":")[0] == base for m in models)
+
+    return {
+        "reachable": True,
+        "url": url,
+        "models": models,
+        "chat_model": settings.ollama_model,
+        "has_chat_model": has(settings.ollama_model),
+        "embed_model": settings.embed_model,
+        "has_embed_model": has(settings.embed_model),
+    }
+
+
 class SettingsUpdate(BaseModel):
     values: dict
 
