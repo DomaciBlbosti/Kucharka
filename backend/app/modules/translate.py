@@ -14,9 +14,11 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from ..config import settings
 from ..db import SessionLocal
@@ -54,11 +56,12 @@ def _translate_fields(title: str, ingredients: list[str], instructions: str) -> 
         r = httpx.post(
             f"{settings.ollama_url}/api/generate",
             json={
-                "model": settings.ollama_model,
+                "model": settings.ollama_fast_model,
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
                 "think": False,
+                "keep_alive": settings.ollama_keep_alive,
                 "options": {"temperature": 0},
             },
             timeout=max(settings.http_timeout, 120),
@@ -153,22 +156,39 @@ def status() -> dict:
     return s
 
 
+def _retranslate_one(recipe_id: int) -> bool:
+    db = SessionLocal()
+    try:
+        r = db.scalar(
+            select(Recipe).where(Recipe.id == recipe_id).options(selectinload(Recipe.ingredients))
+        )
+        if r is None or not is_foreign(r):
+            return False
+        return retranslate_recipe(db, r)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("retranslate recipe %s selhal: %s", recipe_id, exc)
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+
 def retranslate_all() -> None:
     _set(running=True, done=0, total=0, translated=0, finished_at=None)
     db = SessionLocal()
     try:
-        foreign = [r for r in db.scalars(select(Recipe)).all() if is_foreign(r)]
-        _set(total=len(foreign))
-        for r in foreign:
-            try:
-                if retranslate_recipe(db, r):
-                    _inc("translated")
-            except Exception as exc:  # noqa: BLE001
-                log.warning("retranslate recipe %s selhal: %s", r.id, exc)
-                db.rollback()
-            _inc("done")
+        ids = [r.id for r in db.scalars(select(Recipe)).all() if is_foreign(r)]
     finally:
         db.close()
+    _set(total=len(ids))
+    workers = max(1, settings.bg_workers)
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for ok in ex.map(_retranslate_one, ids):
+                if ok:
+                    _inc("translated")
+                _inc("done")
+    finally:
         _set(running=False, finished_at=time.time())
 
 

@@ -39,8 +39,9 @@ function ToolsCard() {
     }
   };
   const save = async () => {
-    const keys = ["ollama_url", "ollama_model", "embed_model", "searxng_url",
-      "translate_to_cs", "auto_ingredients", "scraper_verify_ssl", "rag_k"];
+    const keys = ["ollama_url", "ollama_model", "ollama_fast_model", "embed_model",
+      "searxng_url", "translate_to_cs", "auto_ingredients", "scraper_verify_ssl",
+      "rag_k", "ollama_keep_alive", "bg_workers"];
     const vals = Object.fromEntries(keys.map((k) => [k, s[k]]));
     const r = await api.adminSaveSettings(vals);
     setS({ ...s, ...r.settings });
@@ -65,6 +66,10 @@ function ToolsCard() {
           <input className={input} value={s.ollama_model || ""}
             onChange={(e) => set("ollama_model", e.target.value)} placeholder="qwen3:8b" />
         </Field>
+        <Field label="Rychlý model (překlad/parsování/kategorie)" hint="prázdné = stejný jako hlavní">
+          <input className={input} value={s.ollama_fast_model || ""}
+            onChange={(e) => set("ollama_fast_model", e.target.value)} placeholder="qwen3:1.7b" />
+        </Field>
         <Field label="Model pro embeddingy (RAG)">
           <input className={input} value={s.embed_model || ""}
             onChange={(e) => set("embed_model", e.target.value)} placeholder="nomic-embed-text" />
@@ -72,6 +77,14 @@ function ToolsCard() {
         <Field label="RAG – počet receptů jako kontext">
           <input type="number" className={input} value={s.rag_k ?? 6}
             onChange={(e) => set("rag_k", Number(e.target.value))} />
+        </Field>
+        <Field label="Držet model v paměti (keep_alive)" hint="méně reloadů = rychleji">
+          <input className={input} value={s.ollama_keep_alive || ""}
+            onChange={(e) => set("ollama_keep_alive", e.target.value)} placeholder="30m" />
+        </Field>
+        <Field label="Souběžných workerů na pozadí" hint="vyžaduje OLLAMA_NUM_PARALLEL">
+          <input type="number" min="1" className={input} value={s.bg_workers ?? 2}
+            onChange={(e) => set("bg_workers", Number(e.target.value))} />
         </Field>
       </div>
       <div className="mt-4 flex flex-wrap gap-4">
@@ -436,12 +449,125 @@ export default function Admin() {
     <div className="space-y-6">
       <h1 className="font-display text-2xl font-extrabold">Administrace</h1>
       <ToolsCard />
+      <ServicesCard />
       <CrawlerCard />
       <TranslateCard />
+      <CategorizeCard />
       <DomainsCard />
       <NutriCard />
       <BackupCard />
       <SecurityCard />
     </div>
+  );
+}
+
+function ServicesCard() {
+  const [s, setS] = useState(null);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { api.adminSettings().then(setS).catch(() => {}); }, []);
+  if (!s) return null;
+  const set = (k, v) => { setS({ ...s, [k]: v }); setSaved(false); };
+  const save = async () => {
+    const r = await api.adminSaveSettings({
+      auto_translate_enabled: s.auto_translate_enabled,
+      auto_translate_interval_min: Number(s.auto_translate_interval_min),
+      auto_match_enabled: s.auto_match_enabled,
+      auto_match_interval_min: Number(s.auto_match_interval_min),
+    });
+    setS({ ...s, ...r.settings });
+    setSaved(true);
+  };
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <h2 className="mb-1 text-lg font-bold">Služby na pozadí</h2>
+      <p className="mb-4 text-sm text-ink/60">
+        Automaticky průběžně překládají a párují nově stažené recepty. Běží
+        jeden po druhém (nervou si GPU).
+      </p>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" className="accent-basil" checked={!!s.auto_translate_enabled}
+              onChange={(e) => set("auto_translate_enabled", e.target.checked)} />
+            Automatický překlad
+          </label>
+          <label className="flex items-center gap-1.5 text-sm text-ink/60">
+            každých
+            <input type="number" min="1" className={`${input} w-20`} value={s.auto_translate_interval_min ?? 180}
+              onChange={(e) => set("auto_translate_interval_min", e.target.value)} />
+            min
+          </label>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" className="accent-basil" checked={!!s.auto_match_enabled}
+              onChange={(e) => set("auto_match_enabled", e.target.checked)} />
+            Automatické párování surovin
+          </label>
+          <label className="flex items-center gap-1.5 text-sm text-ink/60">
+            každých
+            <input type="number" min="1" className={`${input} w-20`} value={s.auto_match_interval_min ?? 180}
+              onChange={(e) => set("auto_match_interval_min", e.target.value)} />
+            min
+          </label>
+        </div>
+      </div>
+      <div className="mt-4 flex items-center gap-3">
+        <Button onClick={save}>Uložit</Button>
+        {saved && <span className="text-sm text-have">Uloženo ✓ (přeplánováno)</span>}
+      </div>
+    </section>
+  );
+}
+
+function CategorizeCard() {
+  const [st, setSt] = useState(null);
+  const timer = useRef(null);
+  const load = () => api.categorizeStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    load();
+    return () => clearInterval(timer.current);
+  }, []);
+  useEffect(() => {
+    if (st?.running && !timer.current) {
+      timer.current = setInterval(load, 2000);
+    } else if (!st?.running && timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+    }
+  }, [st?.running]);
+
+  const run = async () => {
+    const r = await api.runCategorize();
+    setSt(r.status);
+  };
+
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <h2 className="mb-1 text-lg font-bold">Kategorizace surovin</h2>
+      <p className="mb-4 text-sm text-ink/60">
+        Zařadí suroviny do hierarchie (např. „maso › drůbeží › kuřecí") pro
+        snadnější hledání a filtrování. Běží jen pro dosud nezařazené.
+      </p>
+      {st && (
+        <p className="mb-3 text-sm text-ink/70">
+          Surovin celkem: <b>{st.total_ingredients}</b> · nezařazených:{" "}
+          <b>{st.uncategorized}</b>
+        </p>
+      )}
+      {st?.running ? (
+        <Spinner label={`Kategorizuji… ${st.done}/${st.total}`} />
+      ) : (
+        <div className="flex items-center gap-3">
+          <Button onClick={run} disabled={!st || !st.ollama || st.uncategorized === 0}>
+            Zařadit do kategorií
+          </Button>
+          {st && !st.ollama && <span className="text-sm text-miss">Ollama není dostupná.</span>}
+          {st && st.ollama && st.uncategorized === 0 && (
+            <span className="text-sm text-have">Vše zařazeno ✓</span>
+          )}
+        </div>
+      )}
+    </section>
   );
 }

@@ -36,6 +36,8 @@ class Ingredient(Base):
     name_en: Mapped[str | None] = mapped_column(String(200), nullable=True)
     code: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Hierarchická kategorie, např. "maso > drůbeží > kuřecí" (plní kategorizace).
+    category_path: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
 
     # Výživa na 100 g
     kcal_100g: Mapped[float | None] = mapped_column(Float, nullable=True)

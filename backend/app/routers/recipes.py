@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ..db import get_db
-from ..models import Recipe
+from ..models import Ingredient, Recipe, RecipeIngredient
 from ..modules.pantry import pantry_ingredient_ids, recipe_availability
 from ..schemas import RecipeCard, RecipeDetail
 
@@ -22,6 +22,7 @@ def list_recipes(
     max_kcal: float | None = Query(None, ge=0),
     max_time: int | None = Query(None, ge=0),
     min_rating: float | None = Query(None, ge=0, le=5),
+    category: str | None = Query(None, description="recepty se surovinou z kategorie"),
     sort: str = Query("smart", pattern="^(smart|rating|time|kcal|newest)$"),
 ):
     stmt = select(Recipe).options(selectinload(Recipe.ingredients))
@@ -33,6 +34,13 @@ def list_recipes(
         stmt = stmt.where(Recipe.total_time <= max_time)
     if min_rating is not None:
         stmt = stmt.where(Recipe.rating >= min_rating)
+    if category:
+        sub = (
+            select(RecipeIngredient.recipe_id)
+            .join(Ingredient, RecipeIngredient.ingredient_id == Ingredient.id)
+            .where(Ingredient.category_path.ilike(f"{category}%"))
+        )
+        stmt = stmt.where(Recipe.id.in_(sub))
 
     recipes = db.scalars(stmt).all()
     have = pantry_ingredient_ids(db)

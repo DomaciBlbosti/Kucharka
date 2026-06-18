@@ -44,6 +44,19 @@ class Settings:
         # Např. http://172.24.1.111:11434
         self.ollama_url: str = _env("OLLAMA_URL")
         self.ollama_model: str = _env("OLLAMA_MODEL", "qwen3:8b")
+        # Rychlý model pro hromadné úlohy (překlad, parsování, párování,
+        # kategorizace). Když není zadán, použije se hlavní model.
+        self.ollama_fast_model: str = _env("OLLAMA_FAST_MODEL", "") or self.ollama_model
+        # Jak dlouho držet model v paměti mezi voláními (méně reloadů = rychleji).
+        self.ollama_keep_alive: str = _env("OLLAMA_KEEP_ALIVE", "30m")
+        # Počet souběžných workerů pro úlohy na pozadí (vyžaduje OLLAMA_NUM_PARALLEL).
+        self.bg_workers: int = max(1, int(_env("BG_WORKERS", "2")))
+
+        # --- Služby na pozadí (překlad / párování) ---------------------
+        self.auto_translate_enabled: bool = _truthy(_env("AUTO_TRANSLATE_ENABLED", "false"))
+        self.auto_translate_interval_min: int = int(_env("AUTO_TRANSLATE_INTERVAL_MIN", "180"))
+        self.auto_match_enabled: bool = _truthy(_env("AUTO_MATCH_ENABLED", "false"))
+        self.auto_match_interval_min: int = int(_env("AUTO_MATCH_INTERVAL_MIN", "180"))
 
         # --- Volitelné: SearXNG (discovery receptů) --------------------
         # Např. http://searxng:8080
@@ -118,13 +131,20 @@ class Settings:
         return bool(self.auth_password_hash)
 
     ADMIN_KEYS = (
-        "ollama_url", "ollama_model", "embed_model", "searxng_url",
+        "ollama_url", "ollama_model", "ollama_fast_model", "embed_model", "searxng_url",
         "recipe_domains", "translate_to_cs", "auto_ingredients",
         "scraper_verify_ssl", "rag_k",
         "crawler_enabled", "crawler_interval_min", "crawler_max_per_run",
+        "ollama_keep_alive", "bg_workers",
+        "auto_translate_enabled", "auto_translate_interval_min",
+        "auto_match_enabled", "auto_match_interval_min",
     )
 
     CRAWLER_KEYS = ("crawler_enabled", "crawler_interval_min", "crawler_max_per_run")
+    SERVICE_KEYS = (
+        "auto_translate_enabled", "auto_translate_interval_min",
+        "auto_match_enabled", "auto_match_interval_min",
+    )
 
     def as_admin(self) -> dict:
         return {
@@ -140,6 +160,13 @@ class Settings:
             "crawler_enabled": self.crawler_enabled,
             "crawler_interval_min": self.crawler_interval_min,
             "crawler_max_per_run": self.crawler_max_per_run,
+            "ollama_fast_model": self.ollama_fast_model,
+            "ollama_keep_alive": self.ollama_keep_alive,
+            "bg_workers": self.bg_workers,
+            "auto_translate_enabled": self.auto_translate_enabled,
+            "auto_translate_interval_min": self.auto_translate_interval_min,
+            "auto_match_enabled": self.auto_match_enabled,
+            "auto_match_interval_min": self.auto_match_interval_min,
             "ollama_enabled": self.ollama_enabled,
             "searxng_enabled": self.searxng_enabled,
             "auth_enabled": self.auth_enabled,
@@ -150,13 +177,20 @@ class Settings:
             return False
         if key in ("ollama_url", "ollama_model", "embed_model", "searxng_url"):
             setattr(self, key, str(value or "").strip())
+        elif key == "ollama_fast_model":
+            self.ollama_fast_model = str(value or "").strip() or self.ollama_model
+        elif key == "ollama_keep_alive":
+            self.ollama_keep_alive = str(value or "30m").strip() or "30m"
         elif key == "recipe_domains":
             self.recipe_domains = {
                 d.strip().lower()
                 for d in str(value or "").replace("\n", ",").split(",")
                 if d.strip()
             }
-        elif key in ("translate_to_cs", "auto_ingredients", "crawler_enabled"):
+        elif key in (
+            "translate_to_cs", "auto_ingredients", "crawler_enabled",
+            "auto_translate_enabled", "auto_match_enabled",
+        ):
             setattr(self, key, _truthy(value))
         elif key == "scraper_verify_ssl":
             if not _truthy(value):
@@ -164,7 +198,10 @@ class Settings:
             else:
                 bundle = "/etc/ssl/certs/ca-certificates.crt"
                 self.scraper_verify = bundle if os.path.exists(bundle) else True
-        elif key in ("rag_k", "crawler_interval_min", "crawler_max_per_run"):
+        elif key in (
+            "rag_k", "crawler_interval_min", "crawler_max_per_run", "bg_workers",
+            "auto_translate_interval_min", "auto_match_interval_min",
+        ):
             try:
                 setattr(self, key, max(1, int(value)))
             except (TypeError, ValueError):

@@ -104,11 +104,12 @@ def parse_lines_ollama(
         r = httpx.post(
             f"{settings.ollama_url}/api/generate",
             json={
-                "model": settings.ollama_model,
+                "model": settings.ollama_fast_model,
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
                 "think": False,  # vypni reasoning (qwen3 ap.) → rychlejší čistý JSON
+                "keep_alive": settings.ollama_keep_alive,
                 "options": {"temperature": 0},
             },
             timeout=max(settings.http_timeout, 60),
@@ -221,11 +222,12 @@ def create_ingredient_via_llm(db: Session, name: str) -> Ingredient | None:
         r = httpx.post(
             f"{settings.ollama_url}/api/generate",
             json={
-                "model": settings.ollama_model,
+                "model": settings.ollama_fast_model,
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
                 "think": False,
+                "keep_alive": settings.ollama_keep_alive,
                 "options": {"temperature": 0},
             },
             timeout=max(settings.http_timeout, 60),

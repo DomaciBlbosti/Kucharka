@@ -12,6 +12,7 @@ class IngredientOut(BaseModel):
     name_cs: str
     name_en: str | None = None
     category: str | None = None
+    category_path: str | None = None
     kcal_100g: float | None = None
 
 

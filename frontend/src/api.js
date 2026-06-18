@@ -169,6 +169,10 @@ export const api = {
   translateStatus: () => afetch("/api/maintenance/translate-status").then(J),
   runTranslate: () =>
     afetch("/api/maintenance/translate", { method: "POST" }).then(J),
+  categorizeStatus: () => afetch("/api/maintenance/categorize-status").then(J),
+  runCategorize: () =>
+    afetch("/api/maintenance/categorize", { method: "POST" }).then(J),
+  ingredientCategories: () => afetch("/api/ingredients/categories").then(J),
   adminSaveSettings: (values) =>
     afetch("/api/admin/settings", {
       method: "PUT",

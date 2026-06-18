@@ -28,3 +28,26 @@ def list_ingredients(
 @router.get("/count")
 def count(db: Session = Depends(get_db)):
     return {"count": db.scalar(select(func.count(Ingredient.id)))}
+
+
+@router.get("/categories")
+def categories(db: Session = Depends(get_db)):
+    """Seznam kategorií (1. a 2. úroveň) s počtem surovin – pro filtrování."""
+    rows = db.scalars(
+        select(Ingredient.category_path).where(Ingredient.category_path.isnot(None))
+    ).all()
+    counts: dict[str, int] = {}
+    for path in rows:
+        if not path:
+            continue
+        parts = [p.strip() for p in path.split(">") if p.strip()]
+        keys = set()
+        if parts:
+            keys.add(parts[0])
+        if len(parts) >= 2:
+            keys.add(" > ".join(parts[:2]))
+        for key in keys:
+            counts[key] = counts.get(key, 0) + 1
+    out = [{"category": k, "count": v} for k, v in counts.items()]
+    out.sort(key=lambda x: (-x["count"], x["category"]))
+    return out

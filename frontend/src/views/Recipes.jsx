@@ -19,6 +19,12 @@ export default function Recipes() {
   const [maxMissing, setMaxMissing] = useState("");
   const [maxTime, setMaxTime] = useState("");
   const [sort, setSort] = useState("smart");
+  const [category, setCategory] = useState("");
+  const [cats, setCats] = useState([]);
+
+  useEffect(() => {
+    api.ingredientCategories().then(setCats).catch(() => setCats([]));
+  }, []);
 
   // "Vařím z" – vybrané suroviny
   const [picked, setPicked] = useState([]);
@@ -40,6 +46,7 @@ export default function Recipes() {
             only_have: onlyHave || undefined,
             max_missing: maxMissing,
             max_time: maxTime,
+            category: category || undefined,
             sort,
           });
       req.then((r) => live && setRecipes(r)).catch(() => live && setRecipes([]));
@@ -48,7 +55,7 @@ export default function Recipes() {
       live = false;
       clearTimeout(t);
     };
-  }, [q, onlyHave, maxMissing, maxTime, sort, cookMode, pickedKey]);
+  }, [q, onlyHave, maxMissing, maxTime, sort, category, cookMode, pickedKey]);
 
   return (
     <div>
@@ -105,6 +112,20 @@ export default function Recipes() {
                 </option>
               ))}
             </select>
+            {cats.length > 0 && (
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="rounded-full border border-line bg-white px-3 py-2.5 text-sm outline-none focus:border-basil"
+              >
+                <option value="">Všechny kategorie</option>
+                {cats.map((c) => (
+                  <option key={c.category} value={c.category}>
+                    {c.category} ({c.count})
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           <div className="mb-6 flex flex-wrap items-center gap-2 text-sm">

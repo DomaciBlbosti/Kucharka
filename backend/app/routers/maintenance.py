@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from ..config import settings
-from ..modules import backfill, translate
+from ..modules import backfill, categorize, translate
 
 router = APIRouter(prefix="/api/maintenance", tags=["maintenance"])
 
@@ -41,3 +41,18 @@ def run_translate():
         return {"started": False, "status": translate.status()}
     started = translate.retranslate_async()
     return {"started": started, "status": translate.status()}
+
+
+@router.get("/categorize-status")
+def categorize_status():
+    s = categorize.status()
+    s["ollama"] = settings.ollama_enabled
+    return s
+
+
+@router.post("/categorize")
+def run_categorize():
+    if not settings.ollama_enabled:
+        return {"started": False, "status": categorize.status()}
+    started = categorize.categorize_async(only_missing=True)
+    return {"started": started, "status": categorize.status()}

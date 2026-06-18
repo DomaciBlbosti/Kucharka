@@ -89,12 +89,15 @@ def get_settings():
 def put_settings(req: SettingsUpdate, db: Session = Depends(get_db)):
     applied = {}
     crawler_changed = False
+    service_changed = False
     for key, value in req.values.items():
         if key not in settings.ADMIN_KEYS:
             continue
         settings.set_admin(key, value)
         if key in settings.CRAWLER_KEYS:
             crawler_changed = True
+        if key in settings.SERVICE_KEYS:
+            service_changed = True
         sval = value if isinstance(value, str) else json.dumps(value) if isinstance(value, (list, dict)) else str(value)
         row = db.get(AppSetting, key)
         if row is None:
@@ -103,10 +106,14 @@ def put_settings(req: SettingsUpdate, db: Session = Depends(get_db)):
             row.value = sval
         applied[key] = True
     db.commit()
-    if crawler_changed:
+    if crawler_changed or service_changed:
         from .. import scheduler
 
-        scheduler.configure_crawler()
+        if crawler_changed:
+            scheduler.configure_crawler()
+        if service_changed:
+            scheduler.configure_translate()
+            scheduler.configure_match()
     return {"applied": list(applied), "settings": settings.as_admin()}
 
 

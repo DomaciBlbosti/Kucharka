@@ -35,6 +35,7 @@ def init_db(retries: int = 10) -> None:
     for attempt in range(1, retries + 1):
         try:
             Base.metadata.create_all(engine)
+            _ensure_columns()
             break
         except OperationalError as exc:
             log.warning("DB zatím nedostupná (%s/%s): %s", attempt, retries, exc)
@@ -50,6 +51,29 @@ def init_db(retries: int = 10) -> None:
         _load_settings_overrides(db)
     finally:
         db.close()
+
+
+def _ensure_columns() -> None:
+    """Doplň chybějící sloupce do existujících tabulek (lehká migrace)."""
+    from sqlalchemy import inspect, text
+
+    wanted = {
+        "ingredient": [("category_path", "VARCHAR(200)")],
+    }
+    insp = inspect(engine)
+    existing_tables = set(insp.get_table_names())
+    for table, cols in wanted.items():
+        if table not in existing_tables:
+            continue
+        have = {c["name"] for c in insp.get_columns(table)}
+        for name, ddl in cols:
+            if name not in have:
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                    log.info("Migrace: přidán sloupec %s.%s", table, name)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Migrace %s.%s selhala: %s", table, name, exc)
 
 
 def _load_settings_overrides(db) -> None:
@@ -109,7 +133,7 @@ def on_startup() -> None:
             log.info("Heslo nastaveno z APP_PASSWORD.")
     finally:
         db.close()
-    scheduler.configure_crawler()
+    scheduler.configure_all()
 
 
 @app.middleware("http")
