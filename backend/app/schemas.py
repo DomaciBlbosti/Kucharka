@@ -117,3 +117,25 @@ class MealPlanEntryOut(BaseModel):
 class PlanRange(BaseModel):
     start: _date
     days: int = 7
+
+
+class SuggestRequest(BaseModel):
+    start: _date
+    days: int = 7
+    meals: list[str] = ["snídaně", "svačina", "oběd", "večeře"]
+    daily_kcal: int | None = None
+    preferences: str = ""
+
+
+class ApplyEntry(BaseModel):
+    date: _date
+    meal: str
+    recipe_id: int
+    servings: int = 1
+
+
+class ApplyRequest(BaseModel):
+    start: _date
+    days: int = 7
+    entries: list[ApplyEntry] = []
+    replace_range: bool = True

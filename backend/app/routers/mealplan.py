@@ -8,9 +8,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ..db import get_db
+from ..config import settings
 from ..models import MealPlanEntry, Recipe, ShoppingItem
+from ..modules import planner
 from ..modules.pantry import pantry_ingredient_ids
-from ..schemas import MealPlanAdd, MealPlanEntryOut, MealPlanUpdate, PlanRange
+from ..schemas import (
+    ApplyRequest,
+    MealPlanAdd,
+    MealPlanEntryOut,
+    MealPlanUpdate,
+    PlanRange,
+    SuggestRequest,
+)
 
 router = APIRouter(prefix="/api/mealplan", tags=["mealplan"])
 
@@ -123,3 +132,45 @@ def shopping_from_plan(req: PlanRange, db: Session = Depends(get_db)):
             added += 1
     db.commit()
     return {"added": added, "recipes": len(entries)}
+
+
+@router.post("/suggest")
+def suggest_plan(req: SuggestRequest, db: Session = Depends(get_db)):
+    if not settings.ollama_enabled:
+        return {"started": False, "status": planner.status(), "error": "Ollama není dostupná."}
+    meals = [m for m in req.meals if m in _MEALS] or ["oběd"]
+    started = planner.suggest_async(req.start, req.days, meals, req.daily_kcal, req.preferences)
+    return {"started": started, "status": planner.status()}
+
+
+@router.get("/suggest-status")
+def suggest_status():
+    s = planner.status()
+    s["ollama"] = settings.ollama_enabled
+    return s
+
+
+@router.post("/apply")
+def apply_plan(req: ApplyRequest, db: Session = Depends(get_db)):
+    from datetime import timedelta as _td
+
+    if req.replace_range:
+        end_d = req.start + _td(days=req.days - 1)
+        for e in db.scalars(
+            select(MealPlanEntry).where(
+                MealPlanEntry.date >= req.start, MealPlanEntry.date <= end_d
+            )
+        ).all():
+            db.delete(e)
+    added = 0
+    for ent in req.entries:
+        meal = ent.meal if ent.meal in _MEALS else "oběd"
+        db.add(
+            MealPlanEntry(
+                date=ent.date, meal=meal, recipe_id=ent.recipe_id,
+                servings=max(1, ent.servings),
+            )
+        )
+        added += 1
+    db.commit()
+    return {"added": added}

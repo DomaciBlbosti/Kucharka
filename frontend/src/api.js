@@ -78,6 +78,19 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ start, days }),
     }).then(J),
+  suggestPlan: (body) =>
+    afetch("/api/mealplan/suggest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(J),
+  suggestStatus: () => afetch("/api/mealplan/suggest-status").then(J),
+  applyPlan: (body) =>
+    afetch("/api/mealplan/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(J),
   deleteRecipe: (id) => afetch(`/api/recipes/${id}`, { method: "DELETE" }).then(J),
 
   ingest: (url) =>
