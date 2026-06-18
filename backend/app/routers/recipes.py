@@ -64,6 +64,37 @@ def list_recipes(
     return cards
 
 
+@router.get("/cook-from", response_model=list[RecipeCard])
+def cook_from(
+    ingredient_ids: list[int] = Query(default=[], description="suroviny, ze kterých chci vařit"),
+    limit: int = Query(60, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """Recepty, které využijí vybrané suroviny – seřazené podle nejmenšího doplnění.
+
+    Skóre se počítá stejně jako dostupnost vůči spíži, jen místo spíže
+    bereme vybrané suroviny: have = kolik klíčových surovin receptu pokrývá
+    výběr, missing_count = kolik by ještě bylo třeba dokoupit.
+    """
+    if not ingredient_ids:
+        return []
+    sel = set(ingredient_ids)
+    recipes = db.scalars(select(Recipe).options(selectinload(Recipe.ingredients))).all()
+    cards: list[RecipeCard] = []
+    for r in recipes:
+        av = recipe_availability(r, sel)
+        if av["total"] == 0 or av["have"] == 0:
+            continue  # recept nevyužívá žádnou z vybraných surovin
+        card = RecipeCard.model_validate(r)
+        card.have = av["have"]
+        card.total = av["total"]
+        card.missing_count = av["missing_count"]
+        card.ratio = round(av["ratio"], 3)
+        cards.append(card)
+    cards.sort(key=lambda c: (c.missing_count, -c.have, -(c.rating or 0)))
+    return cards[:limit]
+
+
 @router.get("/{recipe_id}", response_model=RecipeDetail)
 def get_recipe(recipe_id: int, db: Session = Depends(get_db)):
     r = db.scalar(

@@ -66,6 +66,16 @@ def list_shopping(db: Session = Depends(get_db)):
 
 @router.post("/shopping", response_model=ShoppingItemOut)
 def add_shopping(item: ShoppingAdd, db: Session = Depends(get_db)):
+    # nepřidávej duplicitně tutéž (nezaškrtnutou) surovinu
+    if item.ingredient_id is not None:
+        existing = db.scalar(
+            select(ShoppingItem).where(
+                ShoppingItem.ingredient_id == item.ingredient_id,
+                ShoppingItem.checked == False,  # noqa: E712
+            )
+        )
+        if existing:
+            return existing
     s = ShoppingItem(label=item.label, ingredient_id=item.ingredient_id)
     db.add(s)
     db.commit()

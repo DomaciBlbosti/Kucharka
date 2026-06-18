@@ -8,6 +8,7 @@ export default function RecipeDetail() {
   const nav = useNavigate();
   const [r, setR] = useState(null);
   const [added, setAdded] = useState(null);
+  const [addedIds, setAddedIds] = useState(() => new Set());
 
   useEffect(() => {
     setR(null);
@@ -26,6 +27,11 @@ export default function RecipeDetail() {
   const addMissing = async () => {
     const res = await api.shoppingFromRecipe(r.id);
     setAdded(res.added);
+  };
+
+  const addOne = async (ri) => {
+    await api.addShopping({ label: ri.raw_text, ingredient_id: ri.ingredient_id || null });
+    setAddedIds((cur) => new Set(cur).add(ri.id));
   };
 
   return (
@@ -98,11 +104,29 @@ export default function RecipeDetail() {
                         />
                         {ri.raw_text}
                       </span>
-                      {ri.kcal != null && (
-                        <span className="nums shrink-0 text-xs text-ink/40">
-                          {Math.round(ri.kcal)} kcal
-                        </span>
-                      )}
+                      <span className="flex shrink-0 items-center gap-2">
+                        {ri.kcal != null && (
+                          <span className="nums text-xs text-ink/40">
+                            {Math.round(ri.kcal)} kcal
+                          </span>
+                        )}
+                        {addedIds.has(ri.id) ? (
+                          <span
+                            title="Přidáno do nákupu"
+                            className="flex h-7 w-7 items-center justify-center rounded-full bg-basil-soft text-basil-dark"
+                          >
+                            ✓
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => addOne(ri)}
+                            title="Přidat do nákupu"
+                            className="flex h-7 w-7 items-center justify-center rounded-full border border-line text-ink/50 hover:border-basil hover:text-basil-dark"
+                          >
+                            +
+                          </button>
+                        )}
+                      </span>
                     </li>
                   );
                 })}

@@ -53,6 +53,8 @@ export const api = {
 
   recipes: (filters) => afetch(`/api/recipes${qs(filters)}`).then(J),
   recipe: (id) => afetch(`/api/recipes/${id}`).then(J),
+  cookFrom: (ids) =>
+    afetch(`/api/recipes/cook-from?${ids.map((i) => `ingredient_ids=${i}`).join("&")}`).then(J),
   deleteRecipe: (id) => afetch(`/api/recipes/${id}`, { method: "DELETE" }).then(J),
 
   ingest: (url) =>
