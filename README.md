@@ -1,5 +1,5 @@
 # Kuchařka
-
+ 
 Self-hosted interaktivní kuchařka: stahuje recepty z webu, páruje suroviny na
 kalorické údaje, eviduje, co máš doma, a filtruje recepty podle dostupných
 surovin. Postavené na FastAPI + MariaDB + React, určené k běhu jako **Custom App
