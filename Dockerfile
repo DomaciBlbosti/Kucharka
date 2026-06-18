@@ -12,6 +12,12 @@ WORKDIR /app
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Zapeč Python závislosti do image, aby uvicorn nikdy nechyběl – ani po
+# znovuvytvoření kontejneru, kdy se vrstva resetuje a /app volume zůstane.
+# Runtime `pip install` v entrypointu pak jen dotahuje případné změny.
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
 ENV REPO_URL=https://github.com/DomaciBlbosti/Kucharka.git \
     REPO_BRANCH=main \
     REPO_DIR=/app \

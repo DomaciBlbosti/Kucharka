@@ -38,6 +38,13 @@ while true; do
     rm -f .needs-build
   fi
 
+  # Pojistka: po znovuvytvoření kontejneru zmizí pip balíčky z vrstvy,
+  # ale volume /app zůstane (build se přeskočí). Doinstaluj, když chybí uvicorn.
+  if ! command -v uvicorn >/dev/null 2>&1; then
+    echo "[deps] uvicorn chybí – doinstalovávám závislosti"
+    pip install -q -r backend/requirements.txt || echo "[deps] pip varování"
+  fi
+
   echo "[run] start API na :8000 (commit ${after:0:7})"
   ( cd backend && SUPERVISED=1 REPO_DIR=/app uvicorn app.main:app --host 0.0.0.0 --port 8000 )
   echo "[run] API skončilo (kód $?) – restart za 3 s"
