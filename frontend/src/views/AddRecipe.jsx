@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
+import { IngredientPicker } from "../components/IngredientPicker";
 import { Button, Spinner } from "../components/ui";
 
 export default function AddRecipe() {
@@ -249,6 +250,7 @@ function SystemPanel() {
 
 function MatchPanel() {
   const [st, setSt] = useState(null);
+  const [manual, setManual] = useState(false);
   const refresh = () => api.matchStatus().then(setSt).catch(() => {});
   useEffect(() => {
     refresh();
@@ -303,9 +305,14 @@ function MatchPanel() {
             <span className="text-ink/55"> receptech</span>
           </div>
           {st.rows_unmatched > 0 ? (
-            <Button className="ml-auto" onClick={start} disabled={!st.ollama}>
-              Dopárovat přes AI
-            </Button>
+            <div className="ml-auto flex gap-2">
+              <Button variant="ghost" onClick={() => setManual(true)}>
+                Ručně…
+              </Button>
+              <Button onClick={start} disabled={!st.ollama}>
+                Dopárovat přes AI
+              </Button>
+            </div>
           ) : (
             <span className="ml-auto text-sm text-have">Vše napárováno ✓</span>
           )}
@@ -316,7 +323,107 @@ function MatchPanel() {
           Pro doplnění chybějících surovin zapni Ollamu (OLLAMA_URL).
         </p>
       )}
+      {manual && <ManualMatch onClose={() => { setManual(false); refresh(); }} />}
     </section>
+  );
+}
+
+function ManualMatch({ onClose }) {
+  const [items, setItems] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [done, setDone] = useState(0);
+  const [busy, setBusy] = useState(null); // raw_text právě zpracovávaný
+
+  const load = () =>
+    api.unmatched(60, 0).then((r) => { setItems(r.items); setTotal(r.total_texts); });
+  useEffect(() => { load(); }, []);
+
+  const assign = async (raw_text, body) => {
+    setBusy(raw_text);
+    try {
+      await api.matchOne({ raw_text, ...body });
+      setItems((cur) => cur.filter((it) => it.raw_text !== raw_text));
+      setTotal((t) => Math.max(0, t - 1));
+      setDone((d) => d + 1);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const skip = (raw_text) =>
+    setItems((cur) => cur.filter((it) => it.raw_text !== raw_text));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-0 sm:items-center sm:p-4" onClick={onClose}>
+      <div className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-line p-4">
+          <div>
+            <h2 className="text-lg font-bold">Ruční párování surovin</h2>
+            <p className="text-sm text-ink/55">
+              Zbývá <b>{total}</b> různých textů{done > 0 && <> · vyřešeno {done}</>}.
+              Přiřazení platí pro všechny recepty se stejným textem.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-2xl leading-none text-ink/40 hover:text-ink">×</button>
+        </div>
+
+        <div className="flex-1 overflow-auto p-4">
+          {items === null ? (
+            <Spinner label="Načítám…" />
+          ) : items.length === 0 ? (
+            <p className="py-8 text-center text-sm text-have">Hotovo ✓ Nic dalšího k dopárování na této stránce.</p>
+          ) : (
+            <ul className="space-y-3">
+              {items.map((it) => (
+                <ManualRow key={it.raw_text} item={it} busy={busy === it.raw_text}
+                  onAssign={(body) => assign(it.raw_text, body)} onSkip={() => skip(it.raw_text)} />
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="border-t border-line p-3 text-right">
+          <Button onClick={onClose}>Hotovo</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ManualRow({ item, busy, onAssign, onSkip }) {
+  const [newName, setNewName] = useState("");
+  return (
+    <li className="rounded-lg border border-line/70 p-3">
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div className="text-sm">
+          <span className="font-medium">{item.raw_text}</span>
+          <span className="ml-2 text-xs text-ink/45">
+            ×{item.count} · např. {item.recipe_title}
+          </span>
+        </div>
+        <button onClick={onSkip} className="shrink-0 text-xs text-ink/40 hover:text-miss">přeskočit</button>
+      </div>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="flex-1">
+          <IngredientPicker
+            placeholder="Přiřadit existující surovinu…"
+            onPick={(o) => onAssign({ ingredient_id: o.id })}
+          />
+        </div>
+        <div className="flex gap-2">
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && newName.trim() && onAssign({ new_name: newName.trim() })}
+            placeholder="…nebo nová surovina"
+            className="w-44 rounded-lg border border-line bg-paper px-3 py-2 text-sm outline-none focus:border-basil"
+          />
+          <Button variant="ghost" disabled={busy || !newName.trim()}
+            onClick={() => onAssign({ new_name: newName.trim() })}>
+            {busy ? "…" : "Vytvořit"}
+          </Button>
+        </div>
+      </div>
+    </li>
   );
 }
 

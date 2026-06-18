@@ -173,6 +173,14 @@ export const api = {
   runCategorize: () =>
     afetch("/api/maintenance/categorize", { method: "POST" }).then(J),
   ingredientCategories: () => afetch("/api/ingredients/categories").then(J),
+  unmatched: (limit = 50, offset = 0) =>
+    afetch(`/api/maintenance/unmatched?limit=${limit}&offset=${offset}`).then(J),
+  matchOne: (body) =>
+    afetch("/api/maintenance/match-one", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(J),
   adminSaveSettings: (values) =>
     afetch("/api/admin/settings", {
       method: "PUT",

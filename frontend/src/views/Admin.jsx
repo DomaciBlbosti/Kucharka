@@ -390,6 +390,7 @@ function SecurityCard() {
 
 function TranslateCard() {
   const [st, setSt] = useState(null);
+  const [err, setErr] = useState(null);
   const timer = useRef(null);
   const load = () => api.translateStatus().then(setSt).catch(() => {});
   useEffect(() => {
@@ -406,8 +407,10 @@ function TranslateCard() {
   }, [st?.running]);
 
   const run = async () => {
+    setErr(null);
     const r = await api.runTranslate();
     setSt(r.status);
+    if (r.error) setErr(r.error);
   };
 
   return (
@@ -431,13 +434,16 @@ function TranslateCard() {
           <Spinner label={`Překládám… ${st.done}/${st.total} (přeloženo ${st.translated})`} />
         </div>
       ) : (
-        <div className="flex items-center gap-3">
-          <Button onClick={run} disabled={!st || !st.ollama}>
-            Přeložit cizí recepty
-          </Button>
-          {st && !st.ollama && (
-            <span className="text-sm text-miss">Ollama není dostupná.</span>
-          )}
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <Button onClick={run} disabled={!st || !st.ollama}>
+              Přeložit cizí recepty
+            </Button>
+            {st && !st.ollama && (
+              <span className="text-sm text-miss">Ollama není dostupná.</span>
+            )}
+          </div>
+          {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}
     </section>
@@ -522,6 +528,7 @@ function ServicesCard() {
 
 function CategorizeCard() {
   const [st, setSt] = useState(null);
+  const [err, setErr] = useState(null);
   const timer = useRef(null);
   const load = () => api.categorizeStatus().then(setSt).catch(() => {});
   useEffect(() => {
@@ -538,8 +545,10 @@ function CategorizeCard() {
   }, [st?.running]);
 
   const run = async () => {
+    setErr(null);
     const r = await api.runCategorize();
     setSt(r.status);
+    if (r.error) setErr(r.error);
   };
 
   return (
@@ -558,14 +567,17 @@ function CategorizeCard() {
       {st?.running ? (
         <Spinner label={`Kategorizuji… ${st.done}/${st.total}`} />
       ) : (
-        <div className="flex items-center gap-3">
-          <Button onClick={run} disabled={!st || !st.ollama || st.uncategorized === 0}>
-            Zařadit do kategorií
-          </Button>
-          {st && !st.ollama && <span className="text-sm text-miss">Ollama není dostupná.</span>}
-          {st && st.ollama && st.uncategorized === 0 && (
-            <span className="text-sm text-have">Vše zařazeno ✓</span>
-          )}
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <Button onClick={run} disabled={!st || !st.ollama || st.uncategorized === 0}>
+              Zařadit do kategorií
+            </Button>
+            {st && !st.ollama && <span className="text-sm text-miss">Ollama není dostupná.</span>}
+            {st && st.ollama && st.uncategorized === 0 && (
+              <span className="text-sm text-have">Vše zařazeno ✓</span>
+            )}
+          </div>
+          {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}
     </section>
