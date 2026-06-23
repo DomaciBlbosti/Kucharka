@@ -24,6 +24,10 @@ services:
   app:
     image: ${APP_IMAGE:-ghcr.io/domaciblbosti/kucharka:latest}
     # Lokálně postavený image (docker build): never. Pro veřejný GHCR dej "missing".
+    entrypoint:
+      - /bin/bash
+      - -lc
+      - 'if [ -f /app/backend/requirements.txt ]; then pip install -q -r /app/backend/requirements.txt || true; fi; exec /entrypoint.sh'
     pull_policy: ${APP_PULL_POLICY:-never}
     restart: unless-stopped
     depends_on:
