@@ -48,6 +48,17 @@ def fetch_html(url: str) -> str:
         return r.text
 
 
+async def fetch_html_async(client: httpx.AsyncClient, url: str) -> str:
+    """Async varianta. Volající si přinese AsyncClient (drží pool spojení).
+
+    Per-doménový throttle se tady úmyslně **nedělá** — pro paralelní crawl
+    místo throttle používáme `asyncio.Semaphore` v crawleru (méně blokující).
+    """
+    r = await client.get(url)
+    r.raise_for_status()
+    return r.text
+
+
 def _safe(fn, default=None):
     try:
         val = fn()

@@ -1,17 +1,23 @@
 """Automatický crawler – sám plní databázi receptů.
 
-Pro každý seed dotaz: SearXNG → kandidátní URL → dedup proti DB → scrape →
-normalizace (Ollama) → uložení. Běží na pozadí ve vlákně; stav lze číst přes
-`status()` a spustit přes `crawl_async()`.
+Pro každý seed dotaz: SearXNG → kandidátní URL → dedup proti DB → async paralelní
+fetch HTML → sync extract + ingest (přes asyncio.to_thread). Per-doménový throttle
+přes `asyncio.Semaphore`. Žádný LLM v hot pathu — to dělá enrichment worker.
+
+Veřejné API zůstává synchronní:
+- `crawl()` se volá z APSchedulera, `crawl_async()` z REST endpointu.
+- Uvnitř obě volají `asyncio.run(_crawl_impl(...))`.
 """
 from __future__ import annotations
 
+import asyncio
 import gzip
 import logging
 import random
 import re
 import threading
 import time
+from collections import defaultdict
 
 import httpx
 from sqlalchemy import func, select
@@ -19,8 +25,8 @@ from sqlalchemy import func, select
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Ingredient, Recipe
-from . import discovery
-from .ingest import ingest_url
+from . import discovery, scraper
+from .ingest import _persist  # používáme přímo, abychom obešli synchronní fetch v ingest_url
 
 log = logging.getLogger("kucharka.crawler")
 
@@ -99,61 +105,159 @@ def crawl(
     max_recipes: int = 30,
     per_query: int = 8,
 ) -> dict:
-    """Synchronní crawl. Vrací finální stav."""
+    """Synchronní entry point. Uvnitř async paralelní fetch + sync ingest."""
     if not settings.searxng_enabled:
         log.warning("SearXNG není nastavený – crawler nemá kde hledat.")
         return status()
 
     queries = queries or settings.crawler_seeds or DEFAULT_SEEDS
-    seen = _existing_urls()
     _set(
         running=True, started_at=time.time(), finished_at=None,
         found=0, added=0, skipped=0, errors=0, current_query=None, recent=[],
     )
 
-    added = 0
     try:
+        # 1. Posbírej kandidáty SearXNG (sekvenčně — discovery.search je rychlé,
+        #    1 req per seed, není to bottleneck).
+        seen = _existing_urls()
+        candidates: list[str] = []
         for q in queries:
-            if added >= max_recipes:
-                break
             _set(current_query=q)
             for cand in discovery.search(q, limit=per_query):
-                if added >= max_recipes:
-                    break
                 url = cand["url"]
                 if url in seen:
                     with _lock:
                         _state["skipped"] += 1
                     continue
                 seen.add(url)
-                with _lock:
-                    _state["found"] += 1
+                candidates.append(url)
+                if len(candidates) >= max_recipes * 3:
+                    # buffer pro selhání — víc kandidátů než cíl
+                    break
+            if len(candidates) >= max_recipes * 3:
+                break
 
-                db = SessionLocal()
-                try:
-                    recipe = ingest_url(db, url)
-                    if recipe:
-                        added += 1
-                        with _lock:
-                            _state["added"] = added
-                            _state["recent"].append(
-                                {"title": recipe.title, "domain": recipe.source_domain}
-                            )
-                        log.info("crawl + %s", recipe.title)
-                    else:
-                        with _lock:
-                            _state["skipped"] += 1
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("crawl ingest selhal %s: %s", url, exc)
-                    with _lock:
-                        _state["errors"] += 1
-                finally:
-                    db.close()
-                time.sleep(0.4)  # mírné tempo i nad rámec per-doménového throttlu
+        log.info("Crawler: %s kandidátů z %s dotazů", len(candidates), len(queries))
+
+        # 2. Async paralelní fetch + ingest
+        if candidates:
+            asyncio.run(_crawl_parallel(candidates, max_recipes))
     finally:
         _set(running=False, finished_at=time.time(), current_query=None)
 
     return status()
+
+
+# ─── Async paralelní jádro ──────────────────────────────────────────────────
+
+# Konkurence: celkem max 16 souběžných HTTP requestů, max 2 per doména
+# (slušnost vůči webům + ochrana před blokem).
+_MAX_CONCURRENT = 16
+_MAX_PER_DOMAIN = 2
+
+
+async def _crawl_parallel(urls: list[str], max_recipes: int) -> None:
+    sem_overall = asyncio.Semaphore(_MAX_CONCURRENT)
+    sem_per_domain: dict[str, asyncio.Semaphore] = defaultdict(
+        lambda: asyncio.Semaphore(_MAX_PER_DOMAIN)
+    )
+    cancel_event = asyncio.Event()
+
+    headers = {"User-Agent": settings.user_agent, "Accept-Language": "cs,en;q=0.8"}
+    timeout = httpx.Timeout(settings.http_timeout, connect=10.0)
+    limits = httpx.Limits(max_connections=_MAX_CONCURRENT * 2, max_keepalive_connections=_MAX_CONCURRENT)
+
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        headers=headers,
+        verify=settings.scraper_verify,
+        timeout=timeout,
+        limits=limits,
+    ) as client:
+        tasks = [
+            asyncio.create_task(_process_one(client, url, sem_overall, sem_per_domain, cancel_event, max_recipes))
+            for url in urls
+        ]
+        # Sbírej výsledky postupně; jakmile máme dost, signalizuj cancel.
+        for coro in asyncio.as_completed(tasks):
+            try:
+                await coro
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Crawler task selhal: %s", exc)
+            with _lock:
+                if _state["added"] >= max_recipes:
+                    cancel_event.set()
+                    break
+        # Po breaku zruš zbylé tasky (jinak by httpx mohlo držet spojení)
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        # Počkej na úplné dokončení (cancellation propagation)
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _process_one(
+    client: httpx.AsyncClient,
+    url: str,
+    sem_overall: asyncio.Semaphore,
+    sem_per_domain: dict[str, asyncio.Semaphore],
+    cancel_event: asyncio.Event,
+    max_recipes: int,
+) -> None:
+    if cancel_event.is_set():
+        return
+    domain = scraper.domain_of(url)
+    sem_dom = sem_per_domain[domain]
+
+    async with sem_overall, sem_dom:
+        if cancel_event.is_set():
+            return
+        with _lock:
+            _state["found"] += 1
+        try:
+            html = await scraper.fetch_html_async(client, url)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("fetch selhalo %s: %s", url, exc)
+            with _lock:
+                _state["errors"] += 1
+            return
+
+        # Extract + DB persist v thread pool (SQLAlchemy session není async)
+        try:
+            result = await asyncio.to_thread(_extract_and_persist, html, url)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ingest selhal %s: %s", url, exc)
+            with _lock:
+                _state["errors"] += 1
+            return
+
+        if result is None:
+            with _lock:
+                _state["skipped"] += 1
+            return
+
+        title, source_domain = result
+        with _lock:
+            if _state["added"] >= max_recipes:
+                cancel_event.set()
+                return
+            _state["added"] += 1
+            _state["recent"].append({"title": title, "domain": source_domain})
+
+
+def _extract_and_persist(html: str, url: str) -> tuple[str, str] | None:
+    """Synchronní extrakce + DB write. Vrátí (title, domain) nebo None."""
+    data = scraper.extract(html, url)
+    if data is None:
+        return None
+    db = SessionLocal()
+    try:
+        recipe = _persist(db, data)
+        if recipe is None:
+            return None
+        return (recipe.title, recipe.source_domain or "")
+    finally:
+        db.close()
 
 
 def crawl_async(
@@ -250,52 +354,37 @@ def crawl_sites(
     max_recipes: int = 30,
     per_site: int = 12,
 ) -> dict:
-    """Projdi weby a stáhni nové recepty z jejich sitemap (nepotřebuje SearXNG)."""
+    """Projdi weby a stáhni nové recepty z jejich sitemap (nepotřebuje SearXNG).
+    Sběr URL ze sitemap je synchronní, ingest async paralelní."""
     domains = domains or list(settings.recipe_domains) or DEFAULT_SITES
     seen = _existing_urls()
     _set(
         running=True, started_at=time.time(), finished_at=None,
         found=0, added=0, skipped=0, errors=0, current_query=None, recent=[],
     )
-    added = 0
     try:
+        candidates: list[str] = []
         for dom in domains:
-            if added >= max_recipes:
-                break
             _set(current_query=dom)
             urls = discover_site(dom, max_urls=per_site * 4)
             log.info("site %s: %s kandidátů ze sitemapy", dom, len(urls))
-            site_added = 0
+            site_count = 0
             for url in urls:
-                if added >= max_recipes or site_added >= per_site:
-                    break
                 if url in seen:
+                    with _lock:
+                        _state["skipped"] += 1
                     continue
                 seen.add(url)
-                with _lock:
-                    _state["found"] += 1
-                db = SessionLocal()
-                try:
-                    recipe = ingest_url(db, url)
-                    if recipe:
-                        added += 1
-                        site_added += 1
-                        with _lock:
-                            _state["added"] = added
-                            _state["recent"].append(
-                                {"title": recipe.title, "domain": recipe.source_domain}
-                            )
-                        log.info("crawl + %s", recipe.title)
-                    else:
-                        with _lock:
-                            _state["skipped"] += 1
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("crawl ingest selhal %s: %s", url, exc)
-                    with _lock:
-                        _state["errors"] += 1
-                finally:
-                    db.close()
-                time.sleep(0.4)
+                candidates.append(url)
+                site_count += 1
+                if site_count >= per_site:
+                    break
+            if len(candidates) >= max_recipes * 3:
+                break
+
+        log.info("Sites crawler: %s kandidátů z %s domén", len(candidates), len(domains))
+        if candidates:
+            asyncio.run(_crawl_parallel(candidates, max_recipes))
     finally:
         _set(running=False, finished_at=time.time(), current_query=None)
     return status()

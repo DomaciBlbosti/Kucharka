@@ -58,6 +58,19 @@ class Settings:
         self.auto_match_enabled: bool = _truthy(_env("AUTO_MATCH_ENABLED", "false"))
         self.auto_match_interval_min: int = int(_env("AUTO_MATCH_INTERVAL_MIN", "180"))
 
+        # --- Enrichment worker (slovník + fuzzy) -----------------------
+        # Bere recepty s enrichment_status='pending' a doplňuje matching surovin.
+        # Default ON, krátký interval — bez LLM je to laciné a chceme rychlou odezvu.
+        self.enrichment_enabled: bool = _truthy(_env("ENRICHMENT_ENABLED", "true"))
+        self.enrichment_interval_min: int = int(_env("ENRICHMENT_INTERVAL_MIN", "1"))
+        self.enrichment_batch_size: int = int(_env("ENRICHMENT_BATCH_SIZE", "20"))
+
+        # --- Image worker (stahování + resize) -------------------------
+        self.image_enabled: bool = _truthy(_env("IMAGE_ENABLED", "true"))
+        self.image_interval_min: int = int(_env("IMAGE_INTERVAL_MIN", "1"))
+        self.image_batch_size: int = int(_env("IMAGE_BATCH_SIZE", "10"))
+        self.images_dir: str = _env("IMAGES_DIR", "/data/images")
+
         # --- Volitelné: SearXNG (discovery receptů) --------------------
         # Např. http://searxng:8080
         self.searxng_url: str = _env("SEARXNG_URL")
@@ -142,13 +155,19 @@ class Settings:
         "ollama_keep_alive", "bg_workers",
         "auto_translate_enabled", "auto_translate_interval_min",
         "auto_match_enabled", "auto_match_interval_min",
+        "enrichment_enabled", "enrichment_interval_min", "enrichment_batch_size",
+        "image_enabled", "image_interval_min", "image_batch_size",
     )
 
     CRAWLER_KEYS = ("crawler_enabled", "crawler_interval_min", "crawler_max_per_run")
     SERVICE_KEYS = (
         "auto_translate_enabled", "auto_translate_interval_min",
         "auto_match_enabled", "auto_match_interval_min",
+        "enrichment_enabled", "enrichment_interval_min",
+        "image_enabled", "image_interval_min",
     )
+    ENRICHMENT_KEYS = ("enrichment_enabled", "enrichment_interval_min")
+    IMAGE_KEYS = ("image_enabled", "image_interval_min")
 
     def as_admin(self) -> dict:
         return {
@@ -172,6 +191,13 @@ class Settings:
             "auto_translate_interval_min": self.auto_translate_interval_min,
             "auto_match_enabled": self.auto_match_enabled,
             "auto_match_interval_min": self.auto_match_interval_min,
+            "enrichment_enabled": self.enrichment_enabled,
+            "enrichment_interval_min": self.enrichment_interval_min,
+            "enrichment_batch_size": self.enrichment_batch_size,
+            "image_enabled": self.image_enabled,
+            "image_interval_min": self.image_interval_min,
+            "image_batch_size": self.image_batch_size,
+            "images_dir": self.images_dir,
             "ollama_enabled": self.ollama_enabled,
             "searxng_enabled": self.searxng_enabled,
             "auth_enabled": self.auth_enabled,
@@ -195,6 +221,7 @@ class Settings:
         elif key in (
             "translate_to_cs", "auto_ingredients", "crawler_enabled",
             "auto_translate_enabled", "auto_match_enabled",
+            "enrichment_enabled", "image_enabled",
         ):
             setattr(self, key, _truthy(value))
         elif key == "scraper_verify_ssl":
@@ -206,6 +233,8 @@ class Settings:
         elif key in (
             "rag_k", "crawler_interval_min", "crawler_max_per_run", "bg_workers",
             "auto_translate_interval_min", "auto_match_interval_min",
+            "enrichment_interval_min", "enrichment_batch_size",
+            "image_interval_min", "image_batch_size",
         ):
             try:
                 setattr(self, key, max(1, int(value)))

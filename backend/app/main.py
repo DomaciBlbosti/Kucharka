@@ -32,10 +32,12 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 def init_db(retries: int = 10) -> None:
     """Počkej na DB (MariaDB při startu kontejneru naběhne se zpožděním)."""
+    from . import migrations
+
     for attempt in range(1, retries + 1):
         try:
             Base.metadata.create_all(engine)
-            _ensure_columns()
+            migrations.run_all(engine)
             break
         except OperationalError as exc:
             log.warning("DB zatím nedostupná (%s/%s): %s", attempt, retries, exc)
@@ -54,26 +56,10 @@ def init_db(retries: int = 10) -> None:
 
 
 def _ensure_columns() -> None:
-    """Doplň chybějící sloupce do existujících tabulek (lehká migrace)."""
-    from sqlalchemy import inspect, text
+    """Zastaralé — ponecháno jako shim, ať se nerozbijí případné import paths."""
+    from . import migrations
 
-    wanted = {
-        "ingredient": [("category_path", "VARCHAR(200)")],
-    }
-    insp = inspect(engine)
-    existing_tables = set(insp.get_table_names())
-    for table, cols in wanted.items():
-        if table not in existing_tables:
-            continue
-        have = {c["name"] for c in insp.get_columns(table)}
-        for name, ddl in cols:
-            if name not in have:
-                try:
-                    with engine.begin() as conn:
-                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
-                    log.info("Migrace: přidán sloupec %s.%s", table, name)
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("Migrace %s.%s selhala: %s", table, name, exc)
+    migrations.run_all(engine)
 
 
 def _load_settings_overrides(db) -> None:
@@ -158,6 +144,23 @@ def health() -> dict:
         "searxng": settings.searxng_enabled,
         "ollama": settings.ollama_enabled,
     }
+
+
+# --- Lokální obrázky receptů ----------------------------------------------
+# Servíruje obsah `settings.images_dir` pod /media/images/{soubor}.
+# Frontend dostává v API odpovědi `local_image_path` a `local_thumb_path`
+# (jen název souboru), URL složí jako `/media/images/{path}`.
+_IMAGES_DIR = Path(settings.images_dir)
+try:
+    _IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount(
+        "/media/images",
+        StaticFiles(directory=str(_IMAGES_DIR)),
+        name="images",
+    )
+    log.info("Lokální obrázky se servírují z %s pod /media/images", _IMAGES_DIR)
+except Exception as exc:  # noqa: BLE001
+    log.warning("Mount /media/images selhal (%s): %s", _IMAGES_DIR, exc)
 
 
 # --- Frontend (SPA) -------------------------------------------------------
