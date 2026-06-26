@@ -20,16 +20,21 @@ def list_recipes(
     only_have: bool = Query(False, description="jen co můžu uvařit teď"),
     max_missing: int | None = Query(None, ge=0),
     max_kcal: float | None = Query(None, ge=0),
+    max_kcal_100g: float | None = Query(None, ge=0, description="kcal na 100 g"),
     max_time: int | None = Query(None, ge=0),
     min_rating: float | None = Query(None, ge=0, le=5),
     category: str | None = Query(None, description="recepty se surovinou z kategorie"),
+    tag: list[str] | None = Query(None, description="filtr `ns:slug`, opakovatelný (AND)"),
     sort: str = Query("smart", pattern="^(smart|rating|time|kcal|newest)$"),
 ):
-    stmt = select(Recipe).options(selectinload(Recipe.ingredients))
+    from ..models import Tag, RecipeTag
+    stmt = select(Recipe).options(selectinload(Recipe.ingredients), selectinload(Recipe.tags))
     if q:
         stmt = stmt.where(Recipe.title.ilike(f"%{q}%"))
     if max_kcal is not None:
         stmt = stmt.where(Recipe.kcal_per_serving <= max_kcal)
+    if max_kcal_100g is not None:
+        stmt = stmt.where(Recipe.kcal_per_100g <= max_kcal_100g)
     if max_time is not None:
         stmt = stmt.where(Recipe.total_time <= max_time)
     if min_rating is not None:
@@ -41,6 +46,18 @@ def list_recipes(
             .where(Ingredient.category_path.ilike(f"{category}%"))
         )
         stmt = stmt.where(Recipe.id.in_(sub))
+    if tag:
+        # Každý tag je AND — recept musí mít všechny zadané tagy.
+        for t in tag:
+            if ":" not in t:
+                continue
+            ns, slug = t.split(":", 1)
+            sub = (
+                select(RecipeTag.recipe_id)
+                .join(Tag, RecipeTag.tag_id == Tag.id)
+                .where(Tag.namespace == ns, Tag.slug == slug)
+            )
+            stmt = stmt.where(Recipe.id.in_(sub))
 
     recipes = db.scalars(stmt).all()
     have = pantry_ingredient_ids(db)

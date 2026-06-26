@@ -117,6 +117,8 @@ class Recipe(Base):
     category: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
     kcal_per_serving: Mapped[float | None] = mapped_column(Float, nullable=True)
+    kcal_per_100g: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_weight_g: Mapped[float | None] = mapped_column(Float, nullable=True)
     raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -139,6 +141,9 @@ class Recipe(Base):
     )
     override: Mapped["RecipeOverride | None"] = relationship(
         back_populates="recipe", uselist=False, cascade="all, delete-orphan"
+    )
+    tags: Mapped[list["Tag"]] = relationship(
+        secondary="recipe_tag", back_populates="recipes", lazy="selectin"
     )
 
 
@@ -292,3 +297,39 @@ class CrawlSource(Base):
     total_seen: Mapped[int] = mapped_column(Integer, server_default="0")
     total_ingested: Mapped[int] = mapped_column(Integer, server_default="0")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Tag(Base):
+    """Kanonický tag s namespace. Namespace odděluje různé osy klasifikace:
+    `course`, `flavor`, `meal`, `technique`, `diet`, `cuisine`.
+
+    Slug je interní (anglicky, snake_case); label_cs je co se ukáže v UI.
+    """
+
+    __tablename__ = "tag"
+    __table_args__ = (UniqueConstraint("namespace", "slug", name="uq_tag_ns_slug"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    namespace: Mapped[str] = mapped_column(String(20), index=True)
+    slug: Mapped[str] = mapped_column(String(40))
+    label_cs: Mapped[str] = mapped_column(String(80))
+
+    recipes: Mapped[list[Recipe]] = relationship(
+        secondary="recipe_tag", back_populates="tags"
+    )
+
+
+class RecipeTag(Base):
+    """Many-to-many: recipe ↔ tag. Pure association table."""
+
+    __tablename__ = "recipe_tag"
+
+    recipe_id: Mapped[int] = mapped_column(
+        ForeignKey("recipe.id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id: Mapped[int] = mapped_column(
+        ForeignKey("tag.id", ondelete="CASCADE"), primary_key=True
+    )
+    # Zdroj značky — pomáhá rozlišit, co můžeme automaticky přepsat při re-enrichmentu.
+    source: Mapped[str] = mapped_column(String(20), server_default="auto")
+    # 'auto' / 'manual' / 'llm'

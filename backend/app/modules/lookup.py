@@ -43,30 +43,39 @@ _UNICODE_FRACTIONS = "½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞"
 
 # Krátké jednotky musí být exact match (jinak "ml" matchne "mléka").
 _EXACT_UNITS = frozenset({
+    # české / metrické
     "g", "kg", "mg", "dkg", "dag",
     "ml", "cl", "dl", "l",
     "ks", "kus", "kusů", "kusy",
+    # anglické / imperiální (cizojazyčné weby)
+    "tsp", "tbsp", "oz", "lb", "lbs", "cup", "cups", "fl",  # "fl oz" — fl je samostatný token
+    "qt", "pt", "gal", "pcs", "pc", "can", "cans", "jar", "jars",
 })
 
 # Delší inflektované jednotky stripujeme prefix matchem.
 _UNIT_STEMS = (
+    # české
     "lžíc", "lžičk", "hrnek", "hrnk", "šálek", "šálk", "sklenic",
     "polévkov", "kávov", "čajov", "dezertn",
     "plátek", "plátk", "stroužek", "stroužk",
     "svazek", "svazk", "balíček", "balíčk", "konzerv", "lahev", "lahv",
     "špetk", "hrst", "kousek", "kousk", "dóz", "sáček", "sáčk", "kapk",
+    # anglické
+    "teaspoon", "tablespoon", "ounce", "pound", "pint", "quart", "gallon",
+    "pinch", "dash", "clove", "slice", "stalk", "sprig", "bunch", "handful",
+    "stick", "can", "jar", "bottle", "package", "packet", "piece", "pieces",
 )
 
 # Stop slova — zbytečné výplně, které nepomáhají identifikaci suroviny.
 _STOP = frozenset({
-    # ingredient modifiers
+    # české ingredient modifiers
     "čerstvý", "čerstvá", "čerstvé", "čerstvých", "čerstvou",
     "mletý", "mletá", "mleté", "mletých",
     "sušený", "sušená", "sušené", "sušených",
     "nakrájený", "nakrájená", "nakrájené", "nakrájených",
     "krájený", "krájená", "krájené",
     "uvařený", "uvařená", "uvařené",
-    # adverbs / fillers
+    # české předložky / částice
     "na", "po", "do", "z", "ze", "s", "se", "v", "ve", "k", "ke", "u",
     "podle", "dle", "asi", "cca", "přibližně",
     "chuti", "ozdobu", "ozdobě", "ozdobení", "ozdobeni",
@@ -74,6 +83,15 @@ _STOP = frozenset({
     "navrch", "navíc", "nahoru",
     "trochu", "trocha", "trošku", "trošičku",
     "dobrá", "kvalitní",
+    # anglické předložky / člány
+    "of", "the", "a", "an", "to", "for", "with", "in", "on", "or", "and",
+    # anglické modifiers
+    "fresh", "large", "small", "medium", "big", "tiny",
+    "dried", "chopped", "sliced", "diced", "minced", "grated",
+    "finely", "coarsely", "roughly", "thinly", "thickly",
+    "raw", "cooked", "ripe", "ground", "whole",
+    "boneless", "skinless", "boneless,", "skinless,",
+    "extra", "virgin", "optional", "to", "taste",
 })
 
 _FRACTION_TOKEN_RE = re.compile(rf"^[0-9{_UNICODE_FRACTIONS}/.,\-–]+$")
@@ -139,9 +157,34 @@ def _strip_trailing_quantity(s: str) -> str:
 _SIMPLEMMA = None
 _SIMPLEMMA_LOAD_FAILED = False
 
+_CZECH_DIACRITICS = frozenset("áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ")
+# Signální slova, která téměř jistě indikují anglický recept.
+_EN_SIGNAL_TOKENS = frozenset({
+    # jednotky
+    "tbsp", "tsp", "oz", "lb", "lbs", "cup", "cups", "fl", "qt", "pt",
+    # běžné EN ingredients/modifiers
+    "chicken", "beef", "pork", "fish", "salmon", "shrimp", "butter", "cheese",
+    "milk", "cream", "salt", "pepper", "garlic", "onion", "olive", "tomato",
+    "cilantro", "parsley", "basil", "ginger", "lemon", "lime", "honey", "sugar",
+    "flour", "rice", "noodle", "noodles", "bread", "egg", "eggs",
+    # časté EN slova
+    "fresh", "chopped", "sliced", "diced", "minced", "grated", "ground",
+    "of", "the", "and", "with", "boneless", "skinless",
+})
 
-def _lemmatize_token(tok: str) -> str:
-    """Lemmatizuj jeden token česky. Při selhání simplemmy vrátí token beze změny."""
+
+def _detect_lang(text: str) -> str:
+    """Detekuj jazyk celé suroviny pro konzistentní lemmatizaci všech tokenů."""
+    if any(c in text for c in _CZECH_DIACRITICS):
+        return "cs"
+    tokens = set(text.lower().split())
+    if tokens & _EN_SIGNAL_TOKENS:
+        return "en"
+    return "cs"  # default — bez diakritiky i bez EN signálů (často jednoslovné CZ "cukr", "vejce")
+
+
+def _lemmatize_token(tok: str, lang: str = "cs") -> str:
+    """Lemmatizuj jeden token v daném jazyce. Při selhání vrátí token beze změny."""
     global _SIMPLEMMA, _SIMPLEMMA_LOAD_FAILED
     if _SIMPLEMMA_LOAD_FAILED:
         return tok
@@ -153,7 +196,7 @@ def _lemmatize_token(tok: str) -> str:
             _SIMPLEMMA_LOAD_FAILED = True
             return tok
     try:
-        return _SIMPLEMMA.lemmatize(tok, lang="cs")
+        return _SIMPLEMMA.lemmatize(tok, lang=lang)
     except Exception:  # noqa: BLE001
         return tok
 
@@ -182,6 +225,8 @@ def make_lookup_key(raw_text: str) -> str:
     if not s:
         return ""
 
+    lang = _detect_lang(raw_text)
+
     # Token-level: lemmatizace a stop-slova
     tokens = []
     for tok in s.split():
@@ -192,7 +237,7 @@ def make_lookup_key(raw_text: str) -> str:
             continue
         if _is_unit_token(tok):
             continue
-        lemma = _lemmatize_token(tok)
+        lemma = _lemmatize_token(tok, lang=lang)
         if lemma in _STOP:                   # i lemma může být stop slovo
             continue
         tokens.append(lemma)

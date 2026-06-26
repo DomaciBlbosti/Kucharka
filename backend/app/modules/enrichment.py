@@ -107,7 +107,7 @@ def enrich_recipe(
     if ing_by_name is None or ing_names is None:
         ing_by_name, ing_names = _build_ingredient_index(db)
 
-    stats = {"hits_dict": 0, "hits_fuzzy": 0, "nonfood": 0, "missed": 0}
+    stats = {"hits_dict": 0, "hits_fuzzy": 0, "nonfood": 0, "missed": 0, "tags": 0}
 
     for ri in recipe.ingredients:
         if not ri.raw_text:
@@ -167,6 +167,28 @@ def enrich_recipe(
             stats["missed"] += 1
 
     recompute_recipe_kcal(recipe)
+
+    # Total weight + kcal/100g — pro UI filtry "do 150 kcal/100g".
+    total_g = sum((ri.grams or 0.0) for ri in recipe.ingredients) or None
+    recipe.total_weight_g = total_g
+    if total_g and recipe.kcal_per_serving and recipe.servings:
+        # kcal_per_serving × porce = celkové kcal receptu; děleno gramy × 100 = na 100 g
+        total_kcal = recipe.kcal_per_serving * recipe.servings
+        recipe.kcal_per_100g = round(total_kcal / total_g * 100, 1)
+    else:
+        recipe.kcal_per_100g = None
+
+    # Klasifikace do tagů (course/flavor/meal/technique/diet/cuisine).
+    # Manuální tagy (source='manual') zůstanou nedotčené.
+    try:
+        from . import classifier
+        tags = classifier.classify(db, recipe)
+        classifier.apply_tags(db, recipe, tags)
+        stats["tags"] = len(tags)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Klasifikace selhala pro recept %s: %s", recipe.id, exc)
+        stats["tags"] = 0
+
     recipe.enrichment_attempts = (recipe.enrichment_attempts or 0) + 1
     recipe.last_enriched_at = datetime.utcnow()
     if stats["missed"] == 0:
@@ -193,7 +215,7 @@ def process_batch(batch_size: int | None = None) -> dict:
             return {"recipes": 0}
 
         ing_by_name, ing_names = _build_ingredient_index(db)
-        total = {"recipes": 0, "hits_dict": 0, "hits_fuzzy": 0, "nonfood": 0, "missed": 0, "errors": 0}
+        total = {"recipes": 0, "hits_dict": 0, "hits_fuzzy": 0, "nonfood": 0, "missed": 0, "tags": 0, "errors": 0}
         for recipe in recipes:
             try:
                 s = enrich_recipe(db, recipe, ing_by_name=ing_by_name, ing_names=ing_names)

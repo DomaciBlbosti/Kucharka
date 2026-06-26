@@ -84,6 +84,12 @@ def _run_images():
     image_worker.process_batch()
 
 
+def _run_llm_match():
+    from .modules import llm_match
+
+    llm_match.process_batch()
+
+
 def configure_crawler() -> None:
     _reschedule("crawler", settings.crawler_enabled, settings.crawler_interval_min, _run_crawler)
 
@@ -116,9 +122,17 @@ def configure_images() -> None:
     )
 
 
+def configure_llm_match() -> None:
+    _reschedule(
+        "llm_match", settings.llm_match_enabled,
+        settings.llm_match_interval_min, _run_llm_match,
+    )
+
+
 def configure_all() -> None:
     configure_crawler()
     configure_translate()
     configure_match()
     configure_enrichment()
     configure_images()
+    configure_llm_match()

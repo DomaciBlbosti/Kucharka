@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import Date, DateTime, delete, select
@@ -116,6 +116,7 @@ def put_settings(req: SettingsUpdate, db: Session = Depends(get_db)):
             scheduler.configure_match()
             scheduler.configure_enrichment()
             scheduler.configure_images()
+            scheduler.configure_llm_match()
     return {"applied": list(applied), "settings": settings.as_admin()}
 
 
@@ -291,3 +292,50 @@ async def import_db(file: UploadFile = File(...), mode: str = Form("replace")):
         return {"ok": False, "error": str(exc)}
     finally:
         db.close()
+
+
+@router.get("/crawl-sources")
+def list_crawl_sources(db: Session = Depends(get_db)):
+    """Stav cache sitemap per doména. Užitečné pro diagnostiku inkrementálního crawleru."""
+    from ..models import CrawlSource
+    rows = db.scalars(select(CrawlSource).order_by(CrawlSource.domain)).all()
+    return [
+        {
+            "domain": r.domain,
+            "sitemap_url": r.sitemap_url,
+            "etag": r.etag,
+            "http_last_modified": r.http_last_modified,
+            "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
+            "last_lastmod": r.last_lastmod.isoformat() if r.last_lastmod else None,
+            "total_seen": r.total_seen,
+            "total_ingested": r.total_ingested,
+            "last_error": r.last_error,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/crawl-sources/reset")
+def reset_crawl_sources(
+    domain: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Vynuluj inkrementální cache. Bez parametru → všechny domény; s `domain=foo.cz` jen jedna.
+
+    Použij když chceš vynutit kompletní re-discovery (např. po úpravě webových
+    sitemap nebo když si myslíš, že crawler propásl recepty).
+    """
+    from ..models import CrawlSource
+    if domain:
+        cs = db.get(CrawlSource, domain)
+        if cs is None:
+            raise HTTPException(404, f"crawl_source {domain} neexistuje")
+        db.delete(cs)
+        db.commit()
+        return {"reset": [domain]}
+    rows = db.scalars(select(CrawlSource)).all()
+    domains = [r.domain for r in rows]
+    for r in rows:
+        db.delete(r)
+    db.commit()
+    return {"reset": domains}

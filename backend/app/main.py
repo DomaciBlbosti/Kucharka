@@ -20,7 +20,7 @@ from .config import settings
 from .db import Base, SessionLocal, engine
 from .routers import (
     admin, auth as auth_router, crawl, generate, ingredients, maintenance,
-    mealplan, pantry, recipes, search, system,
+    mealplan, pantry, recipes, search, system, tags as tags_router,
 )
 from .seed.starter_ingredients import seed_starter
 
@@ -50,6 +50,10 @@ def init_db(retries: int = 10) -> None:
         n = seed_starter(db)
         if n:
             log.info("Naseedováno %s základních surovin.", n)
+        from .seed.tags import seed_tags
+        tn = seed_tags(db)
+        if tn:
+            log.info("Naseedováno %s tagů.", tn)
         _load_settings_overrides(db)
     finally:
         db.close()
@@ -102,6 +106,7 @@ app.include_router(maintenance.router)
 app.include_router(system.router)
 app.include_router(admin.router)
 app.include_router(auth_router.router)
+app.include_router(tags_router.router)
 
 
 @app.on_event("startup")

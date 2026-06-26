@@ -27,17 +27,32 @@ class RecipeIngredientOut(BaseModel):
     kcal: float | None = None
 
 
+class TagOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    namespace: str
+    slug: str
+    label_cs: str
+
+
 class RecipeCard(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     title: str
     source_domain: str | None = None
     image_url: str | None = None
+    local_image_path: str | None = None
+    local_thumb_path: str | None = None
     servings: int | None = None
     total_time: int | None = None
     rating: float | None = None
     rating_count: int | None = None
     kcal_per_serving: float | None = None
+    kcal_per_100g: float | None = None
+    total_weight_g: float | None = None
+    enrichment_status: str | None = None
+    image_status: str | None = None
+    tags: list[TagOut] = []
     # dopočítané vůči spíži
     have: int = 0
     total: int = 0

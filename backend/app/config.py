@@ -71,6 +71,15 @@ class Settings:
         self.image_batch_size: int = int(_env("IMAGE_BATCH_SIZE", "10"))
         self.images_dir: str = _env("IMAGES_DIR", "/data/images")
 
+        # --- LLM match (batch párování přes Ollamu pro manual_review) -----
+        # Opt-in: default OFF, dokud uživatel explicitně nezapne. Pomáhá hlavně
+        # cizojazyčným webům, kde slovník/fuzzy match nezachytí EN/IT/HI suroviny.
+        self.llm_match_enabled: bool = _truthy(_env("LLM_MATCH_ENABLED", "false"))
+        self.llm_match_interval_min: int = int(_env("LLM_MATCH_INTERVAL_MIN", "5"))
+        self.llm_match_batch_size: int = int(_env("LLM_MATCH_BATCH_SIZE", "40"))
+        self.llm_match_min_confidence: float = float(_env("LLM_MATCH_MIN_CONFIDENCE", "0.7"))
+        self.llm_match_model: str = _env("LLM_MATCH_MODEL", "")  # prázdné = fallback na ollama_model
+
         # --- Volitelné: SearXNG (discovery receptů) --------------------
         # Např. http://searxng:8080
         self.searxng_url: str = _env("SEARXNG_URL")
@@ -157,6 +166,8 @@ class Settings:
         "auto_match_enabled", "auto_match_interval_min",
         "enrichment_enabled", "enrichment_interval_min", "enrichment_batch_size",
         "image_enabled", "image_interval_min", "image_batch_size",
+        "llm_match_enabled", "llm_match_interval_min", "llm_match_batch_size",
+        "llm_match_min_confidence", "llm_match_model",
     )
 
     CRAWLER_KEYS = ("crawler_enabled", "crawler_interval_min", "crawler_max_per_run")
@@ -165,9 +176,11 @@ class Settings:
         "auto_match_enabled", "auto_match_interval_min",
         "enrichment_enabled", "enrichment_interval_min",
         "image_enabled", "image_interval_min",
+        "llm_match_enabled", "llm_match_interval_min",
     )
     ENRICHMENT_KEYS = ("enrichment_enabled", "enrichment_interval_min")
     IMAGE_KEYS = ("image_enabled", "image_interval_min")
+    LLM_MATCH_KEYS = ("llm_match_enabled", "llm_match_interval_min")
 
     def as_admin(self) -> dict:
         return {
@@ -198,6 +211,11 @@ class Settings:
             "image_interval_min": self.image_interval_min,
             "image_batch_size": self.image_batch_size,
             "images_dir": self.images_dir,
+            "llm_match_enabled": self.llm_match_enabled,
+            "llm_match_interval_min": self.llm_match_interval_min,
+            "llm_match_batch_size": self.llm_match_batch_size,
+            "llm_match_min_confidence": self.llm_match_min_confidence,
+            "llm_match_model": self.llm_match_model,
             "ollama_enabled": self.ollama_enabled,
             "searxng_enabled": self.searxng_enabled,
             "auth_enabled": self.auth_enabled,
@@ -221,7 +239,7 @@ class Settings:
         elif key in (
             "translate_to_cs", "auto_ingredients", "crawler_enabled",
             "auto_translate_enabled", "auto_match_enabled",
-            "enrichment_enabled", "image_enabled",
+            "enrichment_enabled", "image_enabled", "llm_match_enabled",
         ):
             setattr(self, key, _truthy(value))
         elif key == "scraper_verify_ssl":
@@ -230,11 +248,19 @@ class Settings:
             else:
                 bundle = "/etc/ssl/certs/ca-certificates.crt"
                 self.scraper_verify = bundle if os.path.exists(bundle) else True
+        elif key == "llm_match_min_confidence":
+            try:
+                self.llm_match_min_confidence = max(0.0, min(1.0, float(value)))
+            except (TypeError, ValueError):
+                pass
+        elif key == "llm_match_model":
+            self.llm_match_model = str(value or "").strip()
         elif key in (
             "rag_k", "crawler_interval_min", "crawler_max_per_run", "bg_workers",
             "auto_translate_interval_min", "auto_match_interval_min",
             "enrichment_interval_min", "enrichment_batch_size",
             "image_interval_min", "image_batch_size",
+            "llm_match_interval_min", "llm_match_batch_size",
         ):
             try:
                 setattr(self, key, max(1, int(value)))
