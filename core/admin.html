@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kuchařka – jádro</title>
+<style>
+  :root { --basil:#3C7A57; --paper:#FBFAF7; --line:#e6e3dc; --ink:#2b2b28; --miss:#C8772E; --have:#4F9D69; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--paper); color:var(--ink); }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 24px 16px 60px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  .sub { color:#7a776f; margin: 0 0 24px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:16px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  .card h2 { font-size:1.05rem; margin:0 0 12px; }
+  label { display:block; font-size:.8rem; color:#6b6860; margin:10px 0 4px; }
+  input, select { width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:9px; font-size:.9rem; background:var(--paper); }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .chk { display:flex; align-items:center; gap:8px; margin:8px 0; font-size:.9rem; }
+  .chk input { width:auto; }
+  button { background:var(--basil); color:#fff; border:0; border-radius:999px; padding:9px 16px; font-weight:600; font-size:.88rem; cursor:pointer; }
+  button.ghost { background:#fff; color:var(--basil); border:1px solid var(--line); }
+  .btns { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+  .msg { font-size:.85rem; margin-top:8px; }
+  .ok { color:var(--have); } .err { color:var(--miss); }
+  .stat { font-size:.85rem; color:#6b6860; margin-top:6px; }
+  code { background:#f0eee8; padding:1px 5px; border-radius:5px; font-size:.82rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Kuchařka – jádro 🧠</h1>
+  <p class="sub">Zpracovává recepty a výsledky posílá do webové appky přes API. Nastav cestu k Web API a Ollamu.</p>
+
+  <div class="card">
+    <h2>Propojení</h2>
+    <label>Web API URL (kuchařka)</label>
+    <input id="web_api_url" placeholder="http://127.0.0.1:8000" />
+    <label>Core token (musí odpovídat CORE_TOKEN webu; prázdné = bez tokenu)</label>
+    <input id="core_token" placeholder="(prázdné)" />
+    <div class="btns">
+      <button class="ghost" onclick="testWeb()">Test spojení s webem</button>
+      <span id="webmsg" class="msg"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Ollama</h2>
+    <label>Ollama URL</label>
+    <input id="ollama_url" placeholder="http://127.0.0.1:11434" />
+    <div class="row">
+      <div><label>Hlavní model</label><input id="ollama_model" /></div>
+      <div><label>Rychlý model (prázdné = hlavní)</label><input id="ollama_fast_model" /></div>
+    </div>
+    <div class="row">
+      <div><label>keep_alive</label><input id="ollama_keep_alive" placeholder="30m" /></div>
+      <div><label>Workerů</label><input id="bg_workers" type="number" min="1" /></div>
+    </div>
+    <div class="btns">
+      <button class="ghost" onclick="testOllama()">Test Ollamy</button>
+      <span id="ollamamsg" class="msg"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Objevování a zpracování</h2>
+    <label>Domény (čárkou)</label>
+    <input id="recipe_domains" />
+    <div class="chk"><input type="checkbox" id="translate_to_cs" /> <label style="margin:0">Překládat cizí recepty do češtiny při stahování</label></div>
+    <div class="chk"><input type="checkbox" id="scraper_verify_ssl" /> <label style="margin:0">Ověřovat SSL při stahování</label></div>
+  </div>
+
+  <div class="card">
+    <h2>Služby na pozadí</h2>
+    <div class="chk"><input type="checkbox" id="crawler_enabled" /> <label style="margin:0">Crawler</label>
+      <input id="crawler_interval_min" type="number" style="width:90px" /> <span class="stat">min · max</span>
+      <input id="crawler_max_per_run" type="number" style="width:90px" /> <span class="stat">receptů/běh</span></div>
+    <div class="chk"><input type="checkbox" id="auto_translate_enabled" /> <label style="margin:0">Překlad</label>
+      <input id="auto_translate_interval_min" type="number" style="width:90px" /> <span class="stat">min</span></div>
+    <div class="chk"><input type="checkbox" id="auto_categorize_enabled" /> <label style="margin:0">Kategorizace</label>
+      <input id="auto_categorize_interval_min" type="number" style="width:90px" /> <span class="stat">min</span></div>
+  </div>
+
+  <div class="btns" style="margin-bottom:16px">
+    <button onclick="save()">💾 Uložit nastavení</button>
+    <span id="savemsg" class="msg"></span>
+  </div>
+
+  <div class="card">
+    <h2>Spustit ručně</h2>
+    <div class="btns">
+      <button onclick="run('crawl')">Objevit recepty</button>
+      <button onclick="run('translate')">Přeložit</button>
+      <button onclick="run('categorize')">Kategorizovat</button>
+    </div>
+    <div id="status" class="stat"></div>
+  </div>
+</div>
+
+<script>
+const F = ["web_api_url","core_token","ollama_url","ollama_model","ollama_fast_model","ollama_keep_alive","bg_workers","recipe_domains","crawler_interval_min","crawler_max_per_run","auto_translate_interval_min","auto_categorize_interval_min"];
+const C = ["translate_to_cs","scraper_verify_ssl","crawler_enabled","auto_translate_enabled","auto_categorize_enabled"];
+const NUM = ["bg_workers","crawler_interval_min","crawler_max_per_run","auto_translate_interval_min","auto_categorize_interval_min"];
+
+async function load() {
+  const c = await (await fetch("/api/config")).json();
+  F.forEach(k => { if (document.getElementById(k)) document.getElementById(k).value = c[k] ?? ""; });
+  C.forEach(k => { document.getElementById(k).checked = !!c[k]; });
+}
+function collect() {
+  const v = {};
+  F.forEach(k => { let x = document.getElementById(k).value; v[k] = NUM.includes(k) ? Number(x) : x; });
+  C.forEach(k => { v[k] = document.getElementById(k).checked; });
+  return v;
+}
+async function save() {
+  const m = document.getElementById("savemsg");
+  await fetch("/api/config", {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({values: collect()})});
+  m.textContent = "Uloženo ✓"; m.className = "msg ok";
+  setTimeout(()=>m.textContent="", 2500);
+}
+async function testWeb() {
+  await save();
+  const m = document.getElementById("webmsg"); m.textContent = "…"; m.className="msg";
+  const r = await (await fetch("/api/test/web")).json();
+  m.textContent = r.ok ? "✓ web odpovídá" : ("✗ " + r.error); m.className = "msg " + (r.ok?"ok":"err");
+}
+async function testOllama() {
+  await save();
+  const m = document.getElementById("ollamamsg"); m.textContent = "…"; m.className="msg";
+  const r = await (await fetch("/api/test/ollama")).json();
+  if (!r.ok) { m.textContent = "✗ " + r.error; m.className="msg err"; return; }
+  m.textContent = (r.has_fast_model ? "✓ " : "⚠ ") + "model " + r.fast_model + (r.has_fast_model ? " je k dispozici" : " CHYBÍ");
+  m.className = "msg " + (r.has_fast_model?"ok":"err");
+}
+async function run(job) {
+  await save();
+  await fetch("/api/run/" + job, {method:"POST"});
+  poll();
+}
+async function poll() {
+  const s = await (await fetch("/api/status")).json();
+  const c = s.crawl, t = s.translate, g = s.categorize;
+  document.getElementById("status").innerHTML =
+    `Crawl: ${c.running?"běží":"stop"} · nalezeno ${c.found}, odesláno ${c.pushed}<br>` +
+    `Překlad: ${t.running?"běží":"stop"} · ${t.done}/${t.total}<br>` +
+    `Kategorizace: ${g.running?"běží":"stop"} · ${g.done}/${g.total}` +
+    (s.last_error ? `<br><span class="err">chyba: ${s.last_error}</span>` : "");
+  if (c.running || t.running || g.running) setTimeout(poll, 2000);
+}
+load(); poll();
+</script>
+</body>
+</html>

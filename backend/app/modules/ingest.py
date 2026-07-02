@@ -1,22 +1,7 @@
-"""Ingest pipeline (fast-path): URL → recept v DB.
+"""Ingest pipeline: URL → recept v DB.
 
-Žádný překlad, žádný LLM. Cíl je co nejrychleji uložit syrová metadata
-a syrové řádky ingrediencí. Vše ostatní (matching surovin, výpočet kcal,
-stažení obrázku, případný překlad) řeší worker přes statusové sloupce
-v tabulce `recipe`.
-
-Statusy po ingestu:
-    crawl_status      = 'scraped'
-    enrichment_status = 'pending'    (nebo 'done' u zachovaných existujících
-                                       dat při re-crawlu beze změny ingrediencí)
-    image_status      = 'pending'    (pokud image_url existuje)
-                      = 'none'       (pokud neexistuje)
-
-Idempotence podle source_url:
-- Nový recept → upsert se statusem 'pending'.
-- Existující recept (re-crawl) → aktualizuj metadata; pokud se ingredience
-  změnily, vyresetuj enrichment_status na 'pending'. Pokud se image_url
-  změnil, smaž lokální soubory a status zpět na 'pending'.
+scrape → normalize každý řádek → dopočet gramů a kcal → upsert receptu.
+Idempotentní podle source_url (re-scrape aktualizuje hodnocení).
 """
 from __future__ import annotations
 
@@ -26,27 +11,25 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import Recipe, RecipeIngredient
-from . import scraper
+from . import scraper, translate
+from .normalizer import normalize_lines
+from .nutrition import grams_for, kcal_for, recompute_recipe_kcal
 
 
 def ingest_url(db: Session, url: str) -> Recipe | None:
-    """Stáhne, extrahuje a uloží recept. Vrátí Recipe nebo None při selhání."""
     data = scraper.fetch_and_extract(url)
     if data is None:
         return None
+    data = translate.translate_recipe(data)  # cizí recept → čeština
     return _persist(db, data)
 
 
 def _persist(db: Session, data: dict) -> Recipe:
     recipe = db.scalar(select(Recipe).where(Recipe.source_url == data["source_url"]))
-    is_new = recipe is None
-    if is_new:
+    if recipe is None:
         recipe = Recipe(source_url=data["source_url"])
         db.add(recipe)
 
-    old_image_url = recipe.image_url if not is_new else None
-
-    # Metadata
     recipe.title = data["title"]
     recipe.source_domain = data.get("source_domain")
     recipe.image_url = data.get("image_url")
@@ -58,35 +41,31 @@ def _persist(db: Session, data: dict) -> Recipe:
     recipe.rating_count = data.get("rating_count")
     recipe.category = data.get("category")
     recipe.raw_json = json.dumps(data, ensure_ascii=False)
-    recipe.crawl_status = "scraped"
 
-    # Ingredience jako raw_text, žádné parsování — to dělá enrichment worker.
-    new_lines = [str(s) for s in data.get("ingredients", []) if s]
-    old_lines = [ri.raw_text for ri in (recipe.ingredients or [])]
-    ingredients_changed = is_new or new_lines != old_lines
+    # přepiš ingredience
+    recipe.ingredients.clear()
+    db.flush()
 
-    if ingredients_changed:
-        recipe.ingredients.clear()
-        db.flush()
-        for line in new_lines:
-            recipe.ingredients.append(RecipeIngredient(raw_text=line[:400]))
-        # Reset enrichmentu — staré matche nejsou platné pro nové řádky.
-        recipe.enrichment_status = "pending"
-        recipe.enrichment_attempts = 0
-        recipe.enrichment_error = None
-        recipe.last_enriched_at = None
-        recipe.kcal_per_serving = None
+    lines = data.get("ingredients", [])
+    for norm in normalize_lines(db, lines):
+        ing = norm["ingredient"]
+        grams = grams_for(norm["amount"], norm["unit"], ing)
+        ri = RecipeIngredient(
+            raw_text=norm["raw_text"][:400],
+            ingredient_id=ing.id if ing else None,
+            amount=norm["amount"],
+            unit=norm["unit"],
+            grams=grams,
+            kcal=kcal_for(grams, ing),
+        )
+        recipe.ingredients.append(ri)
 
-    # Obrázek — pokud se URL změnila, zahoď lokální soubor.
-    image_url_changed = (old_image_url or "") != (recipe.image_url or "")
-    if is_new or image_url_changed:
-        if recipe.image_url:
-            recipe.image_status = "pending"
-        else:
-            recipe.image_status = "none"
-        recipe.local_image_path = None
-        recipe.local_thumb_path = None
-
+    recompute_recipe_kcal(recipe)
     db.commit()
     db.refresh(recipe)
     return recipe
+
+
+def persist(db: Session, data: dict) -> Recipe:
+    """Veřejný alias pro uložení už připraveného receptu (URL scrape i foto-import)."""
+    return _persist(db, data)

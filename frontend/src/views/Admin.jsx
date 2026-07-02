@@ -40,7 +40,7 @@ function ToolsCard() {
   };
   const save = async () => {
     const keys = ["ollama_url", "ollama_model", "ollama_fast_model", "embed_model",
-      "searxng_url", "translate_to_cs", "auto_ingredients", "scraper_verify_ssl",
+      "ocr_model", "searxng_url", "translate_to_cs", "auto_ingredients", "scraper_verify_ssl",
       "rag_k", "ollama_keep_alive", "bg_workers"];
     const vals = Object.fromEntries(keys.map((k) => [k, s[k]]));
     const r = await api.adminSaveSettings(vals);
@@ -73,6 +73,10 @@ function ToolsCard() {
         <Field label="Model pro embeddingy (RAG)">
           <input className={input} value={s.embed_model || ""}
             onChange={(e) => set("embed_model", e.target.value)} placeholder="nomic-embed-text" />
+        </Field>
+        <Field label="OCR model (skenování účtenek)" hint="vision model, např. qwen2.5vl, minicpm-v">
+          <input className={input} value={s.ocr_model || ""}
+            onChange={(e) => set("ocr_model", e.target.value)} placeholder="qwen2.5vl:7b" />
         </Field>
         <Field label="RAG – počet receptů jako kontext">
           <input type="number" className={input} value={s.rag_k ?? 6}
@@ -132,6 +136,18 @@ function ToolsCard() {
                   <span className="text-miss">chybí — ollama pull {test.embed_model}</span>
                 )}
               </p>
+              {test.ocr_model ? (
+                <p className="text-ink/70">
+                  OCR model <b>{test.ocr_model}</b>:{" "}
+                  {test.has_ocr_model ? (
+                    <span className="text-have">je k dispozici</span>
+                  ) : (
+                    <span className="text-miss">chybí — ollama pull {test.ocr_model}</span>
+                  )}
+                </p>
+              ) : (
+                <p className="text-ink/45">OCR model nenastaven — skenování účtenek nepůjde.</p>
+              )}
               {test.models?.length > 0 && (
                 <p className="mt-1 text-xs text-ink/45">Modely: {test.models.join(", ")}</p>
               )}

@@ -58,6 +58,17 @@ def remove_pantry(ingredient_id: int, db: Session = Depends(get_db)):
         db.commit()
 
 
+@router.patch("/pantry/{ingredient_id}/use-soon", response_model=PantryItemOut)
+def toggle_use_soon(ingredient_id: int, db: Session = Depends(get_db)):
+    item = db.scalar(select(PantryItem).where(PantryItem.ingredient_id == ingredient_id))
+    if item is None:
+        raise HTTPException(404, "Není ve spíži.")
+    item.use_soon = not item.use_soon
+    db.commit()
+    db.refresh(item)
+    return item
+
+
 # ---- Nákupní seznam ------------------------------------------------------
 @router.get("/shopping", response_model=list[ShoppingItemOut])
 def list_shopping(db: Session = Depends(get_db)):

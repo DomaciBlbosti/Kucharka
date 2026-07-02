@@ -58,28 +58,6 @@ class Settings:
         self.auto_match_enabled: bool = _truthy(_env("AUTO_MATCH_ENABLED", "false"))
         self.auto_match_interval_min: int = int(_env("AUTO_MATCH_INTERVAL_MIN", "180"))
 
-        # --- Enrichment worker (slovník + fuzzy) -----------------------
-        # Bere recepty s enrichment_status='pending' a doplňuje matching surovin.
-        # Default ON, krátký interval — bez LLM je to laciné a chceme rychlou odezvu.
-        self.enrichment_enabled: bool = _truthy(_env("ENRICHMENT_ENABLED", "true"))
-        self.enrichment_interval_min: int = int(_env("ENRICHMENT_INTERVAL_MIN", "1"))
-        self.enrichment_batch_size: int = int(_env("ENRICHMENT_BATCH_SIZE", "20"))
-
-        # --- Image worker (stahování + resize) -------------------------
-        self.image_enabled: bool = _truthy(_env("IMAGE_ENABLED", "true"))
-        self.image_interval_min: int = int(_env("IMAGE_INTERVAL_MIN", "1"))
-        self.image_batch_size: int = int(_env("IMAGE_BATCH_SIZE", "10"))
-        self.images_dir: str = _env("IMAGES_DIR", "/data/images")
-
-        # --- LLM match (batch párování přes Ollamu pro manual_review) -----
-        # Opt-in: default OFF, dokud uživatel explicitně nezapne. Pomáhá hlavně
-        # cizojazyčným webům, kde slovník/fuzzy match nezachytí EN/IT/HI suroviny.
-        self.llm_match_enabled: bool = _truthy(_env("LLM_MATCH_ENABLED", "false"))
-        self.llm_match_interval_min: int = int(_env("LLM_MATCH_INTERVAL_MIN", "5"))
-        self.llm_match_batch_size: int = int(_env("LLM_MATCH_BATCH_SIZE", "40"))
-        self.llm_match_min_confidence: float = float(_env("LLM_MATCH_MIN_CONFIDENCE", "0.7"))
-        self.llm_match_model: str = _env("LLM_MATCH_MODEL", "")  # prázdné = fallback na ollama_model
-
         # --- Volitelné: SearXNG (discovery receptů) --------------------
         # Např. http://searxng:8080
         self.searxng_url: str = _env("SEARXNG_URL")
@@ -129,12 +107,19 @@ class Settings:
         )
         # RAG generování receptů
         self.embed_model: str = _env("EMBED_MODEL", "nomic-embed-text")
+        # Vision model pro skenování účtenek (musí umět obrázky, např. qwen2.5vl,
+        # llama3.2-vision, minicpm-v). Prázdné = skenování účtenek nedostupné.
+        self.ocr_model: str = _env("OCR_MODEL", "")
         self.rag_k: int = int(_env("RAG_K", "6"))  # kolik receptů jako kontext
         # Self-update z Gitu přes WEB UI
         self.update_enabled: bool = _env("UPDATE_ENABLED", "false").lower() in (
             "1", "true", "yes", "on"
         )
         self.repo_dir: str = _env("REPO_DIR", "")
+
+        # Sdílený token pro přístup jádra (core) k ingest/API kontraktu.
+        # Prázdný = přístup jen bez tokenu povolen (dev / stejný server).
+        self.core_token: str = _env("CORE_TOKEN", "")
 
         # Zabezpečení heslem (hash se načítá z app_setting při startu)
         self.auth_password_hash: str | None = None
@@ -158,35 +143,27 @@ class Settings:
 
     ADMIN_KEYS = (
         "ollama_url", "ollama_model", "ollama_fast_model", "embed_model", "searxng_url",
+        "ocr_model",
         "recipe_domains", "translate_to_cs", "auto_ingredients",
         "scraper_verify_ssl", "rag_k",
         "crawler_enabled", "crawler_interval_min", "crawler_max_per_run",
         "ollama_keep_alive", "bg_workers",
         "auto_translate_enabled", "auto_translate_interval_min",
         "auto_match_enabled", "auto_match_interval_min",
-        "enrichment_enabled", "enrichment_interval_min", "enrichment_batch_size",
-        "image_enabled", "image_interval_min", "image_batch_size",
-        "llm_match_enabled", "llm_match_interval_min", "llm_match_batch_size",
-        "llm_match_min_confidence", "llm_match_model",
     )
 
     CRAWLER_KEYS = ("crawler_enabled", "crawler_interval_min", "crawler_max_per_run")
     SERVICE_KEYS = (
         "auto_translate_enabled", "auto_translate_interval_min",
         "auto_match_enabled", "auto_match_interval_min",
-        "enrichment_enabled", "enrichment_interval_min",
-        "image_enabled", "image_interval_min",
-        "llm_match_enabled", "llm_match_interval_min",
     )
-    ENRICHMENT_KEYS = ("enrichment_enabled", "enrichment_interval_min")
-    IMAGE_KEYS = ("image_enabled", "image_interval_min")
-    LLM_MATCH_KEYS = ("llm_match_enabled", "llm_match_interval_min")
 
     def as_admin(self) -> dict:
         return {
             "ollama_url": self.ollama_url,
             "ollama_model": self.ollama_model,
             "embed_model": self.embed_model,
+            "ocr_model": self.ocr_model,
             "searxng_url": self.searxng_url,
             "recipe_domains": ",".join(sorted(self.recipe_domains)),
             "translate_to_cs": self.translate_to_cs,
@@ -204,18 +181,6 @@ class Settings:
             "auto_translate_interval_min": self.auto_translate_interval_min,
             "auto_match_enabled": self.auto_match_enabled,
             "auto_match_interval_min": self.auto_match_interval_min,
-            "enrichment_enabled": self.enrichment_enabled,
-            "enrichment_interval_min": self.enrichment_interval_min,
-            "enrichment_batch_size": self.enrichment_batch_size,
-            "image_enabled": self.image_enabled,
-            "image_interval_min": self.image_interval_min,
-            "image_batch_size": self.image_batch_size,
-            "images_dir": self.images_dir,
-            "llm_match_enabled": self.llm_match_enabled,
-            "llm_match_interval_min": self.llm_match_interval_min,
-            "llm_match_batch_size": self.llm_match_batch_size,
-            "llm_match_min_confidence": self.llm_match_min_confidence,
-            "llm_match_model": self.llm_match_model,
             "ollama_enabled": self.ollama_enabled,
             "searxng_enabled": self.searxng_enabled,
             "auth_enabled": self.auth_enabled,
@@ -224,7 +189,7 @@ class Settings:
     def set_admin(self, key: str, value) -> bool:
         if key not in self.ADMIN_KEYS:
             return False
-        if key in ("ollama_url", "ollama_model", "embed_model", "searxng_url"):
+        if key in ("ollama_url", "ollama_model", "embed_model", "searxng_url", "ocr_model"):
             setattr(self, key, str(value or "").strip())
         elif key == "ollama_fast_model":
             self._fast_model = str(value or "").strip()
@@ -239,7 +204,6 @@ class Settings:
         elif key in (
             "translate_to_cs", "auto_ingredients", "crawler_enabled",
             "auto_translate_enabled", "auto_match_enabled",
-            "enrichment_enabled", "image_enabled", "llm_match_enabled",
         ):
             setattr(self, key, _truthy(value))
         elif key == "scraper_verify_ssl":
@@ -248,19 +212,9 @@ class Settings:
             else:
                 bundle = "/etc/ssl/certs/ca-certificates.crt"
                 self.scraper_verify = bundle if os.path.exists(bundle) else True
-        elif key == "llm_match_min_confidence":
-            try:
-                self.llm_match_min_confidence = max(0.0, min(1.0, float(value)))
-            except (TypeError, ValueError):
-                pass
-        elif key == "llm_match_model":
-            self.llm_match_model = str(value or "").strip()
         elif key in (
             "rag_k", "crawler_interval_min", "crawler_max_per_run", "bg_workers",
             "auto_translate_interval_min", "auto_match_interval_min",
-            "enrichment_interval_min", "enrichment_batch_size",
-            "image_interval_min", "image_batch_size",
-            "llm_match_interval_min", "llm_match_batch_size",
         ):
             try:
                 setattr(self, key, max(1, int(value)))

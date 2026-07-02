@@ -109,6 +109,50 @@ export const api = {
   ingredients: (q) => afetch(`/api/ingredients${qs({ q, limit: 40 })}`).then(J),
 
   pantry: () => afetch("/api/pantry").then(J),
+  editRecipe: (id, body) =>
+    afetch(`/api/recipes/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(J),
+  markCooked: (id) =>
+    afetch(`/api/recipes/${id}/cooked`, { method: "POST" }).then(J),
+  toggleUseSoon: (ingredientId) =>
+    afetch(`/api/pantry/${ingredientId}/use-soon`, { method: "PATCH" }).then(J),
+  scanReceipt: (files) => {
+    const fd = new FormData();
+    files.forEach((f) => fd.append("images", f));
+    return afetch("/api/receipt/scan", { method: "POST", body: fd }).then(J);
+  },
+  confirmReceipt: (items) =>
+    afetch("/api/receipt/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    }).then(J),
+  recipeFromPhoto: (files) => {
+    const fd = new FormData();
+    files.forEach((f) => fd.append("images", f));
+    return afetch("/api/recipes/from-photo", { method: "POST", body: fd }).then(J);
+  },
+  saveRecipeFromPhoto: (draft) =>
+    afetch("/api/recipes/from-photo/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(draft),
+    }).then(J),
+  scanBarcode: (code) =>
+    afetch("/api/pantry/barcode/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    }).then(J),
+  confirmBarcode: (body) =>
+    afetch("/api/pantry/barcode/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(J),
   addPantry: (body) =>
     afetch("/api/pantry", {
       method: "POST",

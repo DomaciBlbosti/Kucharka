@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { IngredientPicker } from "../components/IngredientPicker";
+import { RecipeFromPhoto } from "../components/RecipeFromPhoto";
 import { Button, Spinner } from "../components/ui";
 
 export default function AddRecipe() {
@@ -13,6 +14,7 @@ export default function AddRecipe() {
   const [candidates, setCandidates] = useState(null);
   const [status, setStatus] = useState({ searxng: false, ollama: false });
   const [ollama, setOllama] = useState(null);
+  const [photoOpen, setPhotoOpen] = useState(false);
 
   useEffect(() => {
     api.searchStatus().then(setStatus).catch(() => {});
@@ -139,6 +141,15 @@ export default function AddRecipe() {
       {error && (
         <p className="mt-4 rounded-lg bg-miss/10 px-4 py-3 text-sm text-miss">{error}</p>
       )}
+
+      <section className="mb-6 rounded-xl2 border border-line bg-white p-5 shadow-card">
+        <h2 className="mb-1 text-lg font-bold">Recept z papíru nebo rukou psaný</h2>
+        <p className="mb-3 text-sm text-ink/60">
+          Vyfoť babiččin sešit nebo vystřižený recept — přečtu ho a připravím k uložení.
+        </p>
+        <Button variant="ghost" onClick={() => setPhotoOpen(true)}>📷 Vyfotit recept</Button>
+      </section>
+      {photoOpen && <RecipeFromPhoto onClose={() => setPhotoOpen(false)} />}
 
       <CrawlerPanel />
       <MatchPanel />

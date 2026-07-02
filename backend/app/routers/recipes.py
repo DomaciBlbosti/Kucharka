@@ -1,14 +1,20 @@
 """API pro recepty – výpis s filtry vůči spíži + detail."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import uuid
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ..db import get_db
-from ..models import Ingredient, Recipe, RecipeIngredient
+from ..models import Ingredient, PantryItem, Recipe, RecipeIngredient
 from ..modules.pantry import pantry_ingredient_ids, recipe_availability
-from ..schemas import RecipeCard, RecipeDetail
+from ..modules.nutrition import recompute_recipe_kcal
+from ..modules import photo_recipe
+from ..modules.ingest import persist as persist_recipe
+from ..schemas import RecipeCard, RecipeDetail, RecipeEdit
 
 router = APIRouter(prefix="/api/recipes", tags=["recipes"])
 
@@ -20,21 +26,16 @@ def list_recipes(
     only_have: bool = Query(False, description="jen co můžu uvařit teď"),
     max_missing: int | None = Query(None, ge=0),
     max_kcal: float | None = Query(None, ge=0),
-    max_kcal_100g: float | None = Query(None, ge=0, description="kcal na 100 g"),
     max_time: int | None = Query(None, ge=0),
     min_rating: float | None = Query(None, ge=0, le=5),
     category: str | None = Query(None, description="recepty se surovinou z kategorie"),
-    tag: list[str] | None = Query(None, description="filtr `ns:slug`, opakovatelný (AND)"),
     sort: str = Query("smart", pattern="^(smart|rating|time|kcal|newest)$"),
 ):
-    from ..models import Tag, RecipeTag
-    stmt = select(Recipe).options(selectinload(Recipe.ingredients), selectinload(Recipe.tags))
+    stmt = select(Recipe).options(selectinload(Recipe.ingredients))
     if q:
         stmt = stmt.where(Recipe.title.ilike(f"%{q}%"))
     if max_kcal is not None:
         stmt = stmt.where(Recipe.kcal_per_serving <= max_kcal)
-    if max_kcal_100g is not None:
-        stmt = stmt.where(Recipe.kcal_per_100g <= max_kcal_100g)
     if max_time is not None:
         stmt = stmt.where(Recipe.total_time <= max_time)
     if min_rating is not None:
@@ -46,18 +47,6 @@ def list_recipes(
             .where(Ingredient.category_path.ilike(f"{category}%"))
         )
         stmt = stmt.where(Recipe.id.in_(sub))
-    if tag:
-        # Každý tag je AND — recept musí mít všechny zadané tagy.
-        for t in tag:
-            if ":" not in t:
-                continue
-            ns, slug = t.split(":", 1)
-            sub = (
-                select(RecipeTag.recipe_id)
-                .join(Tag, RecipeTag.tag_id == Tag.id)
-                .where(Tag.namespace == ns, Tag.slug == slug)
-            )
-            stmt = stmt.where(Recipe.id.in_(sub))
 
     recipes = db.scalars(stmt).all()
     have = pantry_ingredient_ids(db)
@@ -120,6 +109,44 @@ def cook_from(
     return cards[:limit]
 
 
+class PhotoRecipeSave(BaseModel):
+    title: str
+    instructions: str | None = None
+    servings: int | None = None
+    ingredients: list[str]
+
+
+@router.post("/from-photo")
+async def recipe_from_photo(images: list[UploadFile] = File(...)):
+    """Náhled receptu vyfoceného po úsecích – jen extrahuje, neukládá."""
+    if not images:
+        raise HTTPException(400, "Nahraj alespoň jednu fotku receptu.")
+    raw = [await f.read() for f in images]
+    try:
+        return photo_recipe.extract_draft(raw)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Čtení receptu selhalo: {exc}") from None
+
+
+@router.post("/from-photo/save", response_model=RecipeDetail)
+def save_photo_recipe(req: PhotoRecipeSave, db: Session = Depends(get_db)):
+    title = req.title.strip()
+    ingredients = [i.strip() for i in req.ingredients if i.strip()]
+    if not title or not ingredients:
+        raise HTTPException(400, "Recept musí mít název a alespoň jednu surovinu.")
+    data = {
+        "title": title,
+        "source_url": f"photo://{uuid.uuid4()}",
+        "source_domain": None,
+        "image_url": None,
+        "instructions": req.instructions,
+        "servings": req.servings,
+        "ingredients": ingredients,
+    }
+    recipe = persist_recipe(db, data)
+    return get_recipe(recipe.id, db)
+
+
 @router.get("/{recipe_id}", response_model=RecipeDetail)
 def get_recipe(recipe_id: int, db: Session = Depends(get_db)):
     r = db.scalar(
@@ -138,6 +165,53 @@ def get_recipe(recipe_id: int, db: Session = Depends(get_db)):
     detail.ratio = round(av["ratio"], 3)
     detail.missing_ingredient_ids = [ri.ingredient_id for ri in av["missing"]]
     return detail
+
+
+@router.patch("/{recipe_id}", response_model=RecipeDetail)
+def edit_recipe(recipe_id: int, req: RecipeEdit, db: Session = Depends(get_db)):
+    r = db.scalar(
+        select(Recipe).where(Recipe.id == recipe_id).options(selectinload(Recipe.ingredients))
+    )
+    if r is None:
+        raise HTTPException(404, "Recept nenalezen.")
+    if req.title is not None:
+        r.title = req.title.strip() or r.title
+    if req.instructions is not None:
+        r.instructions = req.instructions
+    if req.servings is not None:
+        r.servings = max(1, req.servings)
+    if req.image_url is not None:
+        r.image_url = req.image_url.strip() or None
+    if req.user_rating is not None:
+        r.user_rating = max(0, min(5, req.user_rating)) or None
+    if req.user_note is not None:
+        r.user_note = req.user_note.strip() or None
+    if req.ingredient_texts is not None and len(req.ingredient_texts) == len(r.ingredients):
+        for ri, txt in zip(r.ingredients, req.ingredient_texts):
+            ri.raw_text = txt.strip()
+    if req.servings is not None:
+        recompute_recipe_kcal(r)
+    db.commit()
+    return get_recipe(recipe_id, db)
+
+
+@router.post("/{recipe_id}/cooked")
+def mark_cooked(recipe_id: int, db: Session = Depends(get_db)):
+    """Uvařeno – odečte suroviny receptu ze spíže (které tam jsou)."""
+    r = db.scalar(
+        select(Recipe).where(Recipe.id == recipe_id).options(selectinload(Recipe.ingredients))
+    )
+    if r is None:
+        raise HTTPException(404, "Recept nenalezen.")
+    used_ids = {ri.ingredient_id for ri in r.ingredients if ri.ingredient_id}
+    removed = 0
+    for item in db.scalars(
+        select(PantryItem).where(PantryItem.ingredient_id.in_(used_ids))
+    ).all():
+        db.delete(item)
+        removed += 1
+    db.commit()
+    return {"removed": removed}
 
 
 @router.delete("/{recipe_id}", status_code=204)

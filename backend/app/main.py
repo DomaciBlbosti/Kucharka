@@ -20,7 +20,7 @@ from .config import settings
 from .db import Base, SessionLocal, engine
 from .routers import (
     admin, auth as auth_router, crawl, generate, ingredients, maintenance,
-    mealplan, pantry, recipes, search, system, tags as tags_router,
+    barcode, ingest, mealplan, pantry, receipt, recipes, search, system,
 )
 from .seed.starter_ingredients import seed_starter
 
@@ -32,12 +32,10 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 def init_db(retries: int = 10) -> None:
     """Počkej na DB (MariaDB při startu kontejneru naběhne se zpožděním)."""
-    from . import migrations
-
     for attempt in range(1, retries + 1):
         try:
             Base.metadata.create_all(engine)
-            migrations.run_all(engine)
+            _ensure_columns()
             break
         except OperationalError as exc:
             log.warning("DB zatím nedostupná (%s/%s): %s", attempt, retries, exc)
@@ -50,20 +48,34 @@ def init_db(retries: int = 10) -> None:
         n = seed_starter(db)
         if n:
             log.info("Naseedováno %s základních surovin.", n)
-        from .seed.tags import seed_tags
-        tn = seed_tags(db)
-        if tn:
-            log.info("Naseedováno %s tagů.", tn)
         _load_settings_overrides(db)
     finally:
         db.close()
 
 
 def _ensure_columns() -> None:
-    """Zastaralé — ponecháno jako shim, ať se nerozbijí případné import paths."""
-    from . import migrations
+    """Doplň chybějící sloupce do existujících tabulek (lehká migrace)."""
+    from sqlalchemy import inspect, text
 
-    migrations.run_all(engine)
+    wanted = {
+        "ingredient": [("category_path", "VARCHAR(200)")],
+        "recipe": [("user_rating", "INTEGER"), ("user_note", "TEXT")],
+        "pantry_item": [("use_soon", "BOOLEAN DEFAULT 0")],
+    }
+    insp = inspect(engine)
+    existing_tables = set(insp.get_table_names())
+    for table, cols in wanted.items():
+        if table not in existing_tables:
+            continue
+        have = {c["name"] for c in insp.get_columns(table)}
+        for name, ddl in cols:
+            if name not in have:
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                    log.info("Migrace: přidán sloupec %s.%s", table, name)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Migrace %s.%s selhala: %s", table, name, exc)
 
 
 def _load_settings_overrides(db) -> None:
@@ -100,13 +112,15 @@ app.include_router(search.router)
 app.include_router(ingredients.router)
 app.include_router(pantry.router)
 app.include_router(mealplan.router)
+app.include_router(ingest.router)
+app.include_router(receipt.router)
+app.include_router(barcode.router)
 app.include_router(crawl.router)
 app.include_router(generate.router)
 app.include_router(maintenance.router)
 app.include_router(system.router)
 app.include_router(admin.router)
 app.include_router(auth_router.router)
-app.include_router(tags_router.router)
 
 
 @app.on_event("startup")
@@ -134,7 +148,9 @@ async def _auth_middleware(request, call_next):
 
     path = request.url.path
     protected = path.startswith("/api/") and not (
-        path.startswith("/api/auth/") or path == "/api/health"
+        path.startswith("/api/auth/")
+        or path.startswith("/api/ingest/")
+        or path == "/api/health"
     )
     if settings.auth_enabled and protected:
         if not _auth.valid_token(token_from_request(request)):
@@ -149,23 +165,6 @@ def health() -> dict:
         "searxng": settings.searxng_enabled,
         "ollama": settings.ollama_enabled,
     }
-
-
-# --- Lokální obrázky receptů ----------------------------------------------
-# Servíruje obsah `settings.images_dir` pod /media/images/{soubor}.
-# Frontend dostává v API odpovědi `local_image_path` a `local_thumb_path`
-# (jen název souboru), URL složí jako `/media/images/{path}`.
-_IMAGES_DIR = Path(settings.images_dir)
-try:
-    _IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    app.mount(
-        "/media/images",
-        StaticFiles(directory=str(_IMAGES_DIR)),
-        name="images",
-    )
-    log.info("Lokální obrázky se servírují z %s pod /media/images", _IMAGES_DIR)
-except Exception as exc:  # noqa: BLE001
-    log.warning("Mount /media/images selhal (%s): %s", _IMAGES_DIR, exc)
 
 
 # --- Frontend (SPA) -------------------------------------------------------

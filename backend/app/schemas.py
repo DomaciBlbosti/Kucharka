@@ -27,32 +27,17 @@ class RecipeIngredientOut(BaseModel):
     kcal: float | None = None
 
 
-class TagOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
-    namespace: str
-    slug: str
-    label_cs: str
-
-
 class RecipeCard(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     title: str
     source_domain: str | None = None
     image_url: str | None = None
-    local_image_path: str | None = None
-    local_thumb_path: str | None = None
     servings: int | None = None
     total_time: int | None = None
     rating: float | None = None
     rating_count: int | None = None
     kcal_per_serving: float | None = None
-    kcal_per_100g: float | None = None
-    total_weight_g: float | None = None
-    enrichment_status: str | None = None
-    image_status: str | None = None
-    tags: list[TagOut] = []
     # dopočítané vůči spíži
     have: int = 0
     total: int = 0
@@ -65,8 +50,20 @@ class RecipeDetail(RecipeCard):
     video_url: str | None = None
     instructions: str | None = None
     category: str | None = None
+    user_rating: int | None = None
+    user_note: str | None = None
     ingredients: list[RecipeIngredientOut] = []
     missing_ingredient_ids: list[int] = []
+
+
+class RecipeEdit(BaseModel):
+    title: str | None = None
+    instructions: str | None = None
+    servings: int | None = None
+    image_url: str | None = None
+    user_rating: int | None = None
+    user_note: str | None = None
+    ingredient_texts: list[str] | None = None  # v pořadí řádků
 
 
 class PantryItemOut(BaseModel):
@@ -75,6 +72,7 @@ class PantryItemOut(BaseModel):
     ingredient_id: int
     amount: float | None = None
     unit: str | None = None
+    use_soon: bool = False
     ingredient: IngredientOut
 
 
