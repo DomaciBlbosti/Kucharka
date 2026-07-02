@@ -27,6 +27,13 @@ class RecipeIngredientOut(BaseModel):
     kcal: float | None = None
 
 
+class TagOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    namespace: str
+    slug: str
+    label_cs: str
+
+
 class RecipeCard(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -38,6 +45,7 @@ class RecipeCard(BaseModel):
     rating: float | None = None
     rating_count: int | None = None
     kcal_per_serving: float | None = None
+    tags: list[TagOut] = []
     # dopočítané vůči spíži
     have: int = 0
     total: int = 0

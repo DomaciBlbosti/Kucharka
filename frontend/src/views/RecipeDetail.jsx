@@ -68,6 +68,16 @@ export default function RecipeDetail() {
             )}
           </div>
 
+          {r.tags?.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {r.tags.map((t) => (
+                <span key={`${t.namespace}:${t.slug}`} className="rounded-full bg-basil-soft px-2.5 py-0.5 text-xs text-basil-dark">
+                  {t.label_cs}
+                </span>
+              ))}
+            </div>
+          )}
+
           {/* akční lišta */}
           <div className="mt-4 flex flex-wrap items-center gap-2">
             {steps.length > 0 && <Button onClick={() => setCookOpen(true)}>🍳 Uvařit</Button>}
@@ -193,18 +203,30 @@ function EditRecipe({ recipe, onDone }) {
   const [instructions, setInstructions] = useState(recipe.instructions || "");
   const [note, setNote] = useState(recipe.user_note || "");
   const [lines, setLines] = useState(recipe.ingredients.map((i) => i.raw_text));
+  const [tagGroups, setTagGroups] = useState([]);
+  const [selectedTags, setSelectedTags] = useState(
+    (recipe.tags || []).map((t) => `${t.namespace}:${t.slug}`)
+  );
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.recipeTags().then(setTagGroups).catch(() => setTagGroups([]));
+  }, []);
+
+  const toggleTag = (key) =>
+    setSelectedTags((cur) => (cur.includes(key) ? cur.filter((t) => t !== key) : [...cur, key]));
 
   const save = async () => {
     setBusy(true);
     try {
-      const upd = await api.editRecipe(recipe.id, {
+      await api.editRecipe(recipe.id, {
         title,
         servings: servings ? Number(servings) : null,
         instructions,
         user_note: note,
         ingredient_texts: lines,
       });
+      const upd = await api.setRecipeTags(recipe.id, selectedTags);
       onDone(upd);
     } finally {
       setBusy(false);
@@ -240,6 +262,32 @@ function EditRecipe({ recipe, onDone }) {
           <textarea className={`${inp} min-h-[10rem]`} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
           <p className="mt-1 text-xs text-ink/40">Každý krok na samostatný řádek.</p>
         </div>
+        {tagGroups.length > 0 && (
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-ink/55">Tagy</label>
+            <div className="space-y-2.5 rounded-lg border border-line bg-paper p-3">
+              {tagGroups.map((g) => (
+                <div key={g.namespace}>
+                  <p className="mb-1 text-[11px] font-semibold text-ink/45">{g.label}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {g.tags.map((t) => {
+                      const key = `${g.namespace}:${t.slug}`;
+                      const active = selectedTags.includes(key);
+                      return (
+                        <button key={key} type="button" onClick={() => toggleTag(key)}
+                          className={`rounded-full px-2.5 py-1 text-xs font-medium transition ${
+                            active ? "bg-basil text-white" : "border border-line bg-white text-ink/60 hover:border-basil"
+                          }`}>
+                          {t.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div>
           <label className="mb-1 block text-xs font-medium text-ink/55">Moje poznámka</label>
           <textarea className={`${inp} min-h-[5rem]`} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Co bych příště udělal jinak…" />

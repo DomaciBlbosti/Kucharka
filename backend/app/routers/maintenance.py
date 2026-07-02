@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import get_db
 from ..models import Ingredient, IngredientAlias, Recipe, RecipeIngredient
-from ..modules import backfill, categorize, translate
+from ..modules import backfill, categorize, tagging, translate
 from ..modules.nutrition import recompute_recipe_kcal
 
 router = APIRouter(prefix="/api/maintenance", tags=["maintenance"])
@@ -181,3 +181,21 @@ def match_one(req: MatchOne, db: Session = Depends(get_db)):
         "ingredient_id": ing.id,
         "ingredient_name": ing.name_cs,
     }
+
+
+@router.get("/tag-status")
+def tag_status():
+    s = tagging.status()
+    s["ollama"] = settings.ollama_enabled
+    return s
+
+
+@router.post("/tag-recipes")
+def run_tagging():
+    if not settings.ollama_enabled:
+        return {"started": False, "status": tagging.status(), "error": "Ollama není dostupná."}
+    err = _fast_model_error()
+    if err:
+        return {"started": False, "status": tagging.status(), "error": err}
+    started = tagging.tag_async(only_missing=True)
+    return {"started": started, "status": tagging.status(), "error": None}

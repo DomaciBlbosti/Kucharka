@@ -23,6 +23,7 @@ from .routers import (
     barcode, ingest, mealplan, pantry, receipt, recipes, search, system,
 )
 from .seed.starter_ingredients import seed_starter
+from .seed.starter_tags import seed_tags
 
 log = logging.getLogger("kucharka")
 logging.basicConfig(level=logging.INFO)
@@ -48,6 +49,9 @@ def init_db(retries: int = 10) -> None:
         n = seed_starter(db)
         if n:
             log.info("Naseedováno %s základních surovin.", n)
+        nt = seed_tags(db)
+        if nt:
+            log.info("Naseedováno %s kanonických tagů.", nt)
         _load_settings_overrides(db)
     finally:
         db.close()

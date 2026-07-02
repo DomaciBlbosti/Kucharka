@@ -475,6 +475,7 @@ export default function Admin() {
       <CrawlerCard />
       <TranslateCard />
       <CategorizeCard />
+      <TagCard />
       <DomainsCard />
       <NutriCard />
       <BackupCard />
@@ -591,6 +592,65 @@ function CategorizeCard() {
             {st && !st.ollama && <span className="text-sm text-miss">Ollama není dostupná.</span>}
             {st && st.ollama && st.uncategorized === 0 && (
               <span className="text-sm text-have">Vše zařazeno ✓</span>
+            )}
+          </div>
+          {err && <p className="text-sm text-miss">{err}</p>}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TagCard() {
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState(null);
+  const timer = useRef(null);
+  const load = () => api.tagStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    load();
+    return () => clearInterval(timer.current);
+  }, []);
+  useEffect(() => {
+    if (st?.running && !timer.current) {
+      timer.current = setInterval(load, 2000);
+    } else if (!st?.running && timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+    }
+  }, [st?.running]);
+
+  const run = async () => {
+    setErr(null);
+    const r = await api.runTagging();
+    setSt(r.status);
+    if (r.error) setErr(r.error);
+  };
+
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <h2 className="mb-1 text-lg font-bold">Otagování receptů</h2>
+      <p className="mb-4 text-sm text-ink/60">
+        Přiřadí receptům tagy (chod, denní doba, chuť, technika, dieta,
+        kuchyně) pro filtrování. Vybírá jen z pevného seznamu, nevymýšlí
+        nové. Běží jen pro dosud neotagované.
+      </p>
+      {st && (
+        <p className="mb-3 text-sm text-ink/70">
+          Receptů celkem: <b>{st.total_recipes}</b> · neotagovaných:{" "}
+          <b>{st.untagged}</b>
+        </p>
+      )}
+      {st?.running ? (
+        <Spinner label={`Otagovávám… ${st.done}/${st.total}`} />
+      ) : (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <Button onClick={run} disabled={!st || !st.ollama || st.untagged === 0}>
+              Otagovat recepty
+            </Button>
+            {st && !st.ollama && <span className="text-sm text-miss">Ollama není dostupná.</span>}
+            {st && st.ollama && st.untagged === 0 && (
+              <span className="text-sm text-have">Vše otagováno ✓</span>
             )}
           </div>
           {err && <p className="text-sm text-miss">{err}</p>}

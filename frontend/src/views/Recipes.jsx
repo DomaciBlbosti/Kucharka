@@ -21,10 +21,17 @@ export default function Recipes() {
   const [sort, setSort] = useState("smart");
   const [category, setCategory] = useState("");
   const [cats, setCats] = useState([]);
+  const [tagGroups, setTagGroups] = useState([]);
+  const [selectedTags, setSelectedTags] = useState([]); // ["namespace:slug", ...]
+  const [tagsOpen, setTagsOpen] = useState(false);
 
   useEffect(() => {
     api.ingredientCategories().then(setCats).catch(() => setCats([]));
+    api.recipeTags().then(setTagGroups).catch(() => setTagGroups([]));
   }, []);
+
+  const toggleTag = (key) =>
+    setSelectedTags((cur) => (cur.includes(key) ? cur.filter((t) => t !== key) : [...cur, key]));
 
   // "Vařím z" – vybrané suroviny
   const [picked, setPicked] = useState([]);
@@ -47,6 +54,7 @@ export default function Recipes() {
             max_missing: maxMissing,
             max_time: maxTime,
             category: category || undefined,
+            tags: selectedTags,
             sort,
           });
       req.then((r) => live && setRecipes(r)).catch(() => live && setRecipes([]));
@@ -55,7 +63,7 @@ export default function Recipes() {
       live = false;
       clearTimeout(t);
     };
-  }, [q, onlyHave, maxMissing, maxTime, sort, category, cookMode, pickedKey]);
+  }, [q, onlyHave, maxMissing, maxTime, sort, category, selectedTags, cookMode, pickedKey]);
 
   return (
     <div>
@@ -126,7 +134,61 @@ export default function Recipes() {
                 ))}
               </select>
             )}
+            {tagGroups.length > 0 && (
+              <button
+                onClick={() => setTagsOpen((v) => !v)}
+                className={`rounded-full px-3 py-2.5 text-sm font-medium transition ${
+                  selectedTags.length > 0
+                    ? "bg-basil text-white"
+                    : "border border-line bg-white text-ink/70 hover:border-basil"
+                }`}
+              >
+                🏷️ Tagy{selectedTags.length > 0 ? ` (${selectedTags.length})` : ""}
+              </button>
+            )}
           </div>
+
+          {tagsOpen && (
+            <div className="mb-5 rounded-xl2 border border-line bg-white p-4 shadow-card">
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-ink/40">
+                  Víc tagů ve stejné skupině = nebo. Víc skupin = zároveň.
+                </p>
+                {selectedTags.length > 0 && (
+                  <button onClick={() => setSelectedTags([])} className="text-xs text-ink/45 hover:text-miss">
+                    zrušit výběr
+                  </button>
+                )}
+              </div>
+              <div className="mt-2 space-y-3">
+                {tagGroups.map((g) => (
+                  <div key={g.namespace}>
+                    <p className="mb-1.5 text-xs font-semibold text-ink/55">{g.label}</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {g.tags.map((t) => {
+                        const key = `${g.namespace}:${t.slug}`;
+                        const active = selectedTags.includes(key);
+                        return (
+                          <button
+                            key={key}
+                            onClick={() => toggleTag(key)}
+                            className={`rounded-full px-2.5 py-1 text-xs font-medium transition ${
+                              active
+                                ? "bg-basil text-white"
+                                : "border border-line bg-paper text-ink/60 hover:border-basil"
+                            }`}
+                          >
+                            {t.label}
+                            {t.count > 0 && <span className="ml-1 opacity-60">({t.count})</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="mb-6 flex flex-wrap items-center gap-2 text-sm">
             <button
@@ -235,6 +297,15 @@ function RecipeCard({ r, cookMode }) {
             {r.kcal_per_serving ? `${Math.round(r.kcal_per_serving)} kcal` : null}
           </Meta>
         </div>
+        {r.tags?.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {r.tags.slice(0, 3).map((t) => (
+              <span key={`${t.namespace}:${t.slug}`} className="rounded-full bg-basil-soft px-2 py-0.5 text-[11px] text-basil-dark">
+                {t.label_cs}
+              </span>
+            ))}
+          </div>
+        )}
         <div className="mt-auto">
           <CookMeter have={r.have} total={r.total} size="sm" />
         </div>

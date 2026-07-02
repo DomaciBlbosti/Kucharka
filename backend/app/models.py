@@ -96,6 +96,9 @@ class Recipe(Base):
     ingredients: Mapped[list["RecipeIngredient"]] = relationship(
         back_populates="recipe", cascade="all, delete-orphan"
     )
+    tags: Mapped[list["Tag"]] = relationship(
+        secondary="recipe_tag", back_populates="recipes"
+    )
 
 
 class RecipeIngredient(Base):
@@ -204,3 +207,28 @@ class BarcodeMap(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     ingredient: Mapped[Ingredient] = relationship()
+
+
+class Tag(Base):
+    """Kanonický tag receptu v jmenném prostoru (chod/denní doba/chuť/technika/dieta/kuchyně)."""
+
+    __tablename__ = "tag"
+    __table_args__ = (UniqueConstraint("namespace", "slug", name="uq_tag_ns_slug"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    namespace: Mapped[str] = mapped_column(String(20), index=True)
+    slug: Mapped[str] = mapped_column(String(60))
+    label_cs: Mapped[str] = mapped_column(String(80))
+
+    recipes: Mapped[list[Recipe]] = relationship(secondary="recipe_tag", back_populates="tags")
+
+
+class RecipeTag(Base):
+    __tablename__ = "recipe_tag"
+
+    recipe_id: Mapped[int] = mapped_column(
+        ForeignKey("recipe.id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id: Mapped[int] = mapped_column(
+        ForeignKey("tag.id", ondelete="CASCADE"), primary_key=True
+    )

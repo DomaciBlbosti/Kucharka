@@ -5,16 +5,17 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import settings
 from ..db import get_db
-from ..models import Ingredient, PantryItem, Recipe, RecipeIngredient
+from ..models import Ingredient, PantryItem, Recipe, RecipeIngredient, RecipeTag, Tag
 from ..modules.pantry import pantry_ingredient_ids, recipe_availability
 from ..modules.nutrition import recompute_recipe_kcal
 from ..modules import photo_recipe
 from ..modules.ingest import persist as persist_recipe
+from ..seed.starter_tags import NAMESPACE_LABELS
 from ..schemas import RecipeCard, RecipeDetail, RecipeEdit
 
 router = APIRouter(prefix="/api/recipes", tags=["recipes"])
@@ -30,9 +31,10 @@ def list_recipes(
     max_time: int | None = Query(None, ge=0),
     min_rating: float | None = Query(None, ge=0, le=5),
     category: str | None = Query(None, description="recepty se surovinou z kategorie"),
+    tags: list[str] = Query(default=[], description="filtr 'namespace:slug' – víc namespace = AND, víc tagů v jednom = OR"),
     sort: str = Query("smart", pattern="^(smart|rating|time|kcal|newest)$"),
 ):
-    stmt = select(Recipe).options(selectinload(Recipe.ingredients))
+    stmt = select(Recipe).options(selectinload(Recipe.ingredients), selectinload(Recipe.tags))
     if q:
         stmt = stmt.where(Recipe.title.ilike(f"%{q}%"))
     if max_kcal is not None:
@@ -48,6 +50,20 @@ def list_recipes(
             .where(Ingredient.category_path.ilike(f"{category}%"))
         )
         stmt = stmt.where(Recipe.id.in_(sub))
+    if tags:
+        by_ns: dict[str, list[str]] = {}
+        for t in tags:
+            if ":" not in t:
+                continue
+            ns, slug = t.split(":", 1)
+            by_ns.setdefault(ns, []).append(slug)
+        for ns, slugs in by_ns.items():
+            sub = (
+                select(RecipeTag.recipe_id)
+                .join(Tag, RecipeTag.tag_id == Tag.id)
+                .where(Tag.namespace == ns, Tag.slug.in_(slugs))
+            )
+            stmt = stmt.where(Recipe.id.in_(sub))
 
     recipes = db.scalars(stmt).all()
     have = pantry_ingredient_ids(db)
@@ -79,6 +95,45 @@ def list_recipes(
     return cards
 
 
+@router.get("/tags")
+def list_tags(db: Session = Depends(get_db)):
+    """Kanonické tagy seskupené podle jmenného prostoru, s počtem receptů – pro filtr."""
+    all_tags = db.scalars(select(Tag)).all()
+    counts = dict(
+        db.execute(select(RecipeTag.tag_id, func.count()).group_by(RecipeTag.tag_id)).all()
+    )
+    by_ns: dict[str, list[dict]] = {}
+    for t in all_tags:
+        by_ns.setdefault(t.namespace, []).append(
+            {"slug": t.slug, "label": t.label_cs, "count": counts.get(t.id, 0)}
+        )
+    return [
+        {
+            "namespace": ns,
+            "label": NAMESPACE_LABELS.get(ns, ns),
+            "tags": sorted(items, key=lambda x: x["label"]),
+        }
+        for ns, items in sorted(by_ns.items())
+    ]
+
+
+class TagsSet(BaseModel):
+    tags: list[str]  # "namespace:slug"
+
+
+@router.put("/{recipe_id}/tags", response_model=RecipeDetail)
+def set_recipe_tags(recipe_id: int, req: TagsSet, db: Session = Depends(get_db)):
+    r = db.scalar(
+        select(Recipe).where(Recipe.id == recipe_id).options(selectinload(Recipe.tags))
+    )
+    if r is None:
+        raise HTTPException(404, "Recept nenalezen.")
+    all_tags = {f"{t.namespace}:{t.slug}": t for t in db.scalars(select(Tag)).all()}
+    r.tags = [all_tags[key] for key in req.tags if key in all_tags]
+    db.commit()
+    return get_recipe(recipe_id, db)
+
+
 @router.get("/cook-from", response_model=list[RecipeCard])
 def cook_from(
     ingredient_ids: list[int] = Query(default=[], description="suroviny, ze kterých chci vařit"),
@@ -94,7 +149,9 @@ def cook_from(
     if not ingredient_ids:
         return []
     sel = set(ingredient_ids)
-    recipes = db.scalars(select(Recipe).options(selectinload(Recipe.ingredients))).all()
+    recipes = db.scalars(
+        select(Recipe).options(selectinload(Recipe.ingredients), selectinload(Recipe.tags))
+    ).all()
     cards: list[RecipeCard] = []
     for r in recipes:
         av = recipe_availability(r, sel)
@@ -159,7 +216,7 @@ def get_recipe(recipe_id: int, db: Session = Depends(get_db)):
     r = db.scalar(
         select(Recipe)
         .where(Recipe.id == recipe_id)
-        .options(selectinload(Recipe.ingredients))
+        .options(selectinload(Recipe.ingredients), selectinload(Recipe.tags))
     )
     if r is None:
         raise HTTPException(404, "Recept nenalezen")

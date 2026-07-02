@@ -43,7 +43,12 @@ const J = async (r) => {
 const qs = (params) => {
   const u = new URLSearchParams();
   Object.entries(params || {}).forEach(([k, v]) => {
-    if (v !== undefined && v !== null && v !== "") u.set(k, v);
+    if (v === undefined || v === null || v === "") return;
+    if (Array.isArray(v)) {
+      v.forEach((item) => item !== undefined && item !== null && item !== "" && u.append(k, item));
+    } else {
+      u.set(k, v);
+    }
   });
   const s = u.toString();
   return s ? `?${s}` : "";
@@ -228,6 +233,16 @@ export const api = {
   runCategorize: () =>
     afetch("/api/maintenance/categorize", { method: "POST" }).then(J),
   ingredientCategories: () => afetch("/api/ingredients/categories").then(J),
+  recipeTags: () => afetch("/api/recipes/tags").then(J),
+  setRecipeTags: (id, tags) =>
+    afetch(`/api/recipes/${id}/tags`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tags }),
+    }).then(J),
+  tagStatus: () => afetch("/api/maintenance/tag-status").then(J),
+  runTagging: () =>
+    afetch("/api/maintenance/tag-recipes", { method: "POST" }).then(J),
   unmatched: (limit = 50, offset = 0) =>
     afetch(`/api/maintenance/unmatched?limit=${limit}&offset=${offset}`).then(J),
   matchOne: (body) =>
