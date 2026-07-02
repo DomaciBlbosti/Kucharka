@@ -139,6 +139,7 @@ class SuggestRequest(BaseModel):
     meals: list[str] = ["snídaně", "svačina", "oběd", "večeře"]
     daily_kcal: int | None = None
     preferences: str = ""
+    fill_empty: bool = False  # když z knihovny nic nesedí, nechat AI vygenerovat nový recept
 
 
 class ApplyEntry(BaseModel):

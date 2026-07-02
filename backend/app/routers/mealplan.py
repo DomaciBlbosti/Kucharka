@@ -1,6 +1,7 @@
 """Jídelníček – plánování receptů na dny, denní kcal a nákup z plánu."""
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,8 +10,9 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..db import get_db
 from ..config import settings
-from ..models import MealPlanEntry, Recipe, ShoppingItem
+from ..models import MealPlanEntry, Recipe, RecipeIngredient, ShoppingItem
 from ..modules import planner
+from ..modules.nutrition import UNIT_TO_G
 from ..modules.pantry import pantry_ingredient_ids
 from ..schemas import (
     ApplyRequest,
@@ -104,32 +106,75 @@ def delete_entry(entry_id: int, db: Session = Depends(get_db)):
         db.commit()
 
 
+def _fmt_amount(a: float) -> str:
+    s = f"{a:.2f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def _fmt_grams(g: float) -> str:
+    if g >= 1000:
+        s = f"{g / 1000:.2f}".rstrip("0").rstrip(".")
+        return f"{s} kg"
+    return f"{round(g)} g"
+
+
 @router.post("/shopping")
 def shopping_from_plan(req: PlanRange, db: Session = Depends(get_db)):
-    """Z naplánovaných receptů v rozsahu přidá chybějící suroviny do nákupu (dedup)."""
+    """Z naplánovaných receptů v rozsahu přidá chybějící suroviny do nákupu –
+    se sečteným množstvím napříč recepty (kde jde spojit stejnou jednotkou)."""
     end_d = req.start + timedelta(days=req.days - 1)
     entries = db.scalars(
         select(MealPlanEntry)
         .where(MealPlanEntry.date >= req.start, MealPlanEntry.date <= end_d)
-        .options(selectinload(MealPlanEntry.recipe).selectinload(Recipe.ingredients))
+        .options(
+            selectinload(MealPlanEntry.recipe)
+            .selectinload(Recipe.ingredients)
+            .selectinload(RecipeIngredient.ingredient)
+        )
     ).all()
     have = pantry_ingredient_ids(db)
-    # už nezaškrtnuté v nákupu
     in_cart = set(
         db.scalars(
             select(ShoppingItem.ingredient_id).where(ShoppingItem.checked == False)  # noqa: E712
         ).all()
     )
-    added = 0
-    seen: set[int] = set()
+
+    grams_sum: dict[int, float] = defaultdict(float)
+    unit_sum: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    names: dict[int, str] = {}
+    needed: set[int] = set()
+
     for e in entries:
+        base = e.recipe.servings or e.servings or 1
+        ratio = (e.servings or 1) / base if base else 1.0
         for ri in e.recipe.ingredients:
             iid = ri.ingredient_id
-            if iid is None or iid in have or iid in in_cart or iid in seen:
+            if iid is None or iid in have or iid in in_cart:
                 continue
-            db.add(ShoppingItem(label=ri.raw_text, ingredient_id=iid))
-            seen.add(iid)
-            added += 1
+            needed.add(iid)
+            names[iid] = ri.ingredient.name_cs if ri.ingredient else ri.raw_text
+            if ri.amount is None:
+                continue  # bez množství (např. "sůl") – jen jednou v seznamu, bez čísla
+            unit = (ri.unit or "").strip().lower()
+            scaled = ri.amount * ratio
+            if unit in UNIT_TO_G:
+                grams_sum[iid] += scaled * UNIT_TO_G[unit]
+            else:
+                # objemové/kusové jednotky nepřevádíme (odhad přes hustotu by
+                # v nákupním seznamu spíš zmátl) – necháme v původní jednotce
+                unit_sum[iid][unit] += scaled
+
+    added = 0
+    for iid in sorted(needed):
+        parts = []
+        if grams_sum.get(iid):
+            parts.append(_fmt_grams(grams_sum[iid]))
+        for unit, amt in sorted(unit_sum.get(iid, {}).items()):
+            parts.append(f"{_fmt_amount(amt)} {unit}" if unit else f"{_fmt_amount(amt)} ks")
+        label = f"{names[iid]} – {', '.join(parts)}" if parts else names[iid]
+        db.add(ShoppingItem(label=label[:200], ingredient_id=iid))
+        added += 1
+
     db.commit()
     return {"added": added, "recipes": len(entries)}
 
@@ -139,7 +184,9 @@ def suggest_plan(req: SuggestRequest, db: Session = Depends(get_db)):
     if not settings.ollama_enabled:
         return {"started": False, "status": planner.status(), "error": "Ollama není dostupná."}
     meals = [m for m in req.meals if m in _MEALS] or ["oběd"]
-    started = planner.suggest_async(req.start, req.days, meals, req.daily_kcal, req.preferences)
+    started = planner.suggest_async(
+        req.start, req.days, meals, req.daily_kcal, req.preferences, req.fill_empty
+    )
     return {"started": started, "status": planner.status()}
 
 

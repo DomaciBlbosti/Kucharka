@@ -24,8 +24,19 @@ export const withToken = (url) => {
   return t ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(t)}` : url;
 };
 
-const J = (r) => {
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+const J = async (r) => {
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try {
+      const body = await r.clone().json();
+      if (body?.detail) {
+        msg = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+      }
+    } catch {
+      // tělo není JSON (např. chybová stránka proxy/tunelu) – zůstane obecná hláška
+    }
+    throw new Error(msg);
+  }
   return r.status === 204 ? null : r.json();
 };
 

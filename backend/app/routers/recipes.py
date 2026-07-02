@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from ..config import settings
 from ..db import get_db
 from ..models import Ingredient, PantryItem, Recipe, RecipeIngredient
 from ..modules.pantry import pantry_ingredient_ids, recipe_availability
@@ -119,6 +120,12 @@ class PhotoRecipeSave(BaseModel):
 @router.post("/from-photo")
 async def recipe_from_photo(images: list[UploadFile] = File(...)):
     """Náhled receptu vyfoceného po úsecích – jen extrahuje, neukládá."""
+    if not settings.ocr_model:
+        raise HTTPException(
+            400,
+            "OCR model není nastaven. Nastav ho v Admin → Nástroje → OCR model "
+            "(vision model stažený v Ollamě, např. qwen2.5vl nebo minicpm-v).",
+        )
     if not images:
         raise HTTPException(400, "Nahraj alespoň jednu fotku receptu.")
     raw = [await f.read() for f in images]

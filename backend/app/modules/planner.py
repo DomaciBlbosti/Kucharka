@@ -21,6 +21,7 @@ from sqlalchemy.orm import selectinload
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Recipe, RecipeIngredient
+from . import rag
 
 log = logging.getLogger("kucharka.planner")
 
@@ -106,7 +107,34 @@ def _pick_day(cands, meals, daily_kcal, preferences, used, day_idx) -> dict:
     return json.loads(r.json()["response"])
 
 
-def suggest(start: date, days: int, meals: list[str], daily_kcal, preferences: str) -> None:
+def _generate_for_slot(db, meal: str, daily_kcal, preferences: str, meals_count: int) -> dict | None:
+    """Když z knihovny nic nesedí, vygeneruj a rovnou ulož nový recept (RAG,
+    stejná cesta jako u ručního „Vymyslet")."""
+    per_meal_kcal = round(daily_kcal / meals_count) if daily_kcal and meals_count else None
+    prompt = meal
+    if preferences.strip():
+        prompt += f", preference: {preferences.strip()}"
+    try:
+        gen = rag.generate(db, prompt, max_kcal=per_meal_kcal)
+        recipe = rag.save_generated(db, gen["recipe"])
+        return {
+            "recipe_id": recipe.id,
+            "title": recipe.title,
+            "kcal_per_serving": recipe.kcal_per_serving,
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.warning("dogenerování receptu (%s) selhalo: %s", meal, exc)
+        return None
+
+
+def suggest(
+    start: date,
+    days: int,
+    meals: list[str],
+    daily_kcal,
+    preferences: str,
+    fill_empty: bool = False,
+) -> None:
     _set(running=True, day=0, days=days, proposal=None, error=None, finished_at=None)
     db = SessionLocal()
     try:
@@ -131,6 +159,14 @@ def suggest(start: date, days: int, meals: list[str], daily_kcal, preferences: s
                 if rid in by_id:
                     used.add(rid)
                     day_obj["meals"][meal] = {"recipe_id": rid, "alternatives": alts}
+                elif fill_empty:
+                    gen = _generate_for_slot(db, meal, daily_kcal, preferences, len(meals))
+                    if gen:
+                        by_id[gen["recipe_id"]] = {**gen, "generated": True}
+                        used.add(gen["recipe_id"])
+                        day_obj["meals"][meal] = {"recipe_id": gen["recipe_id"], "alternatives": []}
+                    else:
+                        day_obj["meals"][meal] = None
                 else:
                     day_obj["meals"][meal] = None
             plan.append(day_obj)
@@ -141,11 +177,11 @@ def suggest(start: date, days: int, meals: list[str], daily_kcal, preferences: s
         _set(running=False, finished_at=time.time())
 
 
-def suggest_async(start, days, meals, daily_kcal, preferences) -> bool:
+def suggest_async(start, days, meals, daily_kcal, preferences, fill_empty=False) -> bool:
     with _lock:
         if _state["running"]:
             return False
     threading.Thread(
-        target=suggest, args=(start, days, meals, daily_kcal, preferences), daemon=True
+        target=suggest, args=(start, days, meals, daily_kcal, preferences, fill_empty), daemon=True
     ).start()
     return True

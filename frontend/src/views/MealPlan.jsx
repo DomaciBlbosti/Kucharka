@@ -187,6 +187,7 @@ function SuggestModal({ defaultStart, onClose, onReady }) {
   const [meals, setMeals] = useState([...MEALS]);
   const [kcal, setKcal] = useState("");
   const [prefs, setPrefs] = useState("");
+  const [fillEmpty, setFillEmpty] = useState(false);
   const [phase, setPhase] = useState("form"); // form | running | error
   const [progress, setProgress] = useState({ day: 0, days: 0 });
   const [err, setErr] = useState(null);
@@ -202,6 +203,7 @@ function SuggestModal({ defaultStart, onClose, onReady }) {
       meals: meals.length ? meals : ["oběd"],
       daily_kcal: kcal ? Number(kcal) : null,
       preferences: prefs,
+      fill_empty: fillEmpty,
     });
     if (!r.started) {
       setErr(r.error || "Plánovač už běží nebo není dostupná Ollama.");
@@ -259,6 +261,14 @@ function SuggestModal({ defaultStart, onClose, onReady }) {
               <input value={prefs} onChange={(e) => setPrefs(e.target.value)} placeholder="víc zeleniny, bez ryb…" className={inp} />
             </Field>
           </div>
+          <label className="mt-3 flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-0.5 accent-basil" checked={fillEmpty}
+              onChange={(e) => setFillEmpty(e.target.checked)} />
+            <span>
+              Když z tvých receptů nic nesedí, nech AI vymyslet a rovnou uložit nový recept.
+              <span className="block text-xs text-ink/40">Prodlouží to sestavování plánu.</span>
+            </span>
+          </label>
           <p className="mt-3 text-xs text-ink/40">
             Plán sestavím z tvých receptů (reálné kcal). Není to lékařské ani dietní doporučení.
           </p>
@@ -367,7 +377,12 @@ function ReviewPanel({ review, onCancel, onApplied }) {
                       <span className="w-16 shrink-0 text-xs font-medium text-ink/45">{meal}</span>
                       {slot ? (
                         <>
-                          <span className="flex-1 truncate">{recOf(slot.recipe_id).title}</span>
+                          <span className="flex-1 truncate">
+                            {recOf(slot.recipe_id).title}
+                            {recOf(slot.recipe_id).generated && (
+                              <span className="ml-1.5 rounded-full bg-basil-soft px-1.5 py-0.5 text-[10px] font-semibold text-basil-dark align-middle">✨ nový</span>
+                            )}
+                          </span>
                           <input type="number" min="1" value={slot.servings} onChange={(e) => setSlot(d.date, meal, { ...slot, servings: Math.max(1, Number(e.target.value) || 1) })} className="nums w-12 rounded border border-line bg-paper px-1 py-0.5 text-center text-xs outline-none focus:border-basil" />
                           <button onClick={() => setSlot(d.date, meal, null)} title="Vynechat" className="text-ink/30 hover:text-miss">×</button>
                         </>
