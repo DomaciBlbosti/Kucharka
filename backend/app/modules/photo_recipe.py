@@ -11,10 +11,8 @@ from __future__ import annotations
 import base64
 import logging
 
-import httpx
-
 from ..config import settings
-from .llmjson import parse_json_response
+from .ollamachat import chat_json
 from .receipt import preprocess_image  # sdílené zmenšení/oříznutí podle EXIF
 from .textmerge import merge_lists, merge_texts
 
@@ -35,25 +33,15 @@ def _extract_segment(image_bytes: bytes) -> dict:
     if not settings.ocr_model:
         raise RuntimeError("OCR model není nastaven (Admin → Nástroje → OCR model).")
     b64 = base64.b64encode(preprocess_image(image_bytes)).decode()
-    r = httpx.post(
-        f"{settings.ollama_url}/api/generate",
-        json={
-            "model": settings.ocr_model,
-            "prompt": _PROMPT,
-            "images": [b64],
-            "stream": False,
-            "format": "json",
-            "think": False,
-            "options": {"temperature": 0},
-        },
+    out = chat_json(
+        settings.ollama_url,
+        settings.ocr_model,
+        _PROMPT,
+        images=[b64],
         timeout=max(settings.http_timeout, 120),
     )
-    r.raise_for_status()
-    raw = r.json().get("response", "")
-    try:
-        out = parse_json_response(raw)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("OCR receptu se nepodařilo naparsovat (%s): %r", exc, raw[:500])
+    if out is None:
+        log.warning("OCR receptu: volání modelu selhalo nebo odpověď nešla naparsovat.")
         return {"title": "", "ingredients": [], "instructions": ""}
     result = {
         "title": str(out.get("title") or "").strip(),
@@ -61,8 +49,7 @@ def _extract_segment(image_bytes: bytes) -> dict:
         "instructions": str(out.get("instructions") or "").strip(),
     }
     if not result["title"] and not result["ingredients"]:
-        # JSON byl validní, ale prázdný – ať je v logu vidět, co model reálně řekl
-        log.warning("OCR receptu vrátil prázdný výsledek. Syrová odpověď modelu: %r", raw[:500])
+        log.warning("OCR receptu vrátil prázdný, ale validní výsledek (model nic nerozpoznal).")
     return result
 
 

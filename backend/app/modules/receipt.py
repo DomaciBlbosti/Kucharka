@@ -16,13 +16,12 @@ import base64
 import io
 import logging
 
-import httpx
 from PIL import Image, ImageOps
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from .llmjson import parse_json_response
 from .normalizer import match_ingredient
+from .ollamachat import chat_json
 from .textmerge import merge_lists
 
 log = logging.getLogger("kucharka.receipt")
@@ -60,25 +59,15 @@ def extract_items_from_image(image_bytes: bytes) -> list[str]:
     if not settings.ocr_model:
         raise RuntimeError("OCR model není nastaven (Admin → Nástroje → OCR model).")
     b64 = base64.b64encode(preprocess_image(image_bytes)).decode()
-    r = httpx.post(
-        f"{settings.ollama_url}/api/generate",
-        json={
-            "model": settings.ocr_model,
-            "prompt": _PROMPT,
-            "images": [b64],
-            "stream": False,
-            "format": "json",
-            "think": False,
-            "options": {"temperature": 0},
-        },
+    out = chat_json(
+        settings.ollama_url,
+        settings.ocr_model,
+        _PROMPT,
+        images=[b64],
         timeout=max(settings.http_timeout, 120),
     )
-    r.raise_for_status()
-    raw = r.json().get("response", "")
-    try:
-        out = parse_json_response(raw)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("OCR odpověď se nepodařilo naparsovat (%s): %r", exc, raw[:300])
+    if out is None:
+        log.warning("OCR účtenky: volání modelu selhalo nebo odpověď nešla naparsovat.")
         return []
     items = out.get("items", [])
     return [str(x).strip() for x in items if str(x).strip()]

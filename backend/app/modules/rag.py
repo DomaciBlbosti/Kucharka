@@ -7,7 +7,6 @@ je brute-force kosinová podobnost okamžitá). Filtrování podle kalorií/hodn
 """
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
@@ -22,6 +21,7 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Recipe, RecipeEmbedding
 from .ingest import _persist
+from .ollamachat import chat_json
 
 log = logging.getLogger("kucharka.rag")
 
@@ -189,20 +189,16 @@ def generate(
         f"Zadání: {prompt}\n{limit_block}\n\n"
         f"Existující recepty pro inspiraci:\n{context_block}"
     )
-    r = httpx.post(
-        f"{settings.ollama_url}/api/generate",
-        json={
-            "model": settings.ollama_model,
-            "prompt": sys_prompt,
-            "stream": False,
-            "format": "json",
-            "think": False,
-            "options": {"temperature": 0.7},
-        },
+    out = chat_json(
+        settings.ollama_url,
+        settings.ollama_model,
+        sys_prompt,
         timeout=max(settings.http_timeout, 180),
+        temperature=0.7,
     )
-    r.raise_for_status()
-    data = json.loads(r.json()["response"])
+    if out is None:
+        raise RuntimeError("generování receptu selhalo (volání modelu nebo parsování)")
+    data = out
 
     data.setdefault("ingredients", [])
     data.setdefault("steps", [])

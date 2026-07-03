@@ -14,7 +14,6 @@ import threading
 import time
 from datetime import date, timedelta
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -22,6 +21,7 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Recipe, RecipeIngredient
 from . import rag
+from .ollamachat import chat_json
 
 log = logging.getLogger("kucharka.planner")
 
@@ -91,20 +91,16 @@ def _pick_day(cands, meals, daily_kcal, preferences, used, day_idx) -> dict:
         '{"meals": {"<chod>": {"recipe_id": <id>, "alternatives": [<id>, ...]}}}.\n'
         f"Recepty: {json.dumps(cands, ensure_ascii=False)}"
     )
-    r = httpx.post(
-        f"{settings.ollama_url}/api/generate",
-        json={
-            "model": settings.ollama_model,
-            "prompt": prompt,
-            "stream": False,
-            "format": "json",
-            "think": False,
-            "options": {"temperature": 0.4},
-        },
+    out = chat_json(
+        settings.ollama_url,
+        settings.ollama_model,
+        prompt,
         timeout=max(settings.http_timeout, 180),
+        temperature=0.4,
     )
-    r.raise_for_status()
-    return json.loads(r.json()["response"])
+    if out is None:
+        raise RuntimeError("plánovač: volání modelu selhalo nebo odpověď nešla naparsovat")
+    return out
 
 
 def _generate_for_slot(db, meal: str, daily_kcal, preferences: str, meals_count: int) -> dict | None:

@@ -16,13 +16,13 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Recipe
+from .ollamachat import chat_json
 
 log = logging.getLogger("kucharka.translate")
 
@@ -53,21 +53,15 @@ def _translate_fields(title: str, ingredients: list[str], instructions: str) -> 
         f"Recept: {json.dumps(payload, ensure_ascii=False)}"
     )
     try:
-        r = httpx.post(
-            f"{settings.ollama_url}/api/generate",
-            json={
-                "model": settings.ollama_fast_model,
-                "prompt": prompt,
-                "stream": False,
-                "format": "json",
-                "think": False,
-                "keep_alive": settings.ollama_keep_alive,
-                "options": {"temperature": 0},
-            },
+        out = chat_json(
+            settings.ollama_url,
+            settings.ollama_fast_model,
+            prompt,
+            keep_alive=settings.ollama_keep_alive,
             timeout=max(settings.http_timeout, 120),
         )
-        r.raise_for_status()
-        out = json.loads(r.json()["response"])
+        if out is None:
+            return None
     except Exception as exc:  # noqa: BLE001
         log.warning("překlad selhal: %s", exc)
         return None

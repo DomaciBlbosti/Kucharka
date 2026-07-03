@@ -10,7 +10,6 @@ Postup:
 """
 from __future__ import annotations
 
-import json
 import re
 import unicodedata
 
@@ -22,6 +21,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..models import Ingredient, IngredientAlias
 from .nutrition import PIECE_GRAMS, UNIT_TO_G, UNIT_TO_ML
+from .ollamachat import chat_json
 
 _KNOWN_UNITS = set(UNIT_TO_G) | set(UNIT_TO_ML) | set(PIECE_GRAMS)
 
@@ -100,35 +100,30 @@ def parse_lines_ollama(
         '{"items":[{"amount":number|null,"unit":string|null,"name":string}]}.\n\n'
         f"Řádky:\n{numbered}"
     )
+    out = chat_json(
+        settings.ollama_url,
+        settings.ollama_fast_model,
+        prompt,
+        keep_alive=settings.ollama_keep_alive,
+        timeout=max(settings.http_timeout, 60),
+    )
+    if out is None:
+        return None
     try:
-        r = httpx.post(
-            f"{settings.ollama_url}/api/generate",
-            json={
-                "model": settings.ollama_fast_model,
-                "prompt": prompt,
-                "stream": False,
-                "format": "json",
-                "think": False,  # vypni reasoning (qwen3 ap.) → rychlejší čistý JSON
-                "keep_alive": settings.ollama_keep_alive,
-                "options": {"temperature": 0},
-            },
-            timeout=max(settings.http_timeout, 60),
-        )
-        r.raise_for_status()
-        items = json.loads(r.json()["response"]).get("items", [])
+        items = out.get("items", [])
         if len(items) != len(lines):
             return None
-        out = []
+        parsed = []
         for it in items:
             amt = it.get("amount")
-            out.append(
+            parsed.append(
                 (
                     float(amt) if amt is not None else None,
                     (it.get("unit") or None),
                     (it.get("name") or "").strip(),
                 )
             )
-        return out
+        return parsed
     except Exception:
         return None
 
@@ -218,23 +213,14 @@ def create_ingredient_via_llm(db: Session, name: str) -> Ingredient | None:
         '"fat_100g": number, "density": number|null (g na 1 ml, jinak null)}. '
         "Pokud to není jedlá surovina, vrať name_cs prázdné."
     )
-    try:
-        r = httpx.post(
-            f"{settings.ollama_url}/api/generate",
-            json={
-                "model": settings.ollama_fast_model,
-                "prompt": prompt,
-                "stream": False,
-                "format": "json",
-                "think": False,
-                "keep_alive": settings.ollama_keep_alive,
-                "options": {"temperature": 0},
-            },
-            timeout=max(settings.http_timeout, 60),
-        )
-        r.raise_for_status()
-        data = json.loads(r.json()["response"])
-    except Exception:
+    data = chat_json(
+        settings.ollama_url,
+        settings.ollama_fast_model,
+        prompt,
+        keep_alive=settings.ollama_keep_alive,
+        timeout=max(settings.http_timeout, 60),
+    )
+    if data is None:
         return None
 
     name_cs = (data.get("name_cs") or "").strip()

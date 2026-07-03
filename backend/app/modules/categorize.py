@@ -6,18 +6,17 @@ pro nezkategorizované suroviny. Slouží k snadnějšímu hledání a filtrová
 """
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import httpx
 from sqlalchemy import func, or_, select
 
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Ingredient
+from .ollamachat import chat_json
 
 log = logging.getLogger("kucharka.categorize")
 
@@ -71,26 +70,18 @@ def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
         "Odpověz POUZE JSON {\"items\":[{\"i\":<index>,\"category_path\":\"...\"}]}.\n"
         f"Potraviny:\n{listing}"
     )
-    try:
-        r = httpx.post(
-            f"{settings.ollama_url}/api/generate",
-            json={
-                "model": settings.ollama_fast_model,
-                "prompt": prompt,
-                "stream": False,
-                "format": "json",
-                "think": False,
-                "keep_alive": settings.ollama_keep_alive,
-                "options": {"temperature": 0},
-            },
-            timeout=max(settings.http_timeout, 120),
-        )
-        r.raise_for_status()
-        items = json.loads(r.json()["response"]).get("items", [])
-    except Exception as exc:  # noqa: BLE001
-        log.warning("kategorizace dávky selhala: %s", exc)
+    out = chat_json(
+        settings.ollama_url,
+        settings.ollama_fast_model,
+        prompt,
+        keep_alive=settings.ollama_keep_alive,
+        timeout=max(settings.http_timeout, 120),
+    )
+    if out is None:
+        log.warning("kategorizace dávky selhala (volání modelu nebo parsování).")
         _inc("done", len(pairs))
         return
+    items = out.get("items", [])
 
     paths: dict[int, str] = {}
     for it in items:

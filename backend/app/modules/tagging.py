@@ -6,13 +6,11 @@ i stejných jmenných prostorů zároveň.
 """
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
@@ -20,6 +18,7 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Recipe, RecipeTag, Tag
 from ..seed.starter_tags import NAMESPACE_LABELS
+from .ollamachat import chat_json
 
 log = logging.getLogger("kucharka.tagging")
 
@@ -95,24 +94,15 @@ def _tag_batch(recipe_ids: list[int]) -> None:
             '{"items":[{"i":<index>,"tags":["chod:hlavni-jidlo", ...]}]}.\n\n'
             f"Dostupné tagy:\n{vocab}\n\nRecepty:\n{listing}"
         )
-        try:
-            r = httpx.post(
-                f"{settings.ollama_url}/api/generate",
-                json={
-                    "model": settings.ollama_fast_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json",
-                    "think": False,
-                    "keep_alive": settings.ollama_keep_alive,
-                    "options": {"temperature": 0},
-                },
-                timeout=max(settings.http_timeout, 120),
-            )
-            r.raise_for_status()
-            out = json.loads(r.json()["response"])
-        except Exception as exc:  # noqa: BLE001
-            log.warning("otagování dávky selhalo: %s", exc)
+        out = chat_json(
+            settings.ollama_url,
+            settings.ollama_fast_model,
+            prompt,
+            keep_alive=settings.ollama_keep_alive,
+            timeout=max(settings.http_timeout, 120),
+        )
+        if out is None:
+            log.warning("otagování dávky selhalo (volání modelu nebo parsování).")
             _inc("done", len(recipes))
             return
 
