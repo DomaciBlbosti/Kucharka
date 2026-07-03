@@ -4,7 +4,7 @@ import { api } from "../api";
 import { PhotoCapture } from "./PhotoCapture";
 import { Button, Spinner } from "./ui";
 
-const inp = "w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm outline-none focus:border-basil";
+const inp = "rounded-lg border border-line bg-paper px-3 py-2 text-sm outline-none focus:border-basil";
 
 // {amount, unit} -> editovatelný textový "10 dkg" / "1" / "" (bez množství)
 function qtyText(amount, unit) {
@@ -120,7 +120,7 @@ export function RecipeFromPhoto({ onClose }) {
 
               <div>
                 <label className="mb-1 block text-xs font-medium text-ink/55">Název</label>
-                <input className={inp} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Název receptu" />
+                <input className={`${inp} w-full`} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Název receptu" />
               </div>
 
               <div>
@@ -157,7 +157,7 @@ export function RecipeFromPhoto({ onClose }) {
 
               <div>
                 <label className="mb-1 block text-xs font-medium text-ink/55">Postup</label>
-                <textarea className={`${inp} min-h-[8rem]`} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
+                <textarea className={`${inp} w-full min-h-[8rem]`} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
                 <p className="mt-1 text-xs text-ink/40">Každý krok na samostatný řádek.</p>
               </div>
 
