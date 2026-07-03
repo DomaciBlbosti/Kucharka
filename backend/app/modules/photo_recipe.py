@@ -6,9 +6,15 @@ je stejnou fuzzy-merge logikou jako u účtenek (viz textmerge.py). Uložení
 konceptu pak jede přes existující ingest pipeli (stejnou jako u receptů
 stažených z webu) – suroviny se tak normalizují a párují identicky.
 
-Suroviny se navíc už v náhledu rozparsují na množství/jednotku/název (bez
-LLM, jen rychlý regex) – uživatel je tak může opravit odděleně, ne jako
-jeden plochý text.
+Suroviny a jejich množství chodí z vision modelu jako DVA paralelní seznamy
+("ingredients" a "quantities"), párované indexem – ne jako jeden plochý text
+na řádek. Důvod: papírové recepty bývají psané ve dvou sloupcích (množství
+vlevo, surovina vpravo) a model při čtení "po řádcích" tenhle sloupcový
+layout dost často rozsype na dvě samostatné položky v jednom seznamu (např.
+"10 dkg" a "mouka" jako dvě různé položky) – pak nejde nic spárovat zpětně
+regexem, protože položka s množstvím žádný text suroviny neobsahuje a naopak.
+Se dvěma seznamy tenhle problém odpadá, i kdyby model četl sloupce
+"nezávisle" – pár (i-té množství, i-tá surovina) sedí podle pozice v řádku.
 """
 from __future__ import annotations
 
@@ -20,7 +26,7 @@ from ..config import settings
 from .normalizer import parse_line_regex
 from .ollamachat import chat_json
 from .receipt import preprocess_image  # sdílené zmenšení/oříznutí podle EXIF
-from .textmerge import merge_lists, merge_texts
+from .textmerge import merge_items, merge_texts
 from .uploads import save_recipe_photo
 
 log = logging.getLogger("kucharka.photo_recipe")
@@ -32,14 +38,20 @@ _SUSPICIOUS_TITLE_RE = re.compile(r"\bJSON\b|\bPOUZE\b|\bODPOVĚZ\b", re.I)
 _PROMPT = (
     "Toto je fotografie ÚSEKU papírového nebo rukou psaného receptu (může jít "
     "jen o část delšího receptu, fotografovaného po kouscích odshora dolů). "
-    "Vytáhni z něj: název receptu (pokud je na tomto úseku vidět, jinak prázdný "
-    "řetězec), seznam surovin PŘESNĚ tak, jak jsou napsané (množství i "
-    "jednotka spolu s názvem na jednom řádku), a text postupu přípravy "
-    "(pokud je na tomto úseku vidět, jinak prázdný řetězec). Pokud recept má "
-    "oddělené části (např. těsto/náplň/poleva/krém), vlož před suroviny dané "
-    "části samostatný řádek s jejím názvem a dvojtečkou (např. 'Poleva:'), "
-    "ať je vidět, kam patří. Odpověz POUZE "
-    'JSON {"title": string, "ingredients": [string], "instructions": string}.'
+    "Recepty bývají psané ve dvou sloupcích – množství vlevo, surovina vpravo "
+    "na stejném řádku. Vytáhni z něj: název receptu (pokud je na tomto úseku "
+    "vidět, jinak prázdný řetězec), suroviny a text postupu přípravy (pokud "
+    "je na tomto úseku vidět, jinak prázdný řetězec). Suroviny vrať jako DVA "
+    "seznamy stejné délky, položku po položce PODLE ŘÁDKŮ (ne podle sloupců): "
+    "'ingredients' – jen název suroviny bez množství, v 1. pádě; "
+    "'quantities' – jen množství a jednotka k dané surovině přesně jak jsou "
+    "napsané (prázdný řetězec, pokud u té suroviny množství není). i-tá "
+    "položka 'quantities' patří k i-té položce 'ingredients'. Pokud recept "
+    "má oddělené části (např. těsto/náplň/poleva/krém), vlož do 'ingredients' "
+    "samostatnou položku s názvem té části a dvojtečkou (např. 'Poleva:') a "
+    "k ní prázdné množství. Odpověz POUZE JSON "
+    '{"title": string, "ingredients": [string], "quantities": [string], '
+    '"instructions": string}.'
 )
 
 
@@ -56,41 +68,49 @@ def _extract_segment(image_bytes: bytes) -> dict:
     )
     if out is None:
         log.warning("OCR receptu: volání modelu selhalo nebo odpověď nešla naparsovat.")
-        return {"title": "", "ingredients": [], "instructions": ""}
+        return {"title": "", "pairs": [], "instructions": ""}
+
+    names = [str(x).strip() for x in out.get("ingredients", [])]
+    qtys = [str(x).strip() for x in out.get("quantities", [])]
+    if len(qtys) < len(names):
+        qtys += [""] * (len(names) - len(qtys))  # model zapomněl doplnit "" k některým položkám
+    pairs = [(qtys[i], names[i]) for i in range(len(names)) if names[i]]
+
     result = {
         "title": str(out.get("title") or "").strip(),
-        "ingredients": [str(x).strip() for x in out.get("ingredients", []) if str(x).strip()],
+        "pairs": pairs,
         "instructions": str(out.get("instructions") or "").strip(),
     }
     if result["title"] and _SUSPICIOUS_TITLE_RE.search(result["title"]):
         log.warning("OCR receptu: zahozen podezřelý název (echo instrukce): %r", result["title"])
         result["title"] = ""
-    if not result["title"] and not result["ingredients"]:
+    if not result["title"] and not result["pairs"]:
         log.warning("OCR receptu vrátil prázdný, ale validní výsledek (model nic nerozpoznal).")
     return result
 
 
-def _structure_line(raw: str) -> dict:
-    """Rychlý regex rozklad (bez LLM) pro editovatelný náhled – množství,
-    jednotka a název zvlášť. Nadpisy sekcí (např. 'Poleva:') vyjdou jako
-    řádek bez množství, s celým textem v 'name' – uživatel je pozná a může
-    smazat nebo nechat jako oddělovač."""
-    amount, unit, name = parse_line_regex(raw)
-    return {"raw_text": raw, "amount": amount, "unit": unit, "name": name or raw}
+def _structure_pair(qty: str, name: str) -> dict:
+    """Množství (text z modelu, např. '10 dkg') rozlož regexem na
+    amount/unit; název suroviny už máme přímo od modelu, nic dalšího z něj
+    vytahovat netřeba."""
+    amount, unit, leftover = parse_line_regex(qty) if qty else (None, None, "")
+    full_name = f"{leftover} {name}".strip() if leftover else name
+    raw_text = f"{qty} {name}".strip()
+    return {"raw_text": raw_text, "amount": amount, "unit": unit, "name": full_name}
 
 
 def extract_draft(images: list[bytes]) -> dict:
     """Zpracuj všechny úseky a slož je do jednoho konceptu receptu."""
     segments = [_extract_segment(img) for img in images]
     title = next((s["title"] for s in segments if s["title"]), "")
-    ingredient_lines = merge_lists([s["ingredients"] for s in segments])
+    pairs = merge_items([s["pairs"] for s in segments], key=lambda p: p[1])
     instructions = merge_texts([s["instructions"] for s in segments])
 
     image_url = save_recipe_photo(images[0]) if images else None
 
     return {
         "title": title,
-        "ingredients": [_structure_line(ln) for ln in ingredient_lines],
+        "ingredients": [_structure_pair(qty, name) for qty, name in pairs],
         "instructions": instructions,
         "image_url": image_url,
     }
