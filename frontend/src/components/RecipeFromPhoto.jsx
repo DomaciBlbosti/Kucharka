@@ -139,7 +139,7 @@ export function RecipeFromPhoto({ onClose }) {
                         placeholder="– množství –"
                       />
                       <input
-                        className={inp}
+                        className={`${inp} min-w-0 flex-1`}
                         value={ln.name}
                         onChange={(e) => setLine(i, { name: e.target.value })}
                         placeholder="surovina, nebo nadpis sekce (např. „Poleva:“)"
