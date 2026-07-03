@@ -41,6 +41,11 @@ _DATE_KEYS = ("date", "purchaseDate", "createdAt", "issueDate")
 def _client(account: LidlAccount):
     from lidlplus import LidlPlusApi  # import až tady, ať appka jede i bez balíčku
 
+    # Knihovna má HTTP timeout natvrdo v `_TIMEOUT = 10` (třídní atribut, ne
+    # parametr konstruktoru) – 10 s je na pomalejší spojení (domácí upload,
+    # Lidl API samo umí být pomalé) často málo. Zvedneme to tady, ať to
+    # nespadne jen kvůli krátkému limitu.
+    LidlPlusApi._TIMEOUT = 30
     return LidlPlusApi(
         language=account.language or "cs",
         country=account.country or "CZ",
@@ -52,6 +57,7 @@ def test_connection(country: str, language: str, refresh_token: str) -> dict:
     """Ověř, že token funguje – zavolá se při přidávání účtu v adminu."""
     from lidlplus import LidlPlusApi
 
+    LidlPlusApi._TIMEOUT = 30
     client = LidlPlusApi(language=language or "cs", country=country or "CZ", refresh_token=refresh_token)
     tickets = client.tickets()
     return {"ok": True, "tickets_found": len(tickets), "new_refresh_token": client.refresh_token}
