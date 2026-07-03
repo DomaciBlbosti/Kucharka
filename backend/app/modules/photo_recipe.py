@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 
 from ..config import settings
 from .normalizer import parse_line_regex
@@ -23,6 +24,10 @@ from .textmerge import merge_lists, merge_texts
 from .uploads import save_recipe_photo
 
 log = logging.getLogger("kucharka.photo_recipe")
+
+# Když model na fotce nenajde název (typicky úsek uprostřed receptu), občas
+# si "spletl" kus vlastní instrukce s odpovědí – takový titulek raději zahoď.
+_SUSPICIOUS_TITLE_RE = re.compile(r"\bJSON\b|\bPOUZE\b|\bODPOVĚZ\b", re.I)
 
 _PROMPT = (
     "Toto je fotografie ÚSEKU papírového nebo rukou psaného receptu (může jít "
@@ -57,6 +62,9 @@ def _extract_segment(image_bytes: bytes) -> dict:
         "ingredients": [str(x).strip() for x in out.get("ingredients", []) if str(x).strip()],
         "instructions": str(out.get("instructions") or "").strip(),
     }
+    if result["title"] and _SUSPICIOUS_TITLE_RE.search(result["title"]):
+        log.warning("OCR receptu: zahozen podezřelý název (echo instrukce): %r", result["title"])
+        result["title"] = ""
     if not result["title"] and not result["ingredients"]:
         log.warning("OCR receptu vrátil prázdný, ale validní výsledek (model nic nerozpoznal).")
     return result

@@ -36,7 +36,11 @@ export function RecipeFromPhoto({ onClose }) {
       const ing = draft.ingredients || [];
       setLines(
         ing.length
-          ? ing.map((i) => ({ qty: qtyText(i.amount, i.unit), name: i.name || i.raw_text || "" }))
+          ? ing.map((i) =>
+              typeof i === "string"
+                ? { qty: "", name: i }
+                : { qty: qtyText(i.amount, i.unit), name: i.name || i.raw_text || "" }
+            )
           : [{ qty: "", name: "" }]
       );
       setStep("review");
@@ -130,7 +134,7 @@ export function RecipeFromPhoto({ onClose }) {
                         className={`${inp} w-20 shrink-0`}
                         value={ln.qty}
                         onChange={(e) => setLine(i, { qty: e.target.value })}
-                        placeholder="10 dkg"
+                        placeholder="– množství –"
                       />
                       <input
                         className={inp}
