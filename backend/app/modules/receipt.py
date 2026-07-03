@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import logging
 
 import httpx
@@ -22,6 +21,7 @@ from PIL import Image, ImageOps
 from sqlalchemy.orm import Session
 
 from ..config import settings
+from .llmjson import parse_json_response
 from .normalizer import match_ingredient
 from .textmerge import merge_lists
 
@@ -68,15 +68,17 @@ def extract_items_from_image(image_bytes: bytes) -> list[str]:
             "images": [b64],
             "stream": False,
             "format": "json",
+            "think": False,
             "options": {"temperature": 0},
         },
         timeout=max(settings.http_timeout, 120),
     )
     r.raise_for_status()
+    raw = r.json().get("response", "")
     try:
-        out = json.loads(r.json()["response"])
+        out = parse_json_response(raw)
     except Exception as exc:  # noqa: BLE001
-        log.warning("OCR odpověď se nepodařilo naparsovat: %s", exc)
+        log.warning("OCR odpověď se nepodařilo naparsovat (%s): %r", exc, raw[:300])
         return []
     items = out.get("items", [])
     return [str(x).strip() for x in items if str(x).strip()]

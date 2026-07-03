@@ -9,12 +9,12 @@ stažených z webu) – suroviny se tak normalizují a párují identicky.
 from __future__ import annotations
 
 import base64
-import json
 import logging
 
 import httpx
 
 from ..config import settings
+from .llmjson import parse_json_response
 from .receipt import preprocess_image  # sdílené zmenšení/oříznutí podle EXIF
 from .textmerge import merge_lists, merge_texts
 
@@ -43,15 +43,17 @@ def _extract_segment(image_bytes: bytes) -> dict:
             "images": [b64],
             "stream": False,
             "format": "json",
+            "think": False,
             "options": {"temperature": 0},
         },
         timeout=max(settings.http_timeout, 120),
     )
     r.raise_for_status()
+    raw = r.json().get("response", "")
     try:
-        out = json.loads(r.json()["response"])
+        out = parse_json_response(raw)
     except Exception as exc:  # noqa: BLE001
-        log.warning("OCR receptu se nepodařilo naparsovat: %s", exc)
+        log.warning("OCR receptu se nepodařilo naparsovat (%s): %r", exc, raw[:300])
         return {"title": "", "ingredients": [], "instructions": ""}
     return {
         "title": str(out.get("title") or "").strip(),
