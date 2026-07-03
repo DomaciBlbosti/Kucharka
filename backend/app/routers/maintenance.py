@@ -199,3 +199,19 @@ def run_tagging():
         return {"started": False, "status": tagging.status(), "error": err}
     started = tagging.tag_async(only_missing=True)
     return {"started": started, "status": tagging.status(), "error": None}
+
+
+@router.get("/retranslate-status")
+def retranslate_reset_status():
+    s = translate.reset_status()
+    s["ollama"] = settings.ollama_enabled
+    return s
+
+
+@router.post("/retranslate-reset")
+def run_retranslate_reset():
+    """Hromadně: znovu stáhni originál a přelož recepty, co vypadají jako starý strojový překlad."""
+    if not settings.ollama_enabled:
+        return {"started": False, "status": translate.reset_status(), "error": "Ollama není dostupná."}
+    started = translate.reset_translations_async()
+    return {"started": started, "status": translate.reset_status(), "error": None}

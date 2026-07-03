@@ -110,6 +110,8 @@ class Settings:
         # Vision model pro skenování účtenek (musí umět obrázky, např. qwen2.5vl,
         # llama3.2-vision, minicpm-v). Prázdné = skenování účtenek nedostupné.
         self.ocr_model: str = _env("OCR_MODEL", "")
+        # Token pro HMI/E-ink zobrazení v kuchyni (prázdné = otevřené v rámci LAN).
+        self.hmi_token: str = _env("HMI_TOKEN", "")
         self.rag_k: int = int(_env("RAG_K", "6"))  # kolik receptů jako kontext
         # Self-update z Gitu přes WEB UI
         self.update_enabled: bool = _env("UPDATE_ENABLED", "false").lower() in (
@@ -144,6 +146,7 @@ class Settings:
     ADMIN_KEYS = (
         "ollama_url", "ollama_model", "ollama_fast_model", "embed_model", "searxng_url",
         "ocr_model",
+        "hmi_token",
         "recipe_domains", "translate_to_cs", "auto_ingredients",
         "scraper_verify_ssl", "rag_k",
         "crawler_enabled", "crawler_interval_min", "crawler_max_per_run",
@@ -164,6 +167,7 @@ class Settings:
             "ollama_model": self.ollama_model,
             "embed_model": self.embed_model,
             "ocr_model": self.ocr_model,
+            "hmi_token": self.hmi_token,
             "searxng_url": self.searxng_url,
             "recipe_domains": ",".join(sorted(self.recipe_domains)),
             "translate_to_cs": self.translate_to_cs,
@@ -189,7 +193,7 @@ class Settings:
     def set_admin(self, key: str, value) -> bool:
         if key not in self.ADMIN_KEYS:
             return False
-        if key in ("ollama_url", "ollama_model", "embed_model", "searxng_url", "ocr_model"):
+        if key in ("ollama_url", "ollama_model", "embed_model", "searxng_url", "ocr_model", "hmi_token"):
             setattr(self, key, str(value or "").strip())
         elif key == "ollama_fast_model":
             self._fast_model = str(value or "").strip()

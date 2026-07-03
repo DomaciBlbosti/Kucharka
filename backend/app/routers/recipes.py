@@ -259,6 +259,26 @@ def edit_recipe(recipe_id: int, req: RecipeEdit, db: Session = Depends(get_db)):
     return get_recipe(recipe_id, db)
 
 
+@router.post("/{recipe_id}/retranslate", response_model=RecipeDetail)
+def retranslate_one(recipe_id: int, db: Session = Depends(get_db)):
+    """Znovu stáhni originál ze zdroje a přelož čerstvě (přepíše starý překlad)."""
+    from ..modules import ingest
+
+    r = db.get(Recipe, recipe_id)
+    if r is None:
+        raise HTTPException(404, "Recept nenalezen.")
+    if not r.source_url or r.source_url.startswith(("photo://", "ai://")):
+        raise HTTPException(
+            400, "Tento recept nemá externí zdroj – originál se nedá znovu stáhnout."
+        )
+    if not settings.ollama_enabled:
+        raise HTTPException(400, "Ollama není dostupná.")
+    fresh = ingest.ingest_url(db, r.source_url)
+    if fresh is None:
+        raise HTTPException(502, "Stažení nebo zpracování zdrojové stránky selhalo.")
+    return get_recipe(fresh.id, db)
+
+
 @router.post("/{recipe_id}/cooked")
 def mark_cooked(recipe_id: int, db: Session = Depends(get_db)):
     """Uvařeno – odečte suroviny receptu ze spíže (které tam jsou)."""

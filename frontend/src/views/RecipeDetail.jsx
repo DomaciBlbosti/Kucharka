@@ -12,20 +12,37 @@ export default function RecipeDetail() {
   const [editing, setEditing] = useState(false);
   const [cookOpen, setCookOpen] = useState(false);
   const [cookedMsg, setCookedMsg] = useState(null);
+  const [retranslating, setRetranslating] = useState(false);
+  const [retranslateMsg, setRetranslateMsg] = useState(null);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const [onDisplay, setOnDisplay] = useState(false);
 
   const reload = () => api.recipe(id).then(setR).catch(() => setR(false));
   useEffect(() => {
     setR(null);
     setEditing(false);
+    setShowOriginal(false);
     reload();
+    api.hmiCooking()
+      .then((r2) => setOnDisplay(r2.recipe?.id === Number(id)))
+      .catch(() => setOnDisplay(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  const toggleDisplay = async () => {
+    const next = onDisplay ? null : Number(id);
+    await api.setHmiCooking(next);
+    setOnDisplay(!onDisplay);
+  };
 
   if (r === null) return <Spinner />;
   if (r === false) return <p className="py-16 text-center text-ink/50">Recept nenalezen.</p>;
 
+  const hasOriginal = !!r.original_title;
+  const displayTitle = showOriginal && hasOriginal ? r.original_title : r.title;
+  const displayInstructions = showOriginal && hasOriginal ? r.original_instructions : r.instructions;
   const missing = new Set(r.missing_ingredient_ids);
-  const steps = (r.instructions || "").split(/\n+/).map((s) => s.trim()).filter(Boolean);
+  const steps = (displayInstructions || "").split(/\n+/).map((s) => s.trim()).filter(Boolean);
 
   const addMissing = async () => setAdded((await api.shoppingFromRecipe(r.id)).added);
   const addOne = async (ri) => {
@@ -41,6 +58,19 @@ export default function RecipeDetail() {
     const upd = await api.editRecipe(r.id, { user_rating: val });
     setR(upd);
   };
+  const retranslate = async () => {
+    setRetranslating(true);
+    setRetranslateMsg(null);
+    try {
+      const upd = await api.retranslateOne(r.id);
+      setR(upd);
+      setRetranslateMsg("Přeloženo znovu ✓");
+    } catch (e) {
+      setRetranslateMsg(e?.message || "Překlad se nepodařilo obnovit.");
+    } finally {
+      setRetranslating(false);
+    }
+  };
 
   if (editing) return <EditRecipe recipe={r} onDone={(upd) => { if (upd) setR(upd); setEditing(false); }} />;
 
@@ -55,7 +85,7 @@ export default function RecipeDetail() {
           </div>
         )}
         <div className="p-5 sm:p-7">
-          <h1 className="text-3xl font-extrabold leading-tight">{r.title}</h1>
+          <h1 className="text-3xl font-extrabold leading-tight">{displayTitle}</h1>
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1">
             <Stars rating={r.rating} count={r.rating_count} />
             <Meta icon="⏱">{r.total_time ? `${r.total_time} min` : null}</Meta>
@@ -65,6 +95,14 @@ export default function RecipeDetail() {
               <a href={r.source_url} target="_blank" rel="noreferrer" className="text-sm text-basil underline-offset-2 hover:underline">
                 {r.source_domain} ↗
               </a>
+            )}
+            {hasOriginal && (
+              <button
+                onClick={() => setShowOriginal((v) => !v)}
+                className="rounded-full border border-line bg-white px-2.5 py-0.5 text-xs font-medium text-ink/60 hover:border-basil hover:text-basil-dark"
+              >
+                {showOriginal ? "🇨🇿 Zobrazit překlad" : "🌐 Zobrazit originál"}
+              </button>
             )}
           </div>
 
@@ -83,8 +121,17 @@ export default function RecipeDetail() {
             {steps.length > 0 && <Button onClick={() => setCookOpen(true)}>🍳 Uvařit</Button>}
             <Button variant="ghost" onClick={cooked}>✅ Uvařeno</Button>
             <Button variant="ghost" onClick={() => setEditing(true)}>✏️ Upravit</Button>
+            <Button variant={onDisplay ? "primary" : "ghost"} onClick={toggleDisplay}>
+              {onDisplay ? "📺 Na displeji ✓" : "📺 Odeslat na displej"}
+            </Button>
+            {r.source_url?.startsWith("http") && (
+              <Button variant="ghost" onClick={retranslate} disabled={retranslating}>
+                {retranslating ? "Překládám…" : "🔁 Přeložit znovu"}
+              </Button>
+            )}
           </div>
           {cookedMsg && <p className="mt-2 text-sm text-basil-dark">{cookedMsg}</p>}
+          {retranslateMsg && <p className="mt-2 text-sm text-basil-dark">{retranslateMsg}</p>}
 
           {/* vlastní hodnocení + poznámka */}
           <div className="mt-4 rounded-xl2 border border-line bg-paper p-4">
@@ -124,7 +171,7 @@ export default function RecipeDetail() {
                     <li key={ri.id} className="flex items-center justify-between gap-3 rounded-lg border border-line/70 px-3 py-2 text-sm">
                       <span className="flex items-center gap-2">
                         <span className={`h-2 w-2 shrink-0 rounded-full ${isHave ? "bg-have" : isMissing ? "bg-miss" : "bg-ink/15"}`} />
-                        {ri.raw_text}
+                        {showOriginal && ri.original_raw_text ? ri.original_raw_text : ri.raw_text}
                       </span>
                       <span className="flex shrink-0 items-center gap-2">
                         {ri.kcal != null && <span className="nums text-xs text-ink/40">{Math.round(ri.kcal)} kcal</span>}

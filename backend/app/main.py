@@ -20,7 +20,7 @@ from .config import settings
 from .db import Base, SessionLocal, engine
 from .routers import (
     admin, auth as auth_router, crawl, generate, ingredients, maintenance,
-    barcode, ingest, mealplan, pantry, receipt, recipes, search, system,
+    barcode, hmi, hmi_page, ingest, mealplan, pantry, receipt, recipes, search, system,
 )
 from .seed.starter_ingredients import seed_starter
 from .seed.starter_tags import seed_tags
@@ -63,8 +63,14 @@ def _ensure_columns() -> None:
 
     wanted = {
         "ingredient": [("category_path", "VARCHAR(200)")],
-        "recipe": [("user_rating", "INTEGER"), ("user_note", "TEXT")],
+        "recipe": [
+            ("user_rating", "INTEGER"),
+            ("user_note", "TEXT"),
+            ("original_title", "TEXT"),
+            ("original_instructions", "TEXT"),
+        ],
         "pantry_item": [("use_soon", "BOOLEAN DEFAULT 0")],
+        "recipe_ingredient": [("original_raw_text", "VARCHAR(400)")],
     }
     insp = inspect(engine)
     existing_tables = set(insp.get_table_names())
@@ -119,6 +125,8 @@ app.include_router(mealplan.router)
 app.include_router(ingest.router)
 app.include_router(receipt.router)
 app.include_router(barcode.router)
+app.include_router(hmi.router)
+app.include_router(hmi_page.router)
 app.include_router(crawl.router)
 app.include_router(generate.router)
 app.include_router(maintenance.router)
@@ -154,8 +162,11 @@ async def _auth_middleware(request, call_next):
     protected = path.startswith("/api/") and not (
         path.startswith("/api/auth/")
         or path.startswith("/api/ingest/")
+        or path.startswith("/api/hmi/")
         or path == "/api/health"
     )
+    if path.startswith("/hmi"):
+        protected = False
     if settings.auth_enabled and protected:
         if not _auth.valid_token(token_from_request(request)):
             return JSONResponse({"detail": "Neautorizováno"}, status_code=401)

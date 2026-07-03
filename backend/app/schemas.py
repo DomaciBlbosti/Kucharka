@@ -20,6 +20,7 @@ class RecipeIngredientOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     raw_text: str
+    original_raw_text: str | None = None
     ingredient_id: int | None = None
     amount: float | None = None
     unit: str | None = None
@@ -60,6 +61,8 @@ class RecipeDetail(RecipeCard):
     category: str | None = None
     user_rating: int | None = None
     user_note: str | None = None
+    original_title: str | None = None
+    original_instructions: str | None = None
     ingredients: list[RecipeIngredientOut] = []
     missing_ingredient_ids: list[int] = []
 

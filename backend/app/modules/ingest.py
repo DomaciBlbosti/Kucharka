@@ -41,17 +41,21 @@ def _persist(db: Session, data: dict) -> Recipe:
     recipe.rating_count = data.get("rating_count")
     recipe.category = data.get("category")
     recipe.raw_json = json.dumps(data, ensure_ascii=False)
+    recipe.original_title = data.get("original_title")
+    recipe.original_instructions = data.get("original_instructions")
 
     # přepiš ingredience
     recipe.ingredients.clear()
     db.flush()
 
     lines = data.get("ingredients", [])
-    for norm in normalize_lines(db, lines):
+    original_lines = data.get("original_ingredients")  # stejná délka/pořadí jako lines
+    for i, norm in enumerate(normalize_lines(db, lines)):
         ing = norm["ingredient"]
         grams = grams_for(norm["amount"], norm["unit"], ing)
         ri = RecipeIngredient(
             raw_text=norm["raw_text"][:400],
+            original_raw_text=(original_lines[i][:400] if original_lines else None),
             ingredient_id=ing.id if ing else None,
             amount=norm["amount"],
             unit=norm["unit"],

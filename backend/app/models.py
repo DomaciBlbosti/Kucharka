@@ -91,6 +91,9 @@ class Recipe(Base):
     # vlastní hodnocení a poznámka uživatele
     user_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
     user_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # originál před strojovým překladem (uloží se jen když se recept přeložil)
+    original_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    original_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     ingredients: Mapped[list["RecipeIngredient"]] = relationship(
@@ -109,6 +112,8 @@ class RecipeIngredient(Base):
         ForeignKey("recipe.id", ondelete="CASCADE"), index=True
     )
     raw_text: Mapped[str] = mapped_column(String(400))
+    # originál před strojovým překladem (uloží se jen když se řádek přeložil)
+    original_raw_text: Mapped[str | None] = mapped_column(String(400), nullable=True)
     ingredient_id: Mapped[int | None] = mapped_column(
         ForeignKey("ingredient.id"), nullable=True, index=True
     )

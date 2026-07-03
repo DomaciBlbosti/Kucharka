@@ -229,6 +229,18 @@ export const api = {
   translateStatus: () => afetch("/api/maintenance/translate-status").then(J),
   runTranslate: () =>
     afetch("/api/maintenance/translate", { method: "POST" }).then(J),
+  retranslateOne: (id) =>
+    afetch(`/api/recipes/${id}/retranslate`, { method: "POST" }).then(J),
+  retranslateResetStatus: () => afetch("/api/maintenance/retranslate-status").then(J),
+  runRetranslateReset: () =>
+    afetch("/api/maintenance/retranslate-reset", { method: "POST" }).then(J),
+  hmiCooking: () => afetch("/api/hmi/cooking").then(J),
+  setHmiCooking: (recipeId) =>
+    afetch("/api/hmi/cooking", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recipe_id: recipeId }),
+    }).then(J),
   categorizeStatus: () => afetch("/api/maintenance/categorize-status").then(J),
   runCategorize: () =>
     afetch("/api/maintenance/categorize", { method: "POST" }).then(J),
