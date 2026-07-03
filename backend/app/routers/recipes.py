@@ -172,6 +172,7 @@ class PhotoRecipeSave(BaseModel):
     instructions: str | None = None
     servings: int | None = None
     ingredients: list[str]
+    image_url: str | None = None
 
 
 @router.post("/from-photo")
@@ -202,7 +203,7 @@ def save_photo_recipe(req: PhotoRecipeSave, db: Session = Depends(get_db)):
         "title": title,
         "source_url": f"photo://{uuid.uuid4()}",
         "source_domain": None,
-        "image_url": None,
+        "image_url": req.image_url,
         "instructions": req.instructions,
         "servings": req.servings,
         "ingredients": ingredients,

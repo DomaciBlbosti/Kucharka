@@ -112,6 +112,9 @@ class Settings:
         self.ocr_model: str = _env("OCR_MODEL", "")
         # Token pro HMI/E-ink zobrazení v kuchyni (prázdné = otevřené v rámci LAN).
         self.hmi_token: str = _env("HMI_TOKEN", "")
+        # Kam ukládat fotky nahrané uživatelem (recept z fotky apod.). Mimo
+        # /app volume (ten spravuje git self-update), ať je fotky nesmaže.
+        self.upload_dir: str = _env("UPLOAD_DIR", "/data/uploads")
         self.rag_k: int = int(_env("RAG_K", "6"))  # kolik receptů jako kontext
         # Self-update z Gitu přes WEB UI
         self.update_enabled: bool = _env("UPDATE_ENABLED", "false").lower() in (

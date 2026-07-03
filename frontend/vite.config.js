@@ -15,6 +15,7 @@ export default defineConfig({
     port: WEB_PORT,
     proxy: {
       "/api": API_TARGET,
+      "/uploads": API_TARGET,
     },
   },
 });

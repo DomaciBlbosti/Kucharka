@@ -182,6 +182,17 @@ def health() -> dict:
     }
 
 
+# --- Nahrané soubory (fotky receptů) --------------------------------------
+try:
+    Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+except Exception as exc:  # noqa: BLE001
+    log.warning("Nepodařilo se vytvořit UPLOAD_DIR %s: %s", settings.upload_dir, exc)
+app.mount(
+    "/uploads",
+    StaticFiles(directory=settings.upload_dir, check_dir=False),
+    name="uploads",
+)
+
 # --- Frontend (SPA) -------------------------------------------------------
 if STATIC_DIR.is_dir():
     app.mount(

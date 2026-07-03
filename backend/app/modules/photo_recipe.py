@@ -5,6 +5,10 @@ vytáhneme přes vision model v Ollamě název, suroviny a postup a slučujeme
 je stejnou fuzzy-merge logikou jako u účtenek (viz textmerge.py). Uložení
 konceptu pak jede přes existující ingest pipeli (stejnou jako u receptů
 stažených z webu) – suroviny se tak normalizují a párují identicky.
+
+Suroviny se navíc už v náhledu rozparsují na množství/jednotku/název (bez
+LLM, jen rychlý regex) – uživatel je tak může opravit odděleně, ne jako
+jeden plochý text.
 """
 from __future__ import annotations
 
@@ -12,9 +16,11 @@ import base64
 import logging
 
 from ..config import settings
+from .normalizer import parse_line_regex
 from .ollamachat import chat_json
 from .receipt import preprocess_image  # sdílené zmenšení/oříznutí podle EXIF
 from .textmerge import merge_lists, merge_texts
+from .uploads import save_recipe_photo
 
 log = logging.getLogger("kucharka.photo_recipe")
 
@@ -24,7 +30,10 @@ _PROMPT = (
     "Vytáhni z něj: název receptu (pokud je na tomto úseku vidět, jinak prázdný "
     "řetězec), seznam surovin PŘESNĚ tak, jak jsou napsané (množství i "
     "jednotka spolu s názvem na jednom řádku), a text postupu přípravy "
-    "(pokud je na tomto úseku vidět, jinak prázdný řetězec). Odpověz POUZE "
+    "(pokud je na tomto úseku vidět, jinak prázdný řetězec). Pokud recept má "
+    "oddělené části (např. těsto/náplň/poleva/krém), vlož před suroviny dané "
+    "části samostatný řádek s jejím názvem a dvojtečkou (např. 'Poleva:'), "
+    "ať je vidět, kam patří. Odpověz POUZE "
     'JSON {"title": string, "ingredients": [string], "instructions": string}.'
 )
 
@@ -53,10 +62,27 @@ def _extract_segment(image_bytes: bytes) -> dict:
     return result
 
 
+def _structure_line(raw: str) -> dict:
+    """Rychlý regex rozklad (bez LLM) pro editovatelný náhled – množství,
+    jednotka a název zvlášť. Nadpisy sekcí (např. 'Poleva:') vyjdou jako
+    řádek bez množství, s celým textem v 'name' – uživatel je pozná a může
+    smazat nebo nechat jako oddělovač."""
+    amount, unit, name = parse_line_regex(raw)
+    return {"raw_text": raw, "amount": amount, "unit": unit, "name": name or raw}
+
+
 def extract_draft(images: list[bytes]) -> dict:
     """Zpracuj všechny úseky a slož je do jednoho konceptu receptu."""
     segments = [_extract_segment(img) for img in images]
     title = next((s["title"] for s in segments if s["title"]), "")
-    ingredients = merge_lists([s["ingredients"] for s in segments])
+    ingredient_lines = merge_lists([s["ingredients"] for s in segments])
     instructions = merge_texts([s["instructions"] for s in segments])
-    return {"title": title, "ingredients": ingredients, "instructions": instructions}
+
+    image_url = save_recipe_photo(images[0]) if images else None
+
+    return {
+        "title": title,
+        "ingredients": [_structure_line(ln) for ln in ingredient_lines],
+        "instructions": instructions,
+        "image_url": image_url,
+    }

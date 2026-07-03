@@ -6,6 +6,13 @@ import { Button, Spinner } from "./ui";
 
 const inp = "w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm outline-none focus:border-basil";
 
+// {amount, unit} -> editovatelný textový "10 dkg" / "1" / "" (bez množství)
+function qtyText(amount, unit) {
+  if (amount == null) return "";
+  const a = Number.isInteger(amount) ? String(amount) : String(amount).replace(".", ",");
+  return unit ? `${a} ${unit}` : a;
+}
+
 /** Import receptu z fotek papírového/rukou psaného receptu (po úsecích). */
 export function RecipeFromPhoto({ onClose }) {
   const nav = useNavigate();
@@ -15,7 +22,8 @@ export function RecipeFromPhoto({ onClose }) {
 
   const [title, setTitle] = useState("");
   const [instructions, setInstructions] = useState("");
-  const [lines, setLines] = useState([]);
+  const [lines, setLines] = useState([]); // [{qty, name}]
+  const [imageUrl, setImageUrl] = useState(null);
 
   const process = async (files) => {
     setStep("processing");
@@ -24,7 +32,13 @@ export function RecipeFromPhoto({ onClose }) {
       const draft = await api.recipeFromPhoto(files);
       setTitle(draft.title || "");
       setInstructions(draft.instructions || "");
-      setLines(draft.ingredients?.length ? draft.ingredients : [""]);
+      setImageUrl(draft.image_url || null);
+      const ing = draft.ingredients || [];
+      setLines(
+        ing.length
+          ? ing.map((i) => ({ qty: qtyText(i.amount, i.unit), name: i.name || i.raw_text || "" }))
+          : [{ qty: "", name: "" }]
+      );
       setStep("review");
     } catch (e) {
       setError(e?.message || "Čtení receptu selhalo.");
@@ -32,21 +46,30 @@ export function RecipeFromPhoto({ onClose }) {
     }
   };
 
-  const setLine = (i, val) => setLines((cur) => cur.map((x, j) => (j === i ? val : x)));
-  const addLine = () => setLines((cur) => [...cur, ""]);
+  const setLine = (i, patch) => setLines((cur) => cur.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+  const addLine = () => setLines((cur) => [...cur, { qty: "", name: "" }]);
   const removeLine = (i) => setLines((cur) => cur.filter((_, j) => j !== i));
 
   const save = async () => {
     setBusy(true);
     try {
-      const ingredients = lines.map((l) => l.trim()).filter(Boolean);
-      const r = await api.saveRecipeFromPhoto({ title: title.trim(), instructions, ingredients });
+      const ingredients = lines
+        .map((l) => `${l.qty.trim()} ${l.name.trim()}`.trim())
+        .filter(Boolean);
+      const r = await api.saveRecipeFromPhoto({
+        title: title.trim(),
+        instructions,
+        ingredients,
+        image_url: imageUrl,
+      });
       onClose();
       nav(`/recept/${r.id}`);
     } finally {
       setBusy(false);
     }
   };
+
+  const hasContent = lines.some((l) => l.name.trim());
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-0 sm:items-center sm:p-4" onClick={onClose}>
@@ -84,22 +107,48 @@ export function RecipeFromPhoto({ onClose }) {
           {step === "review" && (
             <div className="space-y-4">
               <p className="text-sm text-ink/60">Zkontroluj a uprav, co sedí, pak ulož.</p>
+
+              {imageUrl && (
+                <img src={imageUrl} alt="Vyfocený recept" className="max-h-40 w-full rounded-lg border border-line object-cover" />
+              )}
+
               <div>
                 <label className="mb-1 block text-xs font-medium text-ink/55">Název</label>
                 <input className={inp} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Název receptu" />
               </div>
+
               <div>
                 <label className="mb-1 block text-xs font-medium text-ink/55">Suroviny</label>
+                <div className="mb-1 flex gap-1.5 px-0.5 text-[11px] text-ink/40">
+                  <span className="w-20 shrink-0">množství</span>
+                  <span className="flex-1">surovina</span>
+                </div>
                 <div className="space-y-1.5">
                   {lines.map((ln, i) => (
                     <div key={i} className="flex gap-1.5">
-                      <input className={inp} value={ln} onChange={(e) => setLine(i, e.target.value)} />
-                      <button onClick={() => removeLine(i)} className="rounded-lg border border-line px-2 text-sm text-miss">✕</button>
+                      <input
+                        className={`${inp} w-20 shrink-0`}
+                        value={ln.qty}
+                        onChange={(e) => setLine(i, { qty: e.target.value })}
+                        placeholder="10 dkg"
+                      />
+                      <input
+                        className={inp}
+                        value={ln.name}
+                        onChange={(e) => setLine(i, { name: e.target.value })}
+                        placeholder="surovina, nebo nadpis sekce (např. „Poleva:“)"
+                      />
+                      <button onClick={() => removeLine(i)} className="shrink-0 rounded-lg border border-line px-2 text-sm text-miss">✕</button>
                     </div>
                   ))}
                 </div>
                 <button onClick={addLine} className="mt-1.5 text-sm text-basil-dark hover:underline">+ přidat řádek</button>
+                <p className="mt-1 text-xs text-ink/40">
+                  Řádek bez množství, co jen pojmenovává část receptu (např. „Poleva:"), klidně nech
+                  jako oddělovač, nebo smaž.
+                </p>
               </div>
+
               <div>
                 <label className="mb-1 block text-xs font-medium text-ink/55">Postup</label>
                 <textarea className={`${inp} min-h-[8rem]`} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
@@ -112,7 +161,7 @@ export function RecipeFromPhoto({ onClose }) {
         {step === "review" && (
           <div className="flex items-center gap-2 border-t border-line p-3">
             <Button variant="ghost" onClick={() => setStep("capture")}>Zpět</Button>
-            <Button onClick={save} disabled={busy || !title.trim() || lines.every((l) => !l.trim())}>
+            <Button onClick={save} disabled={busy || !title.trim() || !hasContent}>
               {busy ? "Ukládám…" : "Uložit recept"}
             </Button>
           </div>
