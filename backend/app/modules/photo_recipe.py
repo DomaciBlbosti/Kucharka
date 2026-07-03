@@ -24,7 +24,7 @@ import re
 
 from ..config import settings
 from .normalizer import parse_line_regex
-from .ollamachat import chat_json
+from .ollamachat import chat_json_raw
 from .receipt import preprocess_image  # sdílené zmenšení/oříznutí podle EXIF
 from .textmerge import merge_items, merge_texts
 from .uploads import save_recipe_photo
@@ -59,7 +59,7 @@ def _extract_segment(image_bytes: bytes) -> dict:
     if not settings.ocr_model:
         raise RuntimeError("OCR model není nastaven (Admin → Nástroje → OCR model).")
     b64 = base64.b64encode(preprocess_image(image_bytes)).decode()
-    out = chat_json(
+    out, raw = chat_json_raw(
         settings.ollama_url,
         settings.ocr_model,
         _PROMPT,
@@ -68,7 +68,7 @@ def _extract_segment(image_bytes: bytes) -> dict:
     )
     if out is None:
         log.warning("OCR receptu: volání modelu selhalo nebo odpověď nešla naparsovat.")
-        return {"title": "", "pairs": [], "instructions": ""}
+        return {"title": "", "pairs": [], "instructions": "", "debug_raw": raw}
 
     names = [str(x).strip() for x in out.get("ingredients", [])]
     qtys = [str(x).strip() for x in out.get("quantities", [])]
@@ -80,6 +80,7 @@ def _extract_segment(image_bytes: bytes) -> dict:
         "title": str(out.get("title") or "").strip(),
         "pairs": pairs,
         "instructions": str(out.get("instructions") or "").strip(),
+        "debug_raw": raw,
     }
     if result["title"] and _SUSPICIOUS_TITLE_RE.search(result["title"]):
         log.warning("OCR receptu: zahozen podezřelý název (echo instrukce): %r", result["title"])
@@ -113,4 +114,11 @@ def extract_draft(images: list[bytes]) -> dict:
         "ingredients": [_structure_pair(qty, name) for qty, name in pairs],
         "instructions": instructions,
         "image_url": image_url,
+        # Syrová odpověď modelu za každý vyfocený úsek – jen pro debug náhled
+        # v UI ("Recept z fotky" → Debug), ať jde vidět, co OCR skutečně vrátil,
+        # aniž by bylo nutné hrabat se v server logu.
+        "debug": {
+            "model": settings.ocr_model,
+            "segments": [s.get("debug_raw", "") for s in segments],
+        },
     }

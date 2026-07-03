@@ -24,6 +24,7 @@ export function RecipeFromPhoto({ onClose }) {
   const [instructions, setInstructions] = useState("");
   const [lines, setLines] = useState([]); // [{qty, name}]
   const [imageUrl, setImageUrl] = useState(null);
+  const [debug, setDebug] = useState(null);
 
   const process = async (files) => {
     setStep("processing");
@@ -33,6 +34,7 @@ export function RecipeFromPhoto({ onClose }) {
       setTitle(draft.title || "");
       setInstructions(draft.instructions || "");
       setImageUrl(draft.image_url || null);
+      setDebug(draft.debug || null);
       const ing = draft.ingredients || [];
       setLines(
         ing.length
@@ -158,6 +160,24 @@ export function RecipeFromPhoto({ onClose }) {
                 <textarea className={`${inp} min-h-[8rem]`} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
                 <p className="mt-1 text-xs text-ink/40">Každý krok na samostatný řádek.</p>
               </div>
+
+              {debug && (
+                <details className="rounded-lg border border-line bg-paper p-2 text-xs">
+                  <summary className="cursor-pointer select-none font-medium text-ink/55">
+                    🐞 Debug: syrová odpověď modelu ({debug.model || "?"})
+                  </summary>
+                  <div className="mt-2 space-y-2">
+                    {(debug.segments || []).map((raw, i) => (
+                      <div key={i}>
+                        <div className="mb-0.5 text-ink/40">úsek {i + 1}</div>
+                        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-ink/5 p-2">
+                          {raw || "(prázdné)"}
+                        </pre>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           )}
         </div>
