@@ -53,13 +53,17 @@ def _extract_segment(image_bytes: bytes) -> dict:
     try:
         out = parse_json_response(raw)
     except Exception as exc:  # noqa: BLE001
-        log.warning("OCR receptu se nepodařilo naparsovat (%s): %r", exc, raw[:300])
+        log.warning("OCR receptu se nepodařilo naparsovat (%s): %r", exc, raw[:500])
         return {"title": "", "ingredients": [], "instructions": ""}
-    return {
+    result = {
         "title": str(out.get("title") or "").strip(),
         "ingredients": [str(x).strip() for x in out.get("ingredients", []) if str(x).strip()],
         "instructions": str(out.get("instructions") or "").strip(),
     }
+    if not result["title"] and not result["ingredients"]:
+        # JSON byl validní, ale prázdný – ať je v logu vidět, co model reálně řekl
+        log.warning("OCR receptu vrátil prázdný výsledek. Syrová odpověď modelu: %r", raw[:500])
+    return result
 
 
 def extract_draft(images: list[bytes]) -> dict:
