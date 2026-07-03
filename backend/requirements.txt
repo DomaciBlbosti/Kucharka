@@ -13,3 +13,4 @@ numpy>=1.26
 python-dotenv>=1.0
 python-multipart>=0.0.9
 Pillow>=10.0
+lidl-plus==0.3.5

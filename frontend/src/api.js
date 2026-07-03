@@ -226,6 +226,14 @@ export const api = {
 
   adminSettings: () => afetch("/api/admin/settings").then(J),
   testOllama: () => afetch("/api/admin/test-ollama").then(J),
+
+  lidlAccounts: () => afetch("/api/lidl/accounts").then(J),
+  lidlAddAccount: (data) =>
+    afetch("/api/lidl/accounts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(J),
+  lidlUpdateAccount: (id, data) =>
+    afetch(`/api/lidl/accounts/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(J),
+  lidlDeleteAccount: (id) => afetch(`/api/lidl/accounts/${id}`, { method: "DELETE" }).then(J),
+  lidlSyncAccount: (id) => afetch(`/api/lidl/accounts/${id}/sync`, { method: "POST" }).then(J),
   translateStatus: () => afetch("/api/maintenance/translate-status").then(J),
   runTranslate: () =>
     afetch("/api/maintenance/translate", { method: "POST" }).then(J),

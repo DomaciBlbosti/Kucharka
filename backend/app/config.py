@@ -57,6 +57,8 @@ class Settings:
         self.auto_translate_interval_min: int = int(_env("AUTO_TRANSLATE_INTERVAL_MIN", "180"))
         self.auto_match_enabled: bool = _truthy(_env("AUTO_MATCH_ENABLED", "false"))
         self.auto_match_interval_min: int = int(_env("AUTO_MATCH_INTERVAL_MIN", "180"))
+        self.lidl_sync_enabled: bool = _truthy(_env("LIDL_SYNC_ENABLED", "true"))
+        self.lidl_sync_interval_min: int = int(_env("LIDL_SYNC_INTERVAL_MIN", "360"))
 
         # --- Volitelné: SearXNG (discovery receptů) --------------------
         # Např. http://searxng:8080
@@ -156,12 +158,14 @@ class Settings:
         "ollama_keep_alive", "bg_workers",
         "auto_translate_enabled", "auto_translate_interval_min",
         "auto_match_enabled", "auto_match_interval_min",
+        "lidl_sync_enabled", "lidl_sync_interval_min",
     )
 
     CRAWLER_KEYS = ("crawler_enabled", "crawler_interval_min", "crawler_max_per_run")
     SERVICE_KEYS = (
         "auto_translate_enabled", "auto_translate_interval_min",
         "auto_match_enabled", "auto_match_interval_min",
+        "lidl_sync_enabled", "lidl_sync_interval_min",
     )
 
     def as_admin(self) -> dict:
@@ -188,6 +192,8 @@ class Settings:
             "auto_translate_interval_min": self.auto_translate_interval_min,
             "auto_match_enabled": self.auto_match_enabled,
             "auto_match_interval_min": self.auto_match_interval_min,
+            "lidl_sync_enabled": self.lidl_sync_enabled,
+            "lidl_sync_interval_min": self.lidl_sync_interval_min,
             "ollama_enabled": self.ollama_enabled,
             "searxng_enabled": self.searxng_enabled,
             "auth_enabled": self.auth_enabled,
@@ -210,7 +216,7 @@ class Settings:
             }
         elif key in (
             "translate_to_cs", "auto_ingredients", "crawler_enabled",
-            "auto_translate_enabled", "auto_match_enabled",
+            "auto_translate_enabled", "auto_match_enabled", "lidl_sync_enabled",
         ):
             setattr(self, key, _truthy(value))
         elif key == "scraper_verify_ssl":
@@ -221,7 +227,7 @@ class Settings:
                 self.scraper_verify = bundle if os.path.exists(bundle) else True
         elif key in (
             "rag_k", "crawler_interval_min", "crawler_max_per_run", "bg_workers",
-            "auto_translate_interval_min", "auto_match_interval_min",
+            "auto_translate_interval_min", "auto_match_interval_min", "lidl_sync_interval_min",
         ):
             try:
                 setattr(self, key, max(1, int(value)))

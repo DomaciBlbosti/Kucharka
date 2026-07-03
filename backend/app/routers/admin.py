@@ -116,6 +116,7 @@ def put_settings(req: SettingsUpdate, db: Session = Depends(get_db)):
         if service_changed:
             scheduler.configure_translate()
             scheduler.configure_match()
+            scheduler.configure_lidl()
     return {"applied": list(applied), "settings": settings.as_admin()}
 
 

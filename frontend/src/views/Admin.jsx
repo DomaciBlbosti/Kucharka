@@ -923,12 +923,145 @@ function ResetTranslateCard() {
   );
 }
 
+function LidlAccountsCard() {
+  const [accounts, setAccounts] = useState(null);
+  const [form, setForm] = useState({ label: "", country: "CZ", language: "cs", refresh_token: "" });
+  const [adding, setAdding] = useState(false);
+  const [err, setErr] = useState(null);
+  const [syncing, setSyncing] = useState(null); // id právě synchronizovaného účtu
+  const [syncMsg, setSyncMsg] = useState({});
+
+  const load = () => api.lidlAccounts().then(setAccounts).catch(() => setAccounts([]));
+  useEffect(() => { load(); }, []);
+
+  const addAccount = async () => {
+    setErr(null);
+    if (!form.label.trim() || !form.refresh_token.trim()) {
+      setErr("Vyplň popisek a refresh token.");
+      return;
+    }
+    setAdding(true);
+    try {
+      await api.lidlAddAccount(form);
+      setForm({ label: "", country: form.country, language: form.language, refresh_token: "" });
+      load();
+    } catch (e) {
+      setErr(e?.message || "Přidání selhalo.");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const removeAccount = async (id) => {
+    await api.lidlDeleteAccount(id);
+    load();
+  };
+
+  const toggleEnabled = async (acc) => {
+    await api.lidlUpdateAccount(acc.id, { enabled: !acc.enabled });
+    load();
+  };
+
+  const syncNow = async (id) => {
+    setSyncing(id);
+    setSyncMsg((m) => ({ ...m, [id]: null }));
+    try {
+      const r = await api.lidlSyncAccount(id);
+      setSyncMsg((m) => ({
+        ...m,
+        [id]: `${r.tickets_new} nových účtenek, ${r.items_matched} položek do spíže${
+          r.items_unmatched ? `, ${r.items_unmatched} bez shody` : ""
+        }`,
+      }));
+      load();
+    } catch (e) {
+      setSyncMsg((m) => ({ ...m, [id]: `chyba: ${e?.message || e}` }));
+    } finally {
+      setSyncing(null);
+    }
+  };
+
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <h2 className="mb-1 text-lg font-bold">Lidl Plus účty</h2>
+      <p className="mb-4 text-sm text-ink/60">
+        Nákupy z propojených účtů se pravidelně stahují a napárované položky
+        přidávají do spíže. Přihlašovací token se získává mimo appku (na PC:{" "}
+        <code className="rounded bg-paper px-1">pip install lidl-plus</code>,
+        pak <code className="rounded bg-paper px-1">lidl-plus auth</code>) –
+        appka sama browser/2FA neřeší, jen s tokenem dál pracuje. Jde přidat
+        víc účtů zvlášť (např. tvůj a manželčin).
+      </p>
+
+      {accounts === null ? (
+        <Spinner label="Načítám účty…" />
+      ) : (
+        <div className="mb-4 space-y-2">
+          {accounts.length === 0 && <p className="text-sm text-ink/45">Zatím žádný účet.</p>}
+          {accounts.map((a) => (
+            <div key={a.id} className="rounded-lg border border-line p-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="font-medium">{a.label}</span>
+                <span className="text-xs text-ink/45">{a.country} · {a.language}</span>
+                <label className="flex items-center gap-1.5 text-sm text-ink/60">
+                  <input type="checkbox" className="accent-basil" checked={a.enabled}
+                    onChange={() => toggleEnabled(a)} />
+                  aktivní
+                </label>
+                <Button variant="ghost" onClick={() => syncNow(a.id)} disabled={syncing === a.id}>
+                  {syncing === a.id ? "Synchronizuji…" : "Sync teď"}
+                </Button>
+                <button onClick={() => removeAccount(a.id)} className="ml-auto text-sm text-miss hover:underline">
+                  odebrat
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-ink/45">
+                {a.last_sync_at ? `naposledy: ${new Date(a.last_sync_at).toLocaleString("cs-CZ")}` : "ještě nesynchronizováno"}
+                {a.last_sync_error && <span className="text-miss"> · chyba: {a.last_sync_error}</span>}
+              </p>
+              {syncMsg[a.id] && <p className="mt-1 text-xs text-ink/70">{syncMsg[a.id]}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Popisek (kdo)">
+          <input className={input} value={form.label}
+            onChange={(e) => setForm({ ...form, label: e.target.value })}
+            placeholder="např. Aleš, manželka" />
+        </Field>
+        <Field label="Země">
+          <input className={input} value={form.country}
+            onChange={(e) => setForm({ ...form, country: e.target.value.toUpperCase() })}
+            placeholder="CZ" />
+        </Field>
+        <Field label="Refresh token" hint="Získáš přes lidl-plus auth na PC (viz výše).">
+          <input className={input} value={form.refresh_token}
+            onChange={(e) => setForm({ ...form, refresh_token: e.target.value })}
+            placeholder="dlouhý řetězec z lidl-plus auth" />
+        </Field>
+        <Field label="Jazyk">
+          <input className={input} value={form.language}
+            onChange={(e) => setForm({ ...form, language: e.target.value.toLowerCase() })}
+            placeholder="cs" />
+        </Field>
+      </div>
+      {err && <p className="mt-2 text-sm text-miss">{err}</p>}
+      <div className="mt-3">
+        <Button onClick={addAccount} disabled={adding}>{adding ? "Ověřuji…" : "Přidat účet"}</Button>
+      </div>
+    </section>
+  );
+}
+
 export default function Admin() {
   return (
     <div className="space-y-6">
       <h1 className="font-display text-2xl font-extrabold">Administrace</h1>
       <ToolsCard />
       <ServicesCard />
+      <LidlAccountsCard />
       <CrawlerCard />
       <CrawlerPanel />
       <MatchPanel />

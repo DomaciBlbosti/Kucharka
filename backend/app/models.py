@@ -237,3 +237,44 @@ class RecipeTag(Base):
     tag_id: Mapped[int] = mapped_column(
         ForeignKey("tag.id", ondelete="CASCADE"), primary_key=True
     )
+
+
+class LidlAccount(Base):
+    """Napojený Lidl Plus účet (může jich být víc – např. účet + účet manželky).
+
+    `refresh_token` se získává JEDNORÁZOVĚ mimo appku (na PC s prohlížečem,
+    přes CLI nástroj `lidl-plus auth` – login přes app appky vyžaduje reálný
+    browser kvůli OAuth/2FA flow, což v tomhle Docker image není a nechceme
+    tam tahat Chromium). Jakmile je token uložený, veškerá další komunikace
+    (obnovení tokenu, seznam účtenek, detail účtenky) je čisté REST/JSON.
+    """
+
+    __tablename__ = "lidl_account"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    label: Mapped[str] = mapped_column(String(80))  # např. "Aleš", "manželka"
+    country: Mapped[str] = mapped_column(String(5), default="CZ")
+    language: Mapped[str] = mapped_column(String(5), default="cs")
+    refresh_token: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class LidlReceipt(Base):
+    """Záznam už zpracované účtenky – pojistka proti opakovanému importu
+    stejného nákupu do spíže při každém sync běhu."""
+
+    __tablename__ = "lidl_receipt"
+    __table_args__ = (UniqueConstraint("account_id", "ticket_id", name="uq_lidl_ticket"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("lidl_account.id", ondelete="CASCADE"), index=True
+    )
+    ticket_id: Mapped[str] = mapped_column(String(80))
+    purchased_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    items_matched: Mapped[int] = mapped_column(Integer, default=0)
+    items_unmatched: Mapped[int] = mapped_column(Integer, default=0)
+    imported_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

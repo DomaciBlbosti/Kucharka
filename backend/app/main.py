@@ -20,7 +20,7 @@ from .config import settings
 from .db import Base, SessionLocal, engine
 from .routers import (
     admin, auth as auth_router, crawl, generate, ingredients, maintenance,
-    barcode, hmi, hmi_page, ingest, mealplan, pantry, receipt, recipes, search, system,
+    barcode, hmi, hmi_page, ingest, lidl, mealplan, pantry, receipt, recipes, search, system,
 )
 from .seed.starter_ingredients import seed_starter
 from .seed.starter_tags import seed_tags
@@ -124,6 +124,7 @@ app.include_router(pantry.router)
 app.include_router(mealplan.router)
 app.include_router(ingest.router)
 app.include_router(receipt.router)
+app.include_router(lidl.router)
 app.include_router(barcode.router)
 app.include_router(hmi.router)
 app.include_router(hmi_page.router)

@@ -72,6 +72,17 @@ def _run_match():
     backfill.backfill(create_missing=settings.auto_ingredients and settings.ollama_enabled)
 
 
+def _run_lidl_sync():
+    from .db import SessionLocal
+    from .modules import lidl_import
+
+    db = SessionLocal()
+    try:
+        lidl_import.sync_all(db)
+    finally:
+        db.close()
+
+
 def configure_crawler() -> None:
     _reschedule("crawler", settings.crawler_enabled, settings.crawler_interval_min, _run_crawler)
 
@@ -90,7 +101,15 @@ def configure_match() -> None:
     )
 
 
+def configure_lidl() -> None:
+    _reschedule(
+        "lidl_sync", settings.lidl_sync_enabled,
+        settings.lidl_sync_interval_min, _run_lidl_sync,
+    )
+
+
 def configure_all() -> None:
     configure_crawler()
     configure_translate()
     configure_match()
+    configure_lidl()
