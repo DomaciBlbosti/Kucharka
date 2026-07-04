@@ -88,6 +88,13 @@ def status() -> dict:
     return s
 
 
+def is_running() -> bool:
+    """Jen paměťový flag, žádný DB dotaz – bezpečné volat i když crawler
+    zrovna drží DB (na rozdíl od status(), který dělá count přes DB)."""
+    with _lock:
+        return bool(_state["running"])
+
+
 def _set(**kw) -> None:
     with _lock:
         _state.update(kw)
@@ -353,11 +360,21 @@ def process_queue(db, max_items: int = 30) -> dict:
                 with _lock:
                     _state["skipped"] += 1
         except Exception as exc:  # noqa: BLE001
-            row.status = "error"
-            row.error = str(exc)[:500]
+            # Session je po chybě (např. IntegrityError) v rozbitém stavu –
+            # rollback ji vyčistí, jinak by spadly i všechny další recepty
+            # ve stejném běhu. Řádek fronty pak označíme v čisté transakci.
+            db.rollback()
             with _lock:
                 _state["errors"] += 1
             log.warning("crawl ingest selhal %s: %s", row.url, exc)
+            fresh = db.get(CrawlUrl, row.id)
+            if fresh is not None:
+                fresh.attempted_at = datetime.utcnow()
+                fresh.status = "error"
+                fresh.error = str(exc)[:500]
+            db.commit()
+            time.sleep(0.4)
+            continue
         db.commit()
         time.sleep(0.4)
     return {"processed": len(rows), "added": added}

@@ -43,6 +43,12 @@ def _set(**kw):
         _state.update(kw)
 
 
+def is_running() -> bool:
+    """Jen paměťový flag, žádný DB dotaz (na rozdíl od status()/stats())."""
+    with _lock:
+        return bool(_state["running"])
+
+
 def stats() -> dict:
     db = SessionLocal()
     try:

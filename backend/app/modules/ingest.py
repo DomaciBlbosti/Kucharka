@@ -68,6 +68,13 @@ def _persist(db: Session, data: dict, t: _Timings | None = None) -> Recipe:
     if t is None:
         t = _Timings(data.get("source_url", "?"))
 
+    # Pojistka: bez názvu recept neukládáme (title je NOT NULL a stejně by to
+    # byl nepoužitelný záznam). Radši vrátit None → crawler to vezme jako skip,
+    # než spadnout na IntegrityError a rozbít session.
+    title = (data.get("title") or "").strip()
+    if not title:
+        raise ValueError(f"recept nemá název (title) – přeskočeno: {data.get('source_url')}")
+
     recipe = db.scalar(select(Recipe).where(Recipe.source_url == data["source_url"]))
     if recipe is None:
         recipe = Recipe(source_url=data["source_url"])
@@ -87,7 +94,7 @@ def _persist(db: Session, data: dict, t: _Timings | None = None) -> Recipe:
                 # nevytvářet potenciální duplikát a dát to zpět volajícímu
                 raise
 
-    recipe.title = data["title"]
+    recipe.title = title
     recipe.source_domain = data.get("source_domain")
     recipe.image_url = data.get("image_url")
     recipe.video_url = data.get("video_url")

@@ -152,6 +152,12 @@ def _inc(key: str, by: int = 1):
         _state[key] = _state.get(key, 0) + by
 
 
+def is_running() -> bool:
+    """Jen paměťový flag, žádný DB dotaz (na rozdíl od status())."""
+    with _lock:
+        return bool(_state["running"])
+
+
 def status() -> dict:
     with _lock:
         s = dict(_state)

@@ -113,3 +113,62 @@ def configure_all() -> None:
     configure_translate()
     configure_match()
     configure_lidl()
+
+
+# Mapa job_id → (lidský název, jak zjistit, jestli zrovna běží). Funkce pro
+# "běží" jsou lazy (import uvnitř), ať se modul nenačítá zbytečně brzy.
+def _crawler_running() -> bool:
+    from .modules import crawler
+
+    return crawler.is_running()
+
+
+def _translate_running() -> bool:
+    from .modules import translate
+
+    return translate.is_running()
+
+
+def _match_running() -> bool:
+    from .modules import backfill
+
+    return backfill.is_running()
+
+
+_JOB_META = {
+    "crawler": ("Objevování receptů (crawler)", _crawler_running),
+    "translate": ("Automatický překlad", _translate_running),
+    "match": ("Párování surovin", _match_running),
+    "lidl_sync": ("Synchronizace Lidl účtenek", None),
+}
+
+
+def jobs_overview() -> dict:
+    """Přehled úloh na pozadí pro admin: jestli plánovač běží, které úlohy
+    jsou naplánované, kdy poběží příště a jestli zrovna něco běží."""
+    sched = _sched
+    scheduler_running = bool(sched and getattr(sched, "running", False))
+
+    scheduled = {}
+    if sched is not None:
+        for job in sched.get_jobs():
+            nxt = getattr(job, "next_run_time", None)
+            scheduled[job.id] = nxt.isoformat() if nxt else None
+
+    jobs = []
+    for job_id, (label, running_fn) in _JOB_META.items():
+        try:
+            running = bool(running_fn()) if running_fn else False
+        except Exception:  # noqa: BLE001 - stav se nesmí shodit na přehledu
+            running = False
+        jobs.append(
+            {
+                "id": job_id,
+                "label": label,
+                "scheduled": job_id in scheduled,
+                "next_run": scheduled.get(job_id),
+                "running": running,
+            }
+        )
+
+    return {"scheduler_running": scheduler_running, "jobs": jobs}
