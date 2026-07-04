@@ -60,6 +60,25 @@ export const api = {
   ollamaStatus: () => afetch("/api/search/ollama").then(J),
 
   crawlStatus: () => afetch("/api/crawl/status").then(J),
+  crawlQueueStats: () => afetch("/api/crawl/queue/stats").then(J),
+  crawlQueue: (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== ""))
+    ).toString();
+    return afetch(`/api/crawl/queue${qs ? `?${qs}` : ""}`).then(J);
+  },
+  crawlResync: (domains) =>
+    afetch("/api/crawl/resync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ domains: domains || null }),
+    }).then(J),
+  crawlQueueExportUrl: (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== ""))
+    ).toString();
+    return withToken(`/api/crawl/queue/export${qs ? `?${qs}` : ""}`);
+  },
   crawlRun: (body) =>
     afetch("/api/crawl/run", {
       method: "POST",

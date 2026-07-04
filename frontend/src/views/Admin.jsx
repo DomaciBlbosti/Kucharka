@@ -435,6 +435,203 @@ function CrawlerPanel() {
   );
 }
 
+function CrawlQueueCard() {
+  const [stats, setStats] = useState(null);
+  const [data, setData] = useState(null); // {items, total, offset, limit}
+  const [status, setStatus] = useState(""); // "" = vše
+  const [domain, setDomain] = useState("");
+  const [offset, setOffset] = useState(0);
+  const [resyncing, setResyncing] = useState(false);
+  const [resyncMsg, setResyncMsg] = useState(null);
+  const LIMIT = 50;
+
+  const loadStats = () => api.crawlQueueStats().then(setStats).catch(() => {});
+  const loadItems = () =>
+    api.crawlQueue({ status, domain, limit: LIMIT, offset }).then(setData).catch(() => {});
+
+  // Změna filtru → zpět na první stranu.
+  useEffect(() => { setOffset(0); }, [status, domain]);
+  useEffect(() => { loadStats(); loadItems(); }, [status, domain, offset]);
+  useEffect(() => {
+    const t = setInterval(() => { loadStats(); loadItems(); }, 5000);
+    return () => clearInterval(t);
+  }, [status, domain, offset]);
+
+  const resync = async () => {
+    setResyncing(true);
+    setResyncMsg(null);
+    try {
+      const r = await api.crawlResync(domain ? [domain] : null);
+      const added = Object.values(r.resynced).reduce((a, b) => a + (b > 0 ? b : 0), 0);
+      const failed = Object.entries(r.resynced).filter(([, n]) => n < 0).map(([d]) => d);
+      setResyncMsg(
+        `Přidáno ${added} nových URL do fronty` +
+          (failed.length ? ` · selhalo: ${failed.join(", ")}` : "")
+      );
+      loadStats();
+      loadItems();
+    } catch (e) {
+      setResyncMsg(`chyba: ${e?.message || e}`);
+    } finally {
+      setResyncing(false);
+    }
+  };
+
+  const badge = {
+    pending: "bg-line/60 text-ink/60",
+    ok: "bg-have/10 text-have",
+    skip: "bg-ink/5 text-ink/45",
+    error: "bg-miss/10 text-miss",
+  };
+
+  const items = data?.items ?? null;
+  const total = data?.total ?? 0;
+  const page = Math.floor(offset / LIMIT) + 1;
+  const pages = Math.max(1, Math.ceil(total / LIMIT));
+
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-bold">Fronta URL (přehled)</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="ghost" onClick={resync} disabled={resyncing}>
+            {resyncing ? "Načítám sitemapy…" : domain ? `Resync ${domain}` : "Resync sitemap"}
+          </Button>
+          <a
+            href={api.crawlQueueExportUrl({ status, domain, fmt: "csv" })}
+            className="rounded-lg border border-line px-3 py-2 text-sm text-basil-dark hover:bg-basil-soft"
+          >
+            Stáhnout mapu (CSV)
+          </a>
+          <a
+            href={api.crawlQueueExportUrl({ status, domain, fmt: "json" })}
+            className="text-sm text-ink/45 hover:underline"
+          >
+            JSON
+          </a>
+        </div>
+      </div>
+      <p className="mb-4 text-sm text-ink/60">
+        Každá URL objevená v sitemapě se sem zapíše jen jednou a zůstává tu i
+        s výsledkem – ať je vidět, co crawler zkusil, co vyšlo a co ne (a
+        proč). „Resync" natáhne sitemapy hned (jinak max 1× za 6 h). Export
+        stáhne celou mapu včetně odkazu na získaný recept.
+      </p>
+      {resyncMsg && <p className="mb-3 text-sm text-ink/70">{resyncMsg}</p>}
+
+      {stats && (
+        <div className="mb-4 flex flex-wrap gap-2 text-sm">
+          {[
+            ["", "vše", stats.pending + stats.ok + stats.skip + stats.error, "bg-line/40"],
+            ["pending", "čeká", stats.pending, badge.pending],
+            ["ok", "hotovo", stats.ok, badge.ok],
+            ["skip", "přeskočeno", stats.skip, badge.skip],
+            ["error", "chyba", stats.error, badge.error],
+          ].map(([val, label, n, cls]) => (
+            <button
+              key={label}
+              onClick={() => setStatus(val)}
+              className={`nums rounded-full px-3 py-1 ${cls} ${status === val ? "ring-2 ring-basil/40" : ""}`}
+            >
+              {label} {n}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {stats?.domains?.length > 0 && (
+        <div className="mb-4 flex flex-wrap gap-1.5">
+          <button
+            onClick={() => setDomain("")}
+            className={`rounded-full border px-2.5 py-1 text-xs ${!domain ? "border-basil text-basil-dark" : "border-line text-ink/50"}`}
+          >
+            všechny domény
+          </button>
+          {stats.domains.map((d) => (
+            <button
+              key={d.domain}
+              onClick={() => setDomain(d.domain)}
+              className={`rounded-full border px-2.5 py-1 text-xs ${domain === d.domain ? "border-basil text-basil-dark" : "border-line text-ink/50"}`}
+              title={d.last_synced_at ? `naposledy synced: ${new Date(d.last_synced_at).toLocaleString("cs-CZ")}` : "ještě nesynced"}
+            >
+              {d.domain} ({d.sitemap_urls_total})
+            </button>
+          ))}
+        </div>
+      )}
+
+      {items === null ? (
+        <Spinner label="Načítám frontu…" />
+      ) : items.length === 0 ? (
+        <p className="text-sm text-ink/45">Nic tu není (podle aktuálního filtru).</p>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="text-xs text-ink/40">
+                  <th className="pb-1 pr-3 font-medium">stav</th>
+                  <th className="pb-1 pr-3 font-medium">doména</th>
+                  <th className="pb-1 pr-3 font-medium">URL / recept</th>
+                  <th className="pb-1 font-medium">kdy</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {items.map((it) => (
+                  <tr key={it.id}>
+                    <td className="py-1.5 pr-3 align-top">
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${badge[it.status] || ""}`}>{it.status}</span>
+                    </td>
+                    <td className="py-1.5 pr-3 align-top text-ink/60">{it.domain}</td>
+                    <td className="py-1.5 pr-3 align-top">
+                      {it.status === "ok" && it.recipe_id ? (
+                        <a href={`/recept/${it.recipe_id}`} className="text-basil-dark hover:underline">
+                          {it.url}
+                        </a>
+                      ) : (
+                        <span className="break-all">{it.url}</span>
+                      )}
+                      {it.error && <div className="mt-0.5 text-xs text-miss">{it.error}</div>}
+                    </td>
+                    <td className="py-1.5 align-top text-xs text-ink/40">
+                      {it.attempted_at
+                        ? new Date(it.attempted_at).toLocaleString("cs-CZ")
+                        : new Date(it.discovered_at).toLocaleString("cs-CZ")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-3 flex items-center justify-between text-sm text-ink/50">
+            <span className="nums">
+              {offset + 1}–{Math.min(offset + LIMIT, total)} z {total}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setOffset(Math.max(0, offset - LIMIT))}
+                disabled={offset === 0}
+                className="rounded-lg border border-line px-3 py-1 disabled:opacity-40"
+              >
+                ← předchozí
+              </button>
+              <span className="nums text-xs">{page}/{pages}</span>
+              <button
+                onClick={() => setOffset(offset + LIMIT)}
+                disabled={offset + LIMIT >= total}
+                className="rounded-lg border border-line px-3 py-1 disabled:opacity-40"
+              >
+                další →
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function MatchPanel() {
   const [st, setSt] = useState(null);
   const [manual, setManual] = useState(false);
@@ -1064,6 +1261,7 @@ export default function Admin() {
       <LidlAccountsCard />
       <CrawlerCard />
       <CrawlerPanel />
+      <CrawlQueueCard />
       <MatchPanel />
       <TranslateCard />
       <ResetTranslateCard />

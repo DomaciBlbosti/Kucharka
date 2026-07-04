@@ -1,10 +1,18 @@
 """API pro autonomní crawler."""
 from __future__ import annotations
 
-from fastapi import APIRouter
+import csv
+import io
+
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from ..config import settings
+from ..db import SessionLocal, get_db
+from ..models import CrawlUrl, Recipe
 from ..modules import crawler
 
 router = APIRouter(prefix="/api/crawl", tags=["crawler"])
@@ -45,3 +53,146 @@ def crawl_run(req: CrawlRequest):
             per_site=req.per_site,
         )
     return {"started": started, "status": crawler.status()}
+
+
+@router.get("/queue/stats")
+def queue_stats():
+    return crawler.queue_stats()
+
+
+@router.get("/queue")
+def queue_list(
+    status: str | None = Query(None, description="pending|ok|skip|error, prázdné = vše"),
+    domain: str | None = None,
+    limit: int = Query(50, le=200),
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    filters = []
+    if status:
+        filters.append(CrawlUrl.status == status)
+    if domain:
+        filters.append(CrawlUrl.domain == domain)
+
+    count_q = select(func.count(CrawlUrl.id))
+    for f in filters:
+        count_q = count_q.where(f)
+    total = db.scalar(count_q) or 0
+
+    q = select(CrawlUrl).order_by(CrawlUrl.discovered_at.desc())
+    for f in filters:
+        q = q.where(f)
+    rows = db.scalars(q.offset(offset).limit(limit)).all()
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [
+            {
+                "id": r.id,
+                "domain": r.domain,
+                "url": r.url,
+                "status": r.status,
+                "error": r.error,
+                "recipe_id": r.recipe_id,
+                "attempts": r.attempts,
+                "discovered_at": r.discovered_at.isoformat() if r.discovered_at else None,
+                "attempted_at": r.attempted_at.isoformat() if r.attempted_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+class ResyncRequest(BaseModel):
+    domains: list[str] | None = None  # prázdné = všechny nakonfigurované
+
+
+@router.post("/resync")
+def resync(req: ResyncRequest):
+    """Vynuť okamžité znovunačtení sitemap (obejde 6h okno) a doplň nové URL
+    do fronty. Neprochází je – jen aktualizuje mapu. Vrací počet nově
+    přidaných URL po doménách."""
+    domains = req.domains or list(settings.recipe_domains) or crawler.DEFAULT_SITES
+    result: dict[str, int] = {}
+    db = SessionLocal()
+    try:
+        for dom in domains:
+            try:
+                result[dom] = crawler.sync_domain(db, dom, force=True)
+            except Exception as exc:  # noqa: BLE001
+                result[dom] = -1  # -1 = sync selhal (viz server log)
+    finally:
+        db.close()
+    return {"resynced": result, "queue": crawler.queue_stats()}
+
+
+@router.get("/queue/export")
+def queue_export(
+    fmt: str = Query("csv", pattern="^(csv|json)$"),
+    status: str | None = None,
+    domain: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Stáhni celou mapu prohledaných odkazů (bez limitu) – URL, stav,
+    výsledek, chyba a odkaz na získaný recept. `fmt=csv` (výchozí) nebo
+    `fmt=json`."""
+    q = (
+        select(CrawlUrl, Recipe.title, Recipe.source_url)
+        .outerjoin(Recipe, CrawlUrl.recipe_id == Recipe.id)
+        .order_by(CrawlUrl.domain.asc(), CrawlUrl.discovered_at.asc())
+    )
+    if status:
+        q = q.where(CrawlUrl.status == status)
+    if domain:
+        q = q.where(CrawlUrl.domain == domain)
+    rows = db.execute(q).all()
+
+    def recipe_url(cu: CrawlUrl) -> str:
+        return f"/recept/{cu.recipe_id}" if cu.recipe_id else ""
+
+    if fmt == "json":
+        payload = [
+            {
+                "domain": cu.domain,
+                "url": cu.url,
+                "status": cu.status,
+                "error": cu.error,
+                "attempts": cu.attempts,
+                "recipe_id": cu.recipe_id,
+                "recipe_title": title,
+                "recipe_path": recipe_url(cu),
+                "discovered_at": cu.discovered_at.isoformat() if cu.discovered_at else None,
+                "attempted_at": cu.attempted_at.isoformat() if cu.attempted_at else None,
+            }
+            for cu, title, _src in rows
+        ]
+        import json as _json
+
+        buf = io.BytesIO(_json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+        return StreamingResponse(
+            buf,
+            media_type="application/json",
+            headers={"Content-Disposition": "attachment; filename=sitemap.json"},
+        )
+
+    out = io.StringIO()
+    w = csv.writer(out, delimiter=";")
+    w.writerow([
+        "domain", "url", "status", "error", "attempts",
+        "recipe_id", "recipe_title", "recipe_path",
+        "discovered_at", "attempted_at",
+    ])
+    for cu, title, _src in rows:
+        w.writerow([
+            cu.domain, cu.url, cu.status, cu.error or "", cu.attempts,
+            cu.recipe_id or "", title or "", recipe_url(cu),
+            cu.discovered_at.isoformat() if cu.discovered_at else "",
+            cu.attempted_at.isoformat() if cu.attempted_at else "",
+        ])
+    return StreamingResponse(
+        io.BytesIO(out.getvalue().encode("utf-8")),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=sitemap.csv"},
+    )
