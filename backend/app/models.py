@@ -239,6 +239,46 @@ class RecipeTag(Base):
     )
 
 
+class CrawlUrl(Base):
+    """Persistentní fronta URL objevených ze sitemap – nahrazuje dřívější
+    "náhodně zamíchej a zkus" přístup. Každá URL se objeví v téhle tabulce
+    jen jednou (bez ohledu na to, jak dopadla), takže crawler ví, co už
+    zkoušel a s jakým výsledkem – neopakuje donekonečna stejné neúspěchy a
+    dá se z toho udělat přehledová tabulka v adminu."""
+
+    __tablename__ = "crawl_url"
+    __table_args__ = (UniqueConstraint("url", name="uq_crawl_url"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    domain: Mapped[str] = mapped_column(String(160), index=True)
+    url: Mapped[str] = mapped_column(String(600))
+    # pending = čeká na zpracování, ok = recept uložen, skip = nebyl to
+    # recept / už existoval, error = zpracování selhalo (viz `error`)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recipe_id: Mapped[int | None] = mapped_column(
+        ForeignKey("recipe.id", ondelete="SET NULL"), nullable=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    discovered_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    recipe: Mapped[Recipe | None] = relationship()
+
+
+class CrawlDomainState(Base):
+    """Kdy byla naposledy synchronizovaná sitemapa dané domény – ať se
+    nestahuje a neparsuje celá sitemapa (u velkých webů klidně tisíce URL)
+    znovu při každém běhu crawleru."""
+
+    __tablename__ = "crawl_domain_state"
+
+    domain: Mapped[str] = mapped_column(String(160), primary_key=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_sync_added: Mapped[int] = mapped_column(Integer, default=0)
+    sitemap_urls_total: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class LidlAccount(Base):
     """Napojený Lidl Plus účet (může jich být víc – např. účet + účet manželky).
 

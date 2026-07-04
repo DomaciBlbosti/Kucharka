@@ -12,17 +12,24 @@ import random
 import re
 import threading
 import time
+from datetime import datetime, timedelta
 
 import httpx
 from sqlalchemy import func, select
 
 from ..config import settings
 from ..db import SessionLocal
-from ..models import Ingredient, Recipe
+from ..models import CrawlDomainState, CrawlUrl, Ingredient, Recipe
 from . import discovery
 from .ingest import ingest_url
 
 log = logging.getLogger("kucharka.crawler")
+
+# Sitemapa domény se znovu nestahuje/neparsuje častěji než tohle – ať se
+# nezatěžuje cizí server a hlavně ať to není zbytečně pomalé (u velkých webů
+# je sitemapa i tisíce URL). Nové recepty na webu i tak najdeme při dalším
+# běhu po uplynutí týhle doby.
+_SYNC_MIN_INTERVAL = timedelta(hours=6)
 
 # Výchozí weby pro procházení sitemap (když není RECIPE_DOMAINS). České přes
 # wild_mode (JSON-LD).
@@ -230,7 +237,10 @@ def _urls_from_sitemap(url: str, depth: int = 0) -> list[str]:
 
 
 def discover_site(domain: str, max_urls: int = 120) -> list[str]:
-    """Vrať náhodný vzorek receptových URL z webu (přes sitemapy)."""
+    """Vrať náhodný vzorek receptových URL z webu (přes sitemapy). Zachováno
+    kvůli zpětné kompatibilitě (query-based `crawl()` výš to nepoužívá, ale
+    může to používat existující kód/testy) – nová fronta jede přes
+    `discover_site_all` + `sync_domain` níž."""
     all_urls: list[str] = []
     for sm in _sitemaps_for(domain)[:5]:
         all_urls += _urls_from_sitemap(sm)
@@ -245,58 +255,139 @@ def discover_site(domain: str, max_urls: int = 120) -> list[str]:
     return recipe_urls[:max_urls]
 
 
+def discover_site_all(domain: str, cap: int = 20000) -> list[str]:
+    """Vrať VŠECHNY receptové URL ze sitemapy domény, bez náhodného
+    vzorkování/ořezu – pro naplnění persistentní fronty (`sync_domain`).
+    `cap` je jen bezpečnostní pojistka proti fakt obřím sitemapám."""
+    all_urls: list[str] = []
+    for sm in _sitemaps_for(domain)[:5]:
+        all_urls += _urls_from_sitemap(sm)
+        if len(all_urls) >= cap:
+            break
+    recipe_urls = [
+        u for u in all_urls if _RECIPE_HINT.search(u) and not _EXCLUDE.search(u)
+    ]
+    if not recipe_urls:
+        recipe_urls = [u for u in all_urls if not _EXCLUDE.search(u)]
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in recipe_urls:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+        if len(out) >= cap:
+            break
+    return out
+
+
+def sync_domain(db, domain: str, force: bool = False) -> int:
+    """Stáhni sitemapu domény a přidej nové URL do persistentní fronty
+    (`crawl_url`, status='pending'). URL, co už frontu jednou prošly (ať už
+    úspěšně, s chybou, nebo jako skip), se NEPŘIDÁVAJÍ znovu – díky tomu
+    crawler nezkouší donekonečna to samé. Vrací počet nově přidaných URL.
+
+    Sitemapa se nestahuje častěji než `_SYNC_MIN_INTERVAL`, pokud `force`
+    není True – ať se web zbytečně nezatěžuje a hlavně ať to není pomalé
+    (velké sitemapy mají klidně tisíce URL)."""
+    state = db.get(CrawlDomainState, domain)
+    if state and state.last_synced_at and not force:
+        if datetime.utcnow() - state.last_synced_at < _SYNC_MIN_INTERVAL:
+            return 0
+
+    urls = discover_site_all(domain)
+    existing = set(db.scalars(select(CrawlUrl.url).where(CrawlUrl.domain == domain)))
+    added = 0
+    for u in urls:
+        if u in existing:
+            continue
+        db.add(CrawlUrl(domain=domain, url=u, status="pending"))
+        added += 1
+
+    if state is None:
+        state = CrawlDomainState(domain=domain)
+        db.add(state)
+    state.last_synced_at = datetime.utcnow()
+    state.last_sync_added = added
+    state.sitemap_urls_total = len(urls)
+    db.commit()
+    log.info(
+        "sync %s: %s nových URL do fronty (sitemapa má celkem %s kandidátů)",
+        domain, added, len(urls),
+    )
+    return added
+
+
+def process_queue(db, max_items: int = 30) -> dict:
+    """Zpracuj až `max_items` čekajících (status='pending') URL z fronty,
+    v pořadí od nejdřív objevených. Každá URL se zpracuje NEJVÝŠ JEDNOU za
+    volání – výsledek (ok/skip/error + důvod) se zapíše zpátky do řádku, ať
+    je vidět historie i v přehledové tabulce v adminu."""
+    rows = db.scalars(
+        select(CrawlUrl)
+        .where(CrawlUrl.status == "pending")
+        .order_by(CrawlUrl.discovered_at.asc())
+        .limit(max_items)
+    ).all()
+    added = 0
+    for row in rows:
+        row.attempted_at = datetime.utcnow()
+        row.attempts += 1
+        with _lock:
+            _state["found"] += 1
+        try:
+            recipe = ingest_url(db, row.url)
+            if recipe:
+                row.status = "ok"
+                row.error = None
+                row.recipe_id = recipe.id
+                added += 1
+                with _lock:
+                    _state["added"] += 1
+                    _state["recent"].append(
+                        {"title": recipe.title, "domain": recipe.source_domain}
+                    )
+                log.info("crawl + %s", recipe.title)
+            else:
+                row.status = "skip"
+                row.error = "Není recept, nebo se nedal zpracovat (bez chyby)."
+                with _lock:
+                    _state["skipped"] += 1
+        except Exception as exc:  # noqa: BLE001
+            row.status = "error"
+            row.error = str(exc)[:500]
+            with _lock:
+                _state["errors"] += 1
+            log.warning("crawl ingest selhal %s: %s", row.url, exc)
+        db.commit()
+        time.sleep(0.4)
+    return {"processed": len(rows), "added": added}
+
+
 def crawl_sites(
     domains: list[str] | None = None,
     max_recipes: int = 30,
-    per_site: int = 12,
+    per_site: int = 12,  # ponecháno kvůli zpětné kompatibilitě volání, dál nepoužito
 ) -> dict:
-    """Projdi weby a stáhni nové recepty z jejich sitemap (nepotřebuje SearXNG)."""
+    """Projdi weby přes persistentní frontu: nejdřív dosyncuj sitemapy všech
+    domén (jen těch, co nebyly syncované nedávno), pak zpracuj až
+    `max_recipes` čekajících URL z fronty (napříč doménami, od nejstarších)."""
     domains = domains or list(settings.recipe_domains) or DEFAULT_SITES
-    seen = _existing_urls()
     _set(
         running=True, started_at=time.time(), finished_at=None,
         found=0, added=0, skipped=0, errors=0, current_query=None, recent=[],
     )
-    added = 0
+    db = SessionLocal()
     try:
         for dom in domains:
-            if added >= max_recipes:
-                break
             _set(current_query=dom)
-            urls = discover_site(dom, max_urls=per_site * 4)
-            log.info("site %s: %s kandidátů ze sitemapy", dom, len(urls))
-            site_added = 0
-            for url in urls:
-                if added >= max_recipes or site_added >= per_site:
-                    break
-                if url in seen:
-                    continue
-                seen.add(url)
-                with _lock:
-                    _state["found"] += 1
-                db = SessionLocal()
-                try:
-                    recipe = ingest_url(db, url)
-                    if recipe:
-                        added += 1
-                        site_added += 1
-                        with _lock:
-                            _state["added"] = added
-                            _state["recent"].append(
-                                {"title": recipe.title, "domain": recipe.source_domain}
-                            )
-                        log.info("crawl + %s", recipe.title)
-                    else:
-                        with _lock:
-                            _state["skipped"] += 1
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("crawl ingest selhal %s: %s", url, exc)
-                    with _lock:
-                        _state["errors"] += 1
-                finally:
-                    db.close()
-                time.sleep(0.4)
+            try:
+                sync_domain(db, dom)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("sync %s selhal: %s", dom, exc)
+        _set(current_query=None)
+        process_queue(db, max_items=max_recipes)
     finally:
+        db.close()
         _set(running=False, finished_at=time.time(), current_query=None)
     return status()
 
@@ -316,6 +407,33 @@ def crawl_sites_async(
     )
     t.start()
     return True
+
+
+def queue_stats(domain: str | None = None) -> dict:
+    """Souhrn stavu fronty (pro admin dashboard)."""
+    db = SessionLocal()
+    try:
+        q = select(CrawlUrl.status, func.count(CrawlUrl.id)).group_by(CrawlUrl.status)
+        if domain:
+            q = q.where(CrawlUrl.domain == domain)
+        counts = {s: c for s, c in db.execute(q).all()}
+        domains_q = select(
+            CrawlDomainState.domain, CrawlDomainState.last_synced_at,
+            CrawlDomainState.sitemap_urls_total,
+        )
+        doms = [
+            {"domain": d, "last_synced_at": t.isoformat() if t else None, "sitemap_urls_total": n}
+            for d, t, n in db.execute(domains_q).all()
+        ]
+        return {
+            "pending": counts.get("pending", 0),
+            "ok": counts.get("ok", 0),
+            "skip": counts.get("skip", 0),
+            "error": counts.get("error", 0),
+            "domains": doms,
+        }
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":
