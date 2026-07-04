@@ -77,7 +77,9 @@ def _persist(db: Session, data: dict, t: _Timings | None = None) -> Recipe:
 
     recipe = db.scalar(select(Recipe).where(Recipe.source_url == data["source_url"]))
     if recipe is None:
-        recipe = Recipe(source_url=data["source_url"])
+        # title musí být nastaven PŘED flush – je NOT NULL, jinak flush spadne
+        # na IntegrityError dřív, než se vyplní zbytek polí níž.
+        recipe = Recipe(source_url=data["source_url"], title=title)
         db.add(recipe)
         try:
             # Vynuť INSERT hned, ať odchytíme souběh: když stejnou URL právě
