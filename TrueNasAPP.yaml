@@ -1,0 +1,70 @@
+services:
+  app:
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint:
+      - /bin/bash
+      - '-lc'
+      - >-
+        if [ -f /app/backend/requirements.txt ]; then pip install -q -r
+        /app/backend/requirements.txt || true; fi; exec /entrypoint.sh
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD:-}
+      AUTO_INGREDIENTS: ${AUTO_INGREDIENTS:-true}
+      CRAWLER_ENABLED: ${CRAWLER_ENABLED:-false}
+      DATABASE_URL: >-
+        mysql+pymysql://kucharka:${DB_PASSWORD:-kucharkaVychoziHeslo}@db:3306/kucharka
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      OLLAMA_URL: ${OLLAMA_URL:-http://open-webui:11434}
+      RECIPE_DOMAINS: >-
+        ${RECIPE_DOMAINS:-recepty.cz,toprecepty.cz,apetitonline.cz,vareni.cz,ireceptar.cz,klasicke-recepty.cz,bestrecepty.cz,kucharky.cz}
+      REPO_BRANCH: ${REPO_BRANCH:-main}
+      REPO_DIR: /app
+      REPO_URL: ${REPO_URL:-https://github.com/DomaciBlbosti/Kucharka.git}
+      SCRAPER_VERIFY_SSL: ${SCRAPER_VERIFY_SSL:-true}
+      SEARXNG_URL: ${SEARXNG_URL:-}
+      TRANSLATE_TO_CS: ${TRANSLATE_TO_CS:-true}
+      UPDATE_ENABLED: ${UPDATE_ENABLED:-true}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    image: ${APP_IMAGE:-ghcr.io/domaciblbosti/kucharka:latest}
+    ports:
+      - ${APP_PORT:-38080}:8000
+    pull_policy: ${APP_PULL_POLICY:-never}
+    restart: unless-stopped
+    networks:
+      - default
+      - openwebui
+    volumes:
+      - app_code:/app
+  db:
+    command:
+      - '--innodb-buffer-pool-size=256M'
+    environment:
+      MARIADB_DATABASE: kucharka
+      MARIADB_PASSWORD: ${DB_PASSWORD:-kucharkaVychoziHeslo}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-kucharkaVychoziHesloRoot}
+      MARIADB_USER: kucharka
+    healthcheck:
+      interval: 10s
+      retries: 12
+      test:
+        - CMD
+        - healthcheck.sh
+        - '--connect'
+        - '--innodb_initialized'
+      timeout: 5s
+    image: mariadb:11
+    restart: unless-stopped
+    volumes:
+      - db_data:/var/lib/mysql
+volumes:
+  app_code:
+  db_data:
+networks:
+  default:
+  openwebui:
+    external: true
+    name: ix-internal-open-webui-open-webui-net

@@ -242,6 +242,13 @@ export const api = {
   sysVersion: () => afetch("/api/system/version").then(J),
   sysCheck: () => afetch("/api/system/check", { method: "POST" }).then(J),
   sysUpdate: () => afetch("/api/system/update", { method: "POST" }).then(J),
+  sysJobs: () => afetch("/api/system/jobs").then(J),
+  sysLog: (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== ""))
+    ).toString();
+    return afetch(`/api/system/log${qs ? `?${qs}` : ""}`).then(J);
+  },
 
   adminSettings: () => afetch("/api/admin/settings").then(J),
   testOllama: () => afetch("/api/admin/test-ollama").then(J),

@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from ..config import settings
 
@@ -40,6 +40,30 @@ def _git(*args: str) -> str:
 def _branch() -> str:
     b = _git("rev-parse", "--abbrev-ref", "HEAD")
     return b if b and "chyba" not in b else "main"
+
+
+@router.get("/jobs")
+def jobs():
+    """Přehled úloh na pozadí: běží plánovač? které úlohy jsou naplánované,
+    kdy poběží příště, a jestli zrovna něco běží."""
+    from .. import scheduler
+
+    return scheduler.jobs_overview()
+
+
+@router.get("/log")
+def system_log(
+    limit: int = Query(200, le=1000),
+    level: str | None = Query(None, description="INFO|WARNING|ERROR – filtr úrovně"),
+    logger: str | None = Query(None, description="prefix jména loggeru, např. 'kucharka.crawler'"),
+    contains: str | None = Query(None, description="podřetězec ve zprávě"),
+):
+    """Posledních N log záznamů s časovými razítky (z paměti appky). Slouží
+    k ověření, že se úlohy na pozadí opravdu spouští, bez přístupu k
+    `docker logs`. Nejnovější první."""
+    from ..modules import logbuffer
+
+    return {"items": logbuffer.get_records(limit=limit, level=level, logger_prefix=logger, contains=contains)}
 
 
 @router.get("/version")

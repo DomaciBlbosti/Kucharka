@@ -138,6 +138,11 @@ app.include_router(auth_router.router)
 
 @app.on_event("startup")
 def on_startup() -> None:
+    from .modules import logbuffer
+
+    logbuffer.install()  # ať jde posledních pár log řádků číst přes API
+    log.info("Aplikace startuje – instaluji log buffer a plánovač úloh.")
+
     init_db()
     from . import auth as _auth
     from . import scheduler
@@ -152,6 +157,7 @@ def on_startup() -> None:
     finally:
         db.close()
     scheduler.configure_all()
+    log.info("Plánovač úloh nakonfigurován.")
 
 
 @app.middleware("http")

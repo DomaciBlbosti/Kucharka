@@ -315,6 +315,128 @@ function BackupCard() {
   );
 }
 
+function ServicesStatusCard() {
+  const [jobs, setJobs] = useState(null);
+  const [log, setLog] = useState(null);
+  const [logger, setLogger] = useState(""); // filtr prefixu loggeru
+  const [level, setLevel] = useState("");
+
+  const loadJobs = () => api.sysJobs().then(setJobs).catch(() => setJobs(null));
+  const loadLog = () =>
+    api.sysLog({ limit: 100, logger, level }).then((r) => setLog(r.items)).catch(() => setLog([]));
+
+  useEffect(() => { loadJobs(); loadLog(); }, [logger, level]);
+  useEffect(() => {
+    const t = setInterval(() => { loadJobs(); loadLog(); }, 4000);
+    return () => clearInterval(t);
+  }, [logger, level]);
+
+  const fmt = (iso) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return d.toLocaleString("cs-CZ");
+  };
+  const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString("cs-CZ") : "");
+
+  const levelColor = {
+    ERROR: "text-miss",
+    WARNING: "text-amber-600",
+    INFO: "text-ink/60",
+    DEBUG: "text-ink/35",
+  };
+
+  // Předvyplněné filtry loggeru pro rychlé proklikání.
+  const loggerPresets = [
+    ["", "vše"],
+    ["kucharka.scheduler", "plánovač"],
+    ["kucharka.crawler", "crawler"],
+    ["kucharka.ingest", "zpracování"],
+    ["kucharka.translate", "překlad"],
+    ["kucharka.lidl", "lidl"],
+  ];
+
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <h2 className="mb-1 text-lg font-bold">Služby na pozadí</h2>
+      <p className="mb-4 text-sm text-ink/60">
+        Co je naplánované, kdy poběží příště a jestli zrovna něco běží. Log
+        níž ukazuje, co se reálně děje – ať je vidět, jestli se úlohy opravdu
+        spouští.
+      </p>
+
+      {jobs === null ? (
+        <Spinner label="Načítám stav služeb…" />
+      ) : (
+        <>
+          <div className="mb-2 text-xs text-ink/45">
+            Plánovač: {jobs.scheduler_running
+              ? <span className="text-have">běží</span>
+              : <span className="text-miss">neběží</span>}
+          </div>
+          <div className="mb-5 grid gap-2 sm:grid-cols-2">
+            {jobs.jobs.map((j) => (
+              <div key={j.id} className="rounded-lg border border-line p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">{j.label}</span>
+                  {j.running ? (
+                    <span className="rounded-full bg-basil-soft px-2 py-0.5 text-xs text-basil-dark">běží&nbsp;právě&nbsp;teď</span>
+                  ) : j.scheduled ? (
+                    <span className="rounded-full bg-have/10 px-2 py-0.5 text-xs text-have">naplánováno</span>
+                  ) : (
+                    <span className="rounded-full bg-ink/5 px-2 py-0.5 text-xs text-ink/45">vypnuto</span>
+                  )}
+                </div>
+                <div className="mt-1 text-xs text-ink/45">
+                  {j.scheduled ? `příště: ${fmt(j.next_run)}` : "není naplánováno (zapni v nastavení výš)"}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        {loggerPresets.map(([val, label]) => (
+          <button
+            key={label}
+            onClick={() => setLogger(val)}
+            className={`rounded-full border px-2.5 py-1 text-xs ${logger === val ? "border-basil text-basil-dark" : "border-line text-ink/50"}`}
+          >
+            {label}
+          </button>
+        ))}
+        <span className="mx-1 text-line">|</span>
+        {["", "WARNING", "ERROR"].map((lv) => (
+          <button
+            key={lv || "all"}
+            onClick={() => setLevel(lv)}
+            className={`rounded-full border px-2.5 py-1 text-xs ${level === lv ? "border-basil text-basil-dark" : "border-line text-ink/50"}`}
+          >
+            {lv || "všechny úrovně"}
+          </button>
+        ))}
+      </div>
+
+      <div className="max-h-80 overflow-auto rounded-lg border border-line bg-paper p-2 font-mono text-xs leading-relaxed">
+        {log === null ? (
+          <Spinner label="Načítám log…" />
+        ) : log.length === 0 ? (
+          <p className="text-ink/40">Žádné záznamy (podle filtru).</p>
+        ) : (
+          log.map((r, i) => (
+            <div key={i} className="whitespace-pre-wrap break-words">
+              <span className="text-ink/35">{fmtTime(r.ts)}</span>{" "}
+              <span className={levelColor[r.level] || "text-ink/50"}>{r.level}</span>{" "}
+              <span className="text-ink/40">{r.logger}</span>{" "}
+              <span className="text-ink/75">{r.message}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
 function CrawlerCard() {
   const [s, setS] = useState(null);
   const [saved, setSaved] = useState(false);
@@ -1258,6 +1380,7 @@ export default function Admin() {
       <h1 className="font-display text-2xl font-extrabold">Administrace</h1>
       <ToolsCard />
       <ServicesCard />
+      <ServicesStatusCard />
       <LidlAccountsCard />
       <CrawlerCard />
       <CrawlerPanel />

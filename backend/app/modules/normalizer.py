@@ -259,8 +259,24 @@ def normalize_lines(db: Session, lines: list[str]) -> list[dict]:
     """Normalizuj všechny řádky receptu. Parsování dávkově (Ollama), pak párování.
 
     Řádky, které Ollama nezvládne (nebo je vypnutá), se doparsují regexem.
+
+    Instrumentace: zvlášť se změří čas parsování (1 LLM dávka) a čas párování
+    surovin včetně případného LLM dovytváření chybějících (`create_ingredient_via_llm`,
+    které běží per surovina). Vypíše se do logu `kucharka.ingest.timing`, ať
+    je vidět, jestli je úzké hrdlo parse, nebo dovytváření surovin.
     """
+    import logging
+    import time
+
+    tlog = logging.getLogger("kucharka.ingest.timing")
+
+    t_parse0 = time.perf_counter()
     parsed = parse_lines_ollama(lines)
+    parse_s = time.perf_counter() - t_parse0
+
+    match_s = 0.0
+    create_s = 0.0
+    created = 0
     results = []
     for i, text in enumerate(lines):
         if parsed is not None:
@@ -269,9 +285,18 @@ def normalize_lines(db: Session, lines: list[str]) -> list[dict]:
                 amount, unit, name = parse_line_regex(text)
         else:
             amount, unit, name = parse_line_regex(text)
+
+        t_m0 = time.perf_counter()
         ing = match_ingredient(db, name)
+        match_s += time.perf_counter() - t_m0
+
         if ing is None and settings.auto_ingredients:
+            t_c0 = time.perf_counter()
             ing = create_ingredient_via_llm(db, name)
+            create_s += time.perf_counter() - t_c0
+            if ing is not None:
+                created += 1
+
         results.append(
             {
                 "raw_text": text,
@@ -281,6 +306,11 @@ def normalize_lines(db: Session, lines: list[str]) -> list[dict]:
                 "ingredient": ing,
             }
         )
+
+    tlog.info(
+        "  normalize detail: parse=%.2fs match=%.2fs create_llm=%.2fs (%d nových surovin z %d řádků)",
+        parse_s, match_s, create_s, created, len(lines),
+    )
     return results
 
 
