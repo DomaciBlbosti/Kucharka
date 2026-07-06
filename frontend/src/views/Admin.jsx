@@ -567,6 +567,7 @@ function CrawlQueueCard() {
   const [resyncMsg, setResyncMsg] = useState(null);
   const [retrying, setRetrying] = useState(false);
   const [pruning, setPruning] = useState(false);
+  const [pruneStale, setPruneStale] = useState(null); // počet URL k smazání po dry-runu (čeká na potvrzení)
   const LIMIT = 50;
 
   const loadStats = () => api.crawlQueueStats().then(setStats).catch(() => {});
@@ -617,7 +618,9 @@ function CrawlQueueCard() {
   };
 
   // Prune běží na pozadí (celé sitemapy = minuty). Spustíme, pollujeme stav,
-  // po dokončení dry-runu nabídneme potvrzení a spustíme ostrý běh.
+  // Prune běží na pozadí (celé sitemapy = minuty). Dry-run spočítá přebytek a
+  // nabídne inline potvrzovací tlačítko (žádný window.confirm – ten prohlížeče
+  // v PWA/po opakování tiše potlačují, pak to vypadá, že se nic neděje).
   const pollPrune = () =>
     new Promise((resolve, reject) => {
       const iv = setInterval(async () => {
@@ -638,11 +641,12 @@ function CrawlQueueCard() {
       }, 2000);
     });
 
-  const pruneQueue = async () => {
+  // Fáze 1: dry-run – jen spočítat, kolik by se smazalo.
+  const pruneCheck = async () => {
     setPruning(true);
+    setPruneStale(null);
     setResyncMsg("Spouštím kontrolu sitemap…");
     try {
-      // 1) dry-run na pozadí
       const start = await api.crawlPrune(domain || null, true);
       if (!start.started) {
         setResyncMsg("Pročištění už běží – počkej na dokončení.");
@@ -654,23 +658,28 @@ function CrawlQueueCard() {
         setResyncMsg("Fronta je čistá – nic k odstranění (žádné pending URL mimo sitemapu).");
         return;
       }
-      if (!window.confirm(
-        `Nalezeno ${total} čekajících URL, které už nejsou v aktuální sitemapě ` +
-        `(přebytek z dřívějšího náhodného vzorkování). Smazat je? ` +
-        `Hotové, přeskočené ani chybné se nemažou.`
-      )) {
-        setResyncMsg(`Náhled: ${total} URL k odstranění (nic nesmazáno).`);
-        return;
-      }
-      // 2) ostrý běh na pozadí
-      setResyncMsg("Mažu přebytečné URL…");
-      const start2 = await api.crawlPrune(domain || null, false);
-      if (!start2.started) {
+      setPruneStale(total); // → zobrazí se inline potvrzovací tlačítko
+      setResyncMsg(null);
+    } catch (e) {
+      setResyncMsg(`chyba: ${e?.message || e}`);
+    } finally {
+      setPruning(false);
+    }
+  };
+
+  // Fáze 2: potvrzeno – skutečně smazat.
+  const pruneConfirm = async () => {
+    setPruning(true);
+    setResyncMsg("Mažu přebytečné URL…");
+    try {
+      const start = await api.crawlPrune(domain || null, false);
+      if (!start.started) {
         setResyncMsg("Pročištění už běží – počkej na dokončení.");
         return;
       }
       const done = await pollPrune();
       setResyncMsg(`Odstraněno ${done.removed} přebytečných URL z fronty.`);
+      setPruneStale(null);
       loadStats();
       loadItems();
     } catch (e) {
@@ -703,7 +712,7 @@ function CrawlQueueCard() {
           <Button variant="ghost" onClick={retryErrors} disabled={retrying}>
             {retrying ? "Přeřazuji…" : domain ? `Zkusit chybné znovu (${domain})` : "Zkusit chybné znovu"}
           </Button>
-          <Button variant="ghost" onClick={pruneQueue} disabled={pruning}>
+          <Button variant="ghost" onClick={pruneCheck} disabled={pruning}>
             {pruning ? "Kontroluji sitemapu…" : domain ? `Pročistit frontu (${domain})` : "Pročistit frontu"}
           </Button>
           <a
@@ -726,6 +735,25 @@ function CrawlQueueCard() {
         proč). „Resync" natáhne sitemapy hned (jinak max 1× za 6 h). Export
         stáhne celou mapu včetně odkazu na získaný recept.
       </p>
+      {pruneStale != null && (
+        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm">
+          <span className="text-ink/75">
+            Nalezeno <strong className="nums">{pruneStale}</strong> čekajících URL, které už nejsou
+            v aktuální sitemapě. Hotové, přeskočené ani chybné se nemažou.
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <Button onClick={pruneConfirm} disabled={pruning}>
+              {pruning ? "Mažu…" : `Smazat ${pruneStale}`}
+            </Button>
+            <button
+              onClick={() => { setPruneStale(null); setResyncMsg(null); }}
+              className="text-sm text-ink/50 hover:underline"
+            >
+              zrušit
+            </button>
+          </div>
+        </div>
+      )}
       {resyncMsg && <p className="mb-3 text-sm text-ink/70">{resyncMsg}</p>}
 
       {stats && (
