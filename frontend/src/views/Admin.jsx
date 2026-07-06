@@ -695,7 +695,7 @@ function CrawlQueueCard() {
               className={`rounded-full border px-2.5 py-1 text-xs ${domain === d.domain ? "border-basil text-basil-dark" : "border-line text-ink/50"}`}
               title={d.last_synced_at ? `naposledy synced: ${new Date(d.last_synced_at).toLocaleString("cs-CZ")}` : "ještě nesynced"}
             >
-              {d.domain} ({d.sitemap_urls_total})
+              {d.domain} ({d.queued})
             </button>
           ))}
         </div>

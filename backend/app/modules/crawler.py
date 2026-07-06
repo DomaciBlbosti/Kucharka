@@ -427,20 +427,41 @@ def crawl_sites_async(
 
 
 def queue_stats(domain: str | None = None) -> dict:
-    """Souhrn stavu fronty (pro admin dashboard)."""
+    """Souhrn stavu fronty (pro admin dashboard).
+
+    Doménové rozpady se počítají ze SKUTEČNÉHO obsahu fronty (`crawl_url`),
+    ne ze `sitemap_urls_total` v `crawl_domain_state`. Ta druhá hodnota je
+    jen velikost sitemapy z posledního syncu (přepisuje se) a nemá důvod
+    odpovídat počtu řádků ve frontě – kvůli tomu dřív součet přes čipy
+    nesouhlasil s „vše". Teď je součet přes domény == „vše".
+    """
     db = SessionLocal()
     try:
         q = select(CrawlUrl.status, func.count(CrawlUrl.id)).group_by(CrawlUrl.status)
         if domain:
             q = q.where(CrawlUrl.domain == domain)
         counts = {s: c for s, c in db.execute(q).all()}
-        domains_q = select(
-            CrawlDomainState.domain, CrawlDomainState.last_synced_at,
-            CrawlDomainState.sitemap_urls_total,
+
+        # počet URL ve frontě per doména (skutečnost) – tohle se sečte na „vše"
+        per_domain = dict(
+            db.execute(
+                select(CrawlUrl.domain, func.count(CrawlUrl.id)).group_by(CrawlUrl.domain)
+            ).all()
         )
+        # čas posledního syncu si necháme z crawl_domain_state (jen doplňková info)
+        synced = {
+            d: t
+            for d, t in db.execute(
+                select(CrawlDomainState.domain, CrawlDomainState.last_synced_at)
+            ).all()
+        }
         doms = [
-            {"domain": d, "last_synced_at": t.isoformat() if t else None, "sitemap_urls_total": n}
-            for d, t, n in db.execute(domains_q).all()
+            {
+                "domain": d,
+                "queued": n,  # skutečný počet URL téhle domény ve frontě
+                "last_synced_at": synced[d].isoformat() if synced.get(d) else None,
+            }
+            for d, n in sorted(per_domain.items(), key=lambda x: -x[1])
         ]
         return {
             "pending": counts.get("pending", 0),
