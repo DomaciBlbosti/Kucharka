@@ -105,6 +105,55 @@ def queue_list(
     }
 
 
+class PruneRequest(BaseModel):
+    domain: str | None = None  # prázdné = všechny nakonfigurované domény
+    dry_run: bool = True  # jen spočítat, nemazat (bezpečné pro první náhled)
+
+
+@router.post("/queue/prune")
+def prune_queue(req: PruneRequest):
+    """Vyčisti frontu od 'pending' URL, které se už NEVYSKYTUJÍ v aktuální
+    (deterministické) sitemapě dané domény. To odstraní přebytek, který dřív
+    nabobtnal kvůli náhodnému vzorkování sitemap (fronta byla klidně 4–6×
+    větší než skutečný web).
+
+    Maže se JEN status 'pending' – hotové ('ok'), přeskočené ('skip') i
+    chybné ('error') záznamy zůstávají (historie výsledků se nemaže).
+
+    `dry_run=True` (výchozí) jen spočítá, kolik by se smazalo, nic nemění.
+    """
+    domains = [req.domain] if req.domain else (list(settings.recipe_domains) or crawler.DEFAULT_SITES)
+    result: dict[str, dict] = {}
+    db = SessionLocal()
+    try:
+        for dom in domains:
+            try:
+                valid = set(crawler.discover_site_all(dom))
+            except Exception as exc:  # noqa: BLE001
+                result[dom] = {"error": str(exc)[:200]}
+                continue
+
+            pending = db.scalars(
+                select(CrawlUrl).where(
+                    CrawlUrl.domain == dom, CrawlUrl.status == "pending"
+                )
+            ).all()
+            stale = [r for r in pending if r.url not in valid]
+            result[dom] = {
+                "pending_total": len(pending),
+                "in_sitemap": len(pending) - len(stale),
+                "stale_removed": len(stale),
+                "dry_run": req.dry_run,
+            }
+            if not req.dry_run:
+                for r in stale:
+                    db.delete(r)
+                db.commit()
+    finally:
+        db.close()
+    return {"result": result, "queue": crawler.queue_stats()}
+
+
 class RetryRequest(BaseModel):
     domain: str | None = None  # prázdné = napříč všemi doménami
 

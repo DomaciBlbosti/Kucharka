@@ -225,20 +225,22 @@ def _sitemaps_for(domain: str) -> list[str]:
 
 
 def _urls_from_sitemap(url: str, depth: int = 0) -> list[str]:
-    if depth > 2:
+    if depth > 3:
         return []
     try:
         text = _maybe_gunzip(_fetch_bytes(url)).decode("utf-8", "ignore")
     except Exception:  # noqa: BLE001
         return []
     locs = re.findall(r"<loc>\s*([^<\s]+)", text)
-    if "<sitemapindex" in text.lower():  # index → rekurze do dílčích sitemap
-        random.shuffle(locs)
+    if "<sitemapindex" in text.lower():  # index → rekurze do VŠECH dílčích sitemap
+        # Žádný shuffle ani ořez: pro persistentní frontu chceme projít celou
+        # sitemapu deterministicky. Náhodný výběr dílčích sitemap (relikt staré
+        # "vzorkovací" logiky) způsoboval, že každý sync objevil jinou
+        # podmnožinu URL → fronta pak nekontrolovaně narůstala nad skutečnou
+        # velikost webu (klidně 4–6×).
         out: list[str] = []
-        for sm in locs[:8]:
+        for sm in locs:
             out += _urls_from_sitemap(sm, depth + 1)
-            if len(out) > 3000:
-                break
         return out
     return locs
 
@@ -262,12 +264,17 @@ def discover_site(domain: str, max_urls: int = 120) -> list[str]:
     return recipe_urls[:max_urls]
 
 
-def discover_site_all(domain: str, cap: int = 20000) -> list[str]:
-    """Vrať VŠECHNY receptové URL ze sitemapy domény, bez náhodného
-    vzorkování/ořezu – pro naplnění persistentní fronty (`sync_domain`).
-    `cap` je jen bezpečnostní pojistka proti fakt obřím sitemapám."""
+def discover_site_all(domain: str, cap: int = 100000) -> list[str]:
+    """Vrať VŠECHNY receptové URL ze sitemapy domény, deterministicky, bez
+    náhodného vzorkování/ořezu – pro naplnění persistentní fronty
+    (`sync_domain`). `cap` je jen pojistka proti extrémně obřím sitemapám.
+
+    Determinismus je tu podstatný: kdyby dvě po sobě jdoucí volání vrátila
+    různé podmnožiny URL, `sync_domain` by pořád dokola přidával „nové" URL a
+    fronta by narostla nad skutečnou velikost webu.
+    """
     all_urls: list[str] = []
-    for sm in _sitemaps_for(domain)[:5]:
+    for sm in _sitemaps_for(domain):
         all_urls += _urls_from_sitemap(sm)
         if len(all_urls) >= cap:
             break

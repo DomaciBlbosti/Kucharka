@@ -566,6 +566,7 @@ function CrawlQueueCard() {
   const [resyncing, setResyncing] = useState(false);
   const [resyncMsg, setResyncMsg] = useState(null);
   const [retrying, setRetrying] = useState(false);
+  const [pruning, setPruning] = useState(false);
   const LIMIT = 50;
 
   const loadStats = () => api.crawlQueueStats().then(setStats).catch(() => {});
@@ -615,6 +616,42 @@ function CrawlQueueCard() {
     }
   };
 
+  const pruneQueue = async () => {
+    setPruning(true);
+    setResyncMsg(null);
+    try {
+      // 1) dry-run: spočítat, kolik by se smazalo
+      const preview = await api.crawlPrune(domain || null, true);
+      const total = Object.values(preview.result).reduce(
+        (a, r) => a + (r.stale_removed || 0), 0
+      );
+      if (total === 0) {
+        setResyncMsg("Fronta je čistá – nic k odstranění (žádné pending URL mimo sitemapu).");
+        return;
+      }
+      if (!window.confirm(
+        `Najdeno ${total} čekajících URL, které už nejsou v aktuální sitemapě ` +
+        `(přebytek z dřívějšího náhodného vzorkování). Smazat je? ` +
+        `Hotové, přeskočené ani chybné se nemažou.`
+      )) {
+        setResyncMsg(`Náhled: ${total} URL k odstranění (nic nesmazáno).`);
+        return;
+      }
+      // 2) skutečné smazání
+      const done = await api.crawlPrune(domain || null, false);
+      const removed = Object.values(done.result).reduce(
+        (a, r) => a + (r.stale_removed || 0), 0
+      );
+      setResyncMsg(`Odstraněno ${removed} přebytečných URL z fronty.`);
+      loadStats();
+      loadItems();
+    } catch (e) {
+      setResyncMsg(`chyba: ${e?.message || e}`);
+    } finally {
+      setPruning(false);
+    }
+  };
+
   const badge = {
     pending: "bg-line/60 text-ink/60",
     ok: "bg-have/10 text-have",
@@ -637,6 +674,9 @@ function CrawlQueueCard() {
           </Button>
           <Button variant="ghost" onClick={retryErrors} disabled={retrying}>
             {retrying ? "Přeřazuji…" : domain ? `Zkusit chybné znovu (${domain})` : "Zkusit chybné znovu"}
+          </Button>
+          <Button variant="ghost" onClick={pruneQueue} disabled={pruning}>
+            {pruning ? "Kontroluji sitemapu…" : domain ? `Pročistit frontu (${domain})` : "Pročistit frontu"}
           </Button>
           <a
             href={api.crawlQueueExportUrl({ status, domain, fmt: "csv" })}
