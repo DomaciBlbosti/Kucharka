@@ -105,6 +105,26 @@ def queue_list(
     }
 
 
+class RetryRequest(BaseModel):
+    domain: str | None = None  # prázdné = napříč všemi doménami
+
+
+@router.post("/queue/retry-errors")
+def retry_errors(req: RetryRequest, db: Session = Depends(get_db)):
+    """Přeřaď URL se stavem 'error' zpět na 'pending', aby je crawler zkusil
+    znovu. Užitečné po opravě chyby, kvůli které dřív padaly. Vrací počet
+    přeřazených URL. Nespouští crawler – jen připraví frontu."""
+    q = select(CrawlUrl).where(CrawlUrl.status == "error")
+    if req.domain:
+        q = q.where(CrawlUrl.domain == req.domain)
+    rows = db.scalars(q).all()
+    for r in rows:
+        r.status = "pending"
+        r.error = None
+    db.commit()
+    return {"requeued": len(rows), "domain": req.domain}
+
+
 class ResyncRequest(BaseModel):
     domains: list[str] | None = None  # prázdné = všechny nakonfigurované
 

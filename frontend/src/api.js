@@ -73,6 +73,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ domains: domains || null }),
     }).then(J),
+  crawlRetryErrors: (domain) =>
+    afetch("/api/crawl/queue/retry-errors", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ domain: domain || null }),
+    }).then(J),
   crawlQueueExportUrl: (params = {}) => {
     const qs = new URLSearchParams(
       Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== ""))

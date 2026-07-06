@@ -565,6 +565,7 @@ function CrawlQueueCard() {
   const [offset, setOffset] = useState(0);
   const [resyncing, setResyncing] = useState(false);
   const [resyncMsg, setResyncMsg] = useState(null);
+  const [retrying, setRetrying] = useState(false);
   const LIMIT = 50;
 
   const loadStats = () => api.crawlQueueStats().then(setStats).catch(() => {});
@@ -599,6 +600,21 @@ function CrawlQueueCard() {
     }
   };
 
+  const retryErrors = async () => {
+    setRetrying(true);
+    setResyncMsg(null);
+    try {
+      const r = await api.crawlRetryErrors(domain || null);
+      setResyncMsg(`Přeřazeno ${r.requeued} chybných URL zpět do fronty (pending).`);
+      loadStats();
+      loadItems();
+    } catch (e) {
+      setResyncMsg(`chyba: ${e?.message || e}`);
+    } finally {
+      setRetrying(false);
+    }
+  };
+
   const badge = {
     pending: "bg-line/60 text-ink/60",
     ok: "bg-have/10 text-have",
@@ -618,6 +634,9 @@ function CrawlQueueCard() {
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="ghost" onClick={resync} disabled={resyncing}>
             {resyncing ? "Načítám sitemapy…" : domain ? `Resync ${domain}` : "Resync sitemap"}
+          </Button>
+          <Button variant="ghost" onClick={retryErrors} disabled={retrying}>
+            {retrying ? "Přeřazuji…" : domain ? `Zkusit chybné znovu (${domain})` : "Zkusit chybné znovu"}
           </Button>
           <a
             href={api.crawlQueueExportUrl({ status, domain, fmt: "csv" })}
