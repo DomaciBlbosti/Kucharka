@@ -481,6 +481,89 @@ def queue_stats(domain: str | None = None) -> dict:
         db.close()
 
 
+# --- Pročištění fronty na pozadí -------------------------------------------
+# Prune stahuje a parsuje celé sitemapy všech domén, což u velkých webů trvá
+# klidně minuty – nesmí běžet v HTTP requestu (Cloudflare zabíjí spojení po
+# ~100 s → HTTP 524). Běží tedy ve vlákně a UI se ptá na stav přes prune_status().
+_prune_lock = threading.Lock()
+_prune_state: dict = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "current_domain": None,
+    "removed": 0,
+    "checked_domains": 0,
+    "result": {},
+    "error": None,
+}
+
+
+def prune_status() -> dict:
+    with _prune_lock:
+        return dict(_prune_state)
+
+
+def _prune_run(domains: list[str], dry_run: bool) -> None:
+    db = SessionLocal()
+    try:
+        result: dict[str, dict] = {}
+        removed_total = 0
+        for i, dom in enumerate(domains, 1):
+            with _prune_lock:
+                _prune_state["current_domain"] = dom
+                _prune_state["checked_domains"] = i
+            try:
+                valid = set(discover_site_all(dom))
+            except Exception as exc:  # noqa: BLE001
+                result[dom] = {"error": str(exc)[:200]}
+                continue
+            pending = db.scalars(
+                select(CrawlUrl).where(
+                    CrawlUrl.domain == dom, CrawlUrl.status == "pending"
+                )
+            ).all()
+            stale = [r for r in pending if r.url not in valid]
+            result[dom] = {
+                "pending_total": len(pending),
+                "in_sitemap": len(pending) - len(stale),
+                "stale_removed": len(stale),
+                "dry_run": dry_run,
+            }
+            if not dry_run and stale:
+                for r in stale:
+                    db.delete(r)
+                db.commit()
+                removed_total += len(stale)
+            with _prune_lock:
+                _prune_state["removed"] = removed_total
+                _prune_state["result"] = dict(result)
+    except Exception as exc:  # noqa: BLE001
+        with _prune_lock:
+            _prune_state["error"] = str(exc)[:500]
+        log.warning("prune selhal: %s", exc)
+    finally:
+        db.close()
+        with _prune_lock:
+            _prune_state["running"] = False
+            _prune_state["finished_at"] = time.time()
+            _prune_state["current_domain"] = None
+
+
+def prune_async(domains: list[str], dry_run: bool = True) -> bool:
+    """Spusť pročištění fronty na pozadí. Vrací False, když už běží."""
+    with _prune_lock:
+        if _prune_state["running"]:
+            return False
+        _prune_state.update(
+            running=True, started_at=time.time(), finished_at=None,
+            current_domain=None, removed=0, checked_domains=0,
+            result={}, error=None,
+        )
+    t = threading.Thread(target=_prune_run, args=(domains, dry_run), daemon=True)
+    t.start()
+    return True
+
+
 if __name__ == "__main__":
     import sys
 

@@ -616,33 +616,61 @@ function CrawlQueueCard() {
     }
   };
 
+  // Prune běží na pozadí (celé sitemapy = minuty). Spustíme, pollujeme stav,
+  // po dokončení dry-runu nabídneme potvrzení a spustíme ostrý běh.
+  const pollPrune = () =>
+    new Promise((resolve, reject) => {
+      const iv = setInterval(async () => {
+        try {
+          const st = await api.crawlPruneStatus();
+          if (st.current_domain) {
+            setResyncMsg(`Kontroluji sitemapy… (${st.current_domain}, ${st.checked_domains} domén hotovo)`);
+          }
+          if (!st.running) {
+            clearInterval(iv);
+            if (st.error) reject(new Error(st.error));
+            else resolve(st);
+          }
+        } catch (e) {
+          clearInterval(iv);
+          reject(e);
+        }
+      }, 2000);
+    });
+
   const pruneQueue = async () => {
     setPruning(true);
-    setResyncMsg(null);
+    setResyncMsg("Spouštím kontrolu sitemap…");
     try {
-      // 1) dry-run: spočítat, kolik by se smazalo
-      const preview = await api.crawlPrune(domain || null, true);
-      const total = Object.values(preview.result).reduce(
-        (a, r) => a + (r.stale_removed || 0), 0
-      );
+      // 1) dry-run na pozadí
+      const start = await api.crawlPrune(domain || null, true);
+      if (!start.started) {
+        setResyncMsg("Pročištění už běží – počkej na dokončení.");
+        return;
+      }
+      const dry = await pollPrune();
+      const total = Object.values(dry.result).reduce((a, r) => a + (r.stale_removed || 0), 0);
       if (total === 0) {
         setResyncMsg("Fronta je čistá – nic k odstranění (žádné pending URL mimo sitemapu).");
         return;
       }
       if (!window.confirm(
-        `Najdeno ${total} čekajících URL, které už nejsou v aktuální sitemapě ` +
+        `Nalezeno ${total} čekajících URL, které už nejsou v aktuální sitemapě ` +
         `(přebytek z dřívějšího náhodného vzorkování). Smazat je? ` +
         `Hotové, přeskočené ani chybné se nemažou.`
       )) {
         setResyncMsg(`Náhled: ${total} URL k odstranění (nic nesmazáno).`);
         return;
       }
-      // 2) skutečné smazání
-      const done = await api.crawlPrune(domain || null, false);
-      const removed = Object.values(done.result).reduce(
-        (a, r) => a + (r.stale_removed || 0), 0
-      );
-      setResyncMsg(`Odstraněno ${removed} přebytečných URL z fronty.`);
+      // 2) ostrý běh na pozadí
+      setResyncMsg("Mažu přebytečné URL…");
+      const start2 = await api.crawlPrune(domain || null, false);
+      if (!start2.started) {
+        setResyncMsg("Pročištění už běží – počkej na dokončení.");
+        return;
+      }
+      const done = await pollPrune();
+      setResyncMsg(`Odstraněno ${done.removed} přebytečných URL z fronty.`);
       loadStats();
       loadItems();
     } catch (e) {

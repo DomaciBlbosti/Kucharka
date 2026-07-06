@@ -85,6 +85,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ domain: domain || null, dry_run: dryRun }),
     }).then(J),
+  crawlPruneStatus: () => afetch("/api/crawl/queue/prune-status").then(J),
   crawlQueueExportUrl: (params = {}) => {
     const qs = new URLSearchParams(
       Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== ""))
