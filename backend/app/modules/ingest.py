@@ -52,7 +52,14 @@ class _Timings:
         log.info("ingest %.2fs [%s]%s %s", total, parts, f" {extra}" if extra else "", self.url)
 
 
-def ingest_url(db: Session, url: str) -> Recipe | None:
+def ingest_url(db: Session, url: str, *, allow_llm_create: bool = False) -> Recipe | None:
+    """Stáhni a ulož recept z URL.
+
+    `allow_llm_create=False` (výchozí pro crawler): nenapárované suroviny se
+    NEdotvářejí přes LLM v hot path – to je nejdražší část ingestu a při
+    crawlování statisíců receptů se přenechává backfill jobu na pozadí.
+    Ruční přidání jednoho receptu si může vyžádat `allow_llm_create=True`.
+    """
     t = _Timings(url)
     with t.phase("scrape"):
         data = scraper.fetch_and_extract(url)
@@ -61,10 +68,12 @@ def ingest_url(db: Session, url: str) -> Recipe | None:
         return None
     with t.phase("translate"):
         data = translate.translate_recipe(data)  # cizí recept → čeština
-    return _persist(db, data, t)
+    return _persist(db, data, t, allow_llm_create=allow_llm_create)
 
 
-def _persist(db: Session, data: dict, t: _Timings | None = None) -> Recipe:
+def _persist(
+    db: Session, data: dict, t: _Timings | None = None, *, allow_llm_create: bool = False
+) -> Recipe:
     if t is None:
         t = _Timings(data.get("source_url", "?"))
 
@@ -117,7 +126,7 @@ def _persist(db: Session, data: dict, t: _Timings | None = None) -> Recipe:
     lines = data.get("ingredients", [])
     original_lines = data.get("original_ingredients")  # stejná délka/pořadí jako lines
     with t.phase("normalize"):
-        normalized = normalize_lines(db, lines)
+        normalized = normalize_lines(db, lines, allow_llm_create=allow_llm_create)
     for i, norm in enumerate(normalized):
         ing = norm["ingredient"]
         grams = grams_for(norm["amount"], norm["unit"], ing)
@@ -140,6 +149,10 @@ def _persist(db: Session, data: dict, t: _Timings | None = None) -> Recipe:
     return recipe
 
 
-def persist(db: Session, data: dict) -> Recipe:
-    """Veřejný alias pro uložení už připraveného receptu (URL scrape i foto-import)."""
-    return _persist(db, data)
+def persist(db: Session, data: dict, *, allow_llm_create: bool = True) -> Recipe:
+    """Veřejný alias pro uložení už připraveného receptu (URL scrape i foto-import).
+
+    Ruční cesta (jeden recept) si LLM tvorbu chybějících surovin dovolit může –
+    není to hot path jako crawler.
+    """
+    return _persist(db, data, allow_llm_create=allow_llm_create)

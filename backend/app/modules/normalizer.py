@@ -255,42 +255,66 @@ def normalize_line(db: Session, text: str) -> dict:
     return normalize_lines(db, [text])[0]
 
 
-def normalize_lines(db: Session, lines: list[str]) -> list[dict]:
-    """Normalizuj všechny řádky receptu. Parsování dávkově (Ollama), pak párování.
+def normalize_lines(
+    db: Session, lines: list[str], *, allow_llm_create: bool | None = None
+) -> list[dict]:
+    """Normalizuj všechny řádky receptu.
 
-    Řádky, které Ollama nezvládne (nebo je vypnutá), se doparsují regexem.
+    Výkonově kritická cesta (crawler zpracovává statisíce receptů), proto:
 
-    Instrumentace: zvlášť se změří čas parsování (1 LLM dávka) a čas párování
-    surovin včetně případného LLM dovytváření chybějících (`create_ingredient_via_llm`,
-    které běží per surovina). Vypíše se do logu `kucharka.ingest.timing`, ať
-    je vidět, jestli je úzké hrdlo parse, nebo dovytváření surovin.
+    1. **Parsování regexem první.** `parse_line_regex` zvládne naprostou většinu
+       českých receptových řádků ("2 lžíce mouky" → 2/lžíce/mouka) okamžitě.
+       LLM (`parse_lines_ollama`) se zavolá JEN na řádky, kde regex nenajde
+       název – ne paušálně na celý recept. Měření ukázalo, že paušální LLM
+       parsování žralo 5–56 s na recept, prakticky nadarmo.
+
+    2. **Žádná per-surovina LLM tvorba v hot path.** Dřív se pro každou
+       nenapárovanou surovinu volal `create_ingredient_via_llm` (5–44 s, často
+       marně – model vrátil prázdno). Při crawlu se surovina teď nechá
+       nenapárovaná (`ingredient_id=None`); její dotvoření obstará backfill
+       (`match` job) na pozadí, dávkově a mimo kritickou cestu. Pro ruční
+       přidání jednoho receptu jde chování zapnout přes `allow_llm_create=True`.
+
+    `allow_llm_create=None` → řídí se `settings.auto_ingredients`, ale POUZE
+    mimo crawler (crawler si předává False explicitně).
     """
     import logging
     import time
 
     tlog = logging.getLogger("kucharka.ingest.timing")
 
+    # 1) regex parse pro všechny řádky; posbírej, co regex nezvládl (chybí název)
     t_parse0 = time.perf_counter()
-    parsed = parse_lines_ollama(lines)
+    regex_parsed: list[tuple[float | None, str | None, str]] = [
+        parse_line_regex(text) for text in lines
+    ]
+    need_llm_idx = [i for i, (_a, _u, name) in enumerate(regex_parsed) if not name]
+
+    # LLM jen na zbytek (typicky prázdný seznam → žádné LLM volání)
+    if need_llm_idx and settings.ollama_enabled:
+        llm_parsed = parse_lines_ollama([lines[i] for i in need_llm_idx])
+        if llm_parsed is not None:
+            for pos, idx in enumerate(need_llm_idx):
+                amt, unit, name = llm_parsed[pos]
+                if name:  # doplň jen když LLM opravdu něco našel
+                    regex_parsed[idx] = (amt, unit, name)
     parse_s = time.perf_counter() - t_parse0
+
+    if allow_llm_create is None:
+        allow_llm_create = settings.auto_ingredients
 
     match_s = 0.0
     create_s = 0.0
     created = 0
     results = []
     for i, text in enumerate(lines):
-        if parsed is not None:
-            amount, unit, name = parsed[i]
-            if not name:
-                amount, unit, name = parse_line_regex(text)
-        else:
-            amount, unit, name = parse_line_regex(text)
+        amount, unit, name = regex_parsed[i]
 
         t_m0 = time.perf_counter()
         ing = match_ingredient(db, name)
         match_s += time.perf_counter() - t_m0
 
-        if ing is None and settings.auto_ingredients:
+        if ing is None and allow_llm_create:
             t_c0 = time.perf_counter()
             ing = create_ingredient_via_llm(db, name)
             create_s += time.perf_counter() - t_c0
@@ -308,8 +332,9 @@ def normalize_lines(db: Session, lines: list[str]) -> list[dict]:
         )
 
     tlog.info(
-        "  normalize detail: parse=%.2fs match=%.2fs create_llm=%.2fs (%d nových surovin z %d řádků)",
-        parse_s, match_s, create_s, created, len(lines),
+        "  normalize detail: parse=%.2fs match=%.2fs create_llm=%.2fs "
+        "(%d nových surovin z %d řádků, LLM parse jen %d řádků)",
+        parse_s, match_s, create_s, created, len(lines), len(need_llm_idx),
     )
     return results
 
