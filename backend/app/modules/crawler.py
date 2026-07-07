@@ -12,6 +12,8 @@ import random
 import re
 import threading
 import time
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 import httpx
@@ -331,59 +333,106 @@ def sync_domain(db, domain: str, force: bool = False) -> int:
     return added
 
 
+def _process_one(db, row_id: int) -> str:
+    """Zpracuj jednu URL z fronty (v rámci předané session). Vrací výsledný
+    stav ('ok'/'skip'/'error'). Aktualizuje řádek i globální _state.
+
+    Běží uvnitř jednoho workera – `db` je session vlastněná tímto vláknem
+    (SQLAlchemy session NENÍ thread-safe, každý worker má svou)."""
+    row = db.get(CrawlUrl, row_id)
+    if row is None:
+        return "skip"
+    row.attempted_at = datetime.utcnow()
+    row.attempts += 1
+    with _lock:
+        _state["found"] += 1
+    try:
+        recipe = ingest_url(db, row.url)
+        if recipe:
+            row.status = "ok"
+            row.error = None
+            row.recipe_id = recipe.id
+            with _lock:
+                _state["added"] += 1
+                _state["recent"].append(
+                    {"title": recipe.title, "domain": recipe.source_domain}
+                )
+                del _state["recent"][:-30]  # drž jen posledních ~30, ať neroste
+            log.info("crawl + %s", recipe.title)
+            db.commit()
+            return "ok"
+        row.status = "skip"
+        row.error = "Není recept, nebo se nedal zpracovat (bez chyby)."
+        with _lock:
+            _state["skipped"] += 1
+        db.commit()
+        return "skip"
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        with _lock:
+            _state["errors"] += 1
+        log.warning("crawl ingest selhal %s: %s", row.url, exc)
+        fresh = db.get(CrawlUrl, row_id)
+        if fresh is not None:
+            fresh.attempted_at = datetime.utcnow()
+            fresh.status = "error"
+            fresh.error = str(exc)[:500]
+        db.commit()
+        return "error"
+
+
+def _domain_worker(row_ids: list[int]) -> None:
+    """Zpracuj sériově všechny URL JEDNÉ domény (proto vlastní session a
+    prodleva mezi recepty). Různé domény běží v samostatných workerech
+    souběžně – na jeden web tak nikdy nemlátí víc vláken naráz."""
+    db = SessionLocal()
+    try:
+        for rid in row_ids:
+            _process_one(db, rid)
+            if settings.crawler_delay > 0:
+                time.sleep(settings.crawler_delay)
+    finally:
+        db.close()
+
+
 def process_queue(db, max_items: int = 30) -> dict:
-    """Zpracuj až `max_items` čekajících (status='pending') URL z fronty,
-    v pořadí od nejdřív objevených. Každá URL se zpracuje NEJVÝŠ JEDNOU za
-    volání – výsledek (ok/skip/error + důvod) se zapíše zpátky do řádku, ať
-    je vidět historie i v přehledové tabulce v adminu."""
+    """Zpracuj až `max_items` čekajících URL z fronty PARALELNĚ napříč doménami.
+
+    Návrh: vybere se `max_items` nejstarších pending URL, rozdělí se do skupin
+    podle domény, a skupiny se zpracují v thread poolu (`crawler_workers`).
+    Uvnitř skupiny se jede sériově s prodlevou (`crawler_delay`) – slušnost
+    k webu. Souběh je jen MEZI doménami, takže na jeden web míří vždy jen
+    jeden worker.
+
+    Scrape je I/O-bound (čekání na síť ~0,3–1,5 s), takže překrytím čekání
+    napříč doménami se propustnost násobně zvedne, aniž by kterýkoli web
+    dostal víc než jeden souběžný požadavek.
+
+    `db` (session volajícího) se použije jen na výběr fronty; samotné
+    zpracování má session per worker.
+    """
     rows = db.scalars(
         select(CrawlUrl)
         .where(CrawlUrl.status == "pending")
         .order_by(CrawlUrl.discovered_at.asc())
         .limit(max_items)
     ).all()
-    added = 0
-    for row in rows:
-        row.attempted_at = datetime.utcnow()
-        row.attempts += 1
-        with _lock:
-            _state["found"] += 1
-        try:
-            recipe = ingest_url(db, row.url)
-            if recipe:
-                row.status = "ok"
-                row.error = None
-                row.recipe_id = recipe.id
-                added += 1
-                with _lock:
-                    _state["added"] += 1
-                    _state["recent"].append(
-                        {"title": recipe.title, "domain": recipe.source_domain}
-                    )
-                log.info("crawl + %s", recipe.title)
-            else:
-                row.status = "skip"
-                row.error = "Není recept, nebo se nedal zpracovat (bez chyby)."
-                with _lock:
-                    _state["skipped"] += 1
-        except Exception as exc:  # noqa: BLE001
-            # Session je po chybě (např. IntegrityError) v rozbitém stavu –
-            # rollback ji vyčistí, jinak by spadly i všechny další recepty
-            # ve stejném běhu. Řádek fronty pak označíme v čisté transakci.
-            db.rollback()
-            with _lock:
-                _state["errors"] += 1
-            log.warning("crawl ingest selhal %s: %s", row.url, exc)
-            fresh = db.get(CrawlUrl, row.id)
-            if fresh is not None:
-                fresh.attempted_at = datetime.utcnow()
-                fresh.status = "error"
-                fresh.error = str(exc)[:500]
-            db.commit()
-            time.sleep(0.4)
-            continue
-        db.commit()
-        time.sleep(0.4)
+    if not rows:
+        return {"processed": 0, "added": 0}
+
+    # rozděl podle domény, zachovej pořadí (nejstarší první) v rámci domény
+    by_domain: dict[str, list[int]] = defaultdict(list)
+    for r in rows:
+        by_domain[r.domain].append(r.id)
+
+    with _lock:
+        added_before = _state["added"]
+    workers = max(1, min(settings.crawler_workers, len(by_domain)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pool.map(_domain_worker, by_domain.values())
+
+    with _lock:
+        added = _state["added"] - added_before
     return {"processed": len(rows), "added": added}
 
 

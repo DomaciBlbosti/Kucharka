@@ -51,6 +51,12 @@ class Settings:
         self.ollama_keep_alive: str = _env("OLLAMA_KEEP_ALIVE", "30m")
         # Počet souběžných workerů pro úlohy na pozadí (vyžaduje OLLAMA_NUM_PARALLEL).
         self.bg_workers: int = max(1, int(_env("BG_WORKERS", "2")))
+        # Počet souběžných workerů crawleru (scrape je I/O-bound, paralelizace
+        # napříč doménami výrazně zrychluje). Slušnost: na jednu doménu jede vždy
+        # jen jeden worker naráz, souběh je jen mezi různými doménami.
+        self.crawler_workers: int = max(1, int(_env("CRAWLER_WORKERS", "4")))
+        # Prodleva mezi recepty ZE STEJNÉ domény (s), aby se cizí web nezahltil.
+        self.crawler_delay: float = float(_env("CRAWLER_DELAY", "0.4"))
 
         # --- Služby na pozadí (překlad / párování) ---------------------
         self.auto_translate_enabled: bool = _truthy(_env("AUTO_TRANSLATE_ENABLED", "false"))
