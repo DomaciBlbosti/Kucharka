@@ -34,6 +34,24 @@ _STOP = {
 _NUM_RE = re.compile(r"(\d+[.,]?\d*)")
 _FRACTION = {"½": 0.5, "¼": 0.25, "¾": 0.75, "⅓": 0.333, "⅔": 0.667}
 
+# Nadpis skupiny ingrediencí (ne surovina!), např. "Marináda:", "Na ozdobu:",
+# "Těsto:". Weby je běžně vkládají jako další <li> v tom samém seznamu
+# ingrediencí a stejnou konvenci (text zakončený dvojtečkou) používá i OCR
+# receptů z fotky (viz photo_recipe.py) – proto ji poznáváme takhle napříč
+# celou appkou, ne jen na jednom místě.
+_HEADER_WORD_LIMIT = 4
+
+
+def is_section_header(text: str) -> bool:
+    """True, pokud řádek vypadá jako nadpis skupiny surovin, ne jako surovina."""
+    t = (text or "").strip()
+    if not t.endswith(":"):
+        return False
+    body = t[:-1].strip()
+    if not body or any(ch.isdigit() for ch in body):
+        return False  # "Na 4 porce:" apod. necháme radši projít jako běžný řádek
+    return len(body.split()) <= _HEADER_WORD_LIMIT
+
 
 def _strip_accents(s: str) -> str:
     return "".join(

@@ -10,6 +10,7 @@ from ..config import settings
 from ..db import get_db
 from ..models import Ingredient, IngredientAlias, Recipe, RecipeIngredient
 from ..modules import backfill, categorize, tagging, translate
+from ..modules.normalizer import is_section_header
 from ..modules.nutrition import recompute_recipe_kcal
 
 router = APIRouter(prefix="/api/maintenance", tags=["maintenance"])
@@ -90,6 +91,24 @@ def run_categorize():
 
 
 # ---- ruční párování nenapárovaných řádků ----
+
+@router.post("/purge-headers")
+def purge_headers(db: Session = Depends(get_db)):
+    """Smaže nenapárované řádky, které nejsou surovina, ale jen nadpis
+    skupiny (např. 'Marináda:', 'Na ozdobu:') – weby je vkládaly jako další
+    položku seznamu ingrediencí. Napárované řádky (ingredient_id != NULL) se
+    nedotýká; nová stažení už tyhle řádky vůbec nevytvoří (viz scraper.py)."""
+    rows = db.scalars(
+        select(RecipeIngredient).where(RecipeIngredient.ingredient_id.is_(None))
+    ).all()
+    removed = 0
+    for ri in rows:
+        if is_section_header(ri.raw_text):
+            db.delete(ri)
+            removed += 1
+    db.commit()
+    return {"removed": removed}
+
 
 @router.get("/unmatched")
 def unmatched(

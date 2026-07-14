@@ -872,6 +872,8 @@ function CrawlQueueCard() {
 function MatchPanel() {
   const [st, setSt] = useState(null);
   const [manual, setManual] = useState(false);
+  const [purging, setPurging] = useState(false);
+  const [purgeMsg, setPurgeMsg] = useState(null);
   const refresh = () => api.matchStatus().then(setSt).catch(() => {});
   useEffect(() => {
     refresh();
@@ -889,6 +891,18 @@ function MatchPanel() {
   const start = async () => {
     await api.backfill(true);
     refresh();
+  };
+
+  const purgeHeaders = async () => {
+    setPurging(true);
+    setPurgeMsg(null);
+    try {
+      const r = await api.purgeHeaders();
+      setPurgeMsg(`Smazáno ${r.removed} nadpisů (např. „Marináda:“, „Na ozdobu:“).`);
+      refresh();
+    } finally {
+      setPurging(false);
+    }
   };
 
   return (
@@ -927,6 +941,9 @@ function MatchPanel() {
           </div>
           {st.rows_unmatched > 0 ? (
             <div className="ml-auto flex gap-2">
+              <Button variant="ghost" onClick={purgeHeaders} disabled={purging}>
+                {purging ? "…" : "Vyčistit nadpisy"}
+              </Button>
               <Button variant="ghost" onClick={() => setManual(true)}>
                 Ručně…
               </Button>
@@ -939,6 +956,7 @@ function MatchPanel() {
           )}
         </div>
       )}
+      {purgeMsg && <p className="mt-2 text-xs text-ink/50">{purgeMsg}</p>}
       {!st.ollama && st.rows_unmatched > 0 && (
         <p className="mt-2 text-xs text-ink/45">
           Pro doplnění chybějících surovin zapni Ollamu (OLLAMA_URL).

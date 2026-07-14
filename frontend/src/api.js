@@ -304,6 +304,8 @@ export const api = {
     afetch("/api/maintenance/tag-recipes", { method: "POST" }).then(J),
   unmatched: (limit = 50, offset = 0) =>
     afetch(`/api/maintenance/unmatched?limit=${limit}&offset=${offset}`).then(J),
+  purgeHeaders: () =>
+    afetch("/api/maintenance/purge-headers", { method: "POST" }).then(J),
   matchOne: (body) =>
     afetch("/api/maintenance/match-one", {
       method: "POST",

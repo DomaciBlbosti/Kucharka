@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import httpx
 
 from ..config import settings
+from .normalizer import is_section_header
 
 try:
     from recipe_scrapers import scrape_html
@@ -69,6 +70,10 @@ def extract(html: str, url: str) -> dict | None:
         return None
 
     ingredients = _safe(s.ingredients, []) or []
+    # Weby často vkládají do seznamu ingrediencí i nadpisy skupin ("Marináda:",
+    # "Na ozdobu:") jako další položku – to není surovina, jen by to zbytečně
+    # zaplevelilo ruční párování. Vyhodíme je hned tady, než se vůbec uloží.
+    ingredients = [i for i in ingredients if not is_section_header(i)]
     title = _safe(s.title)
     if not title or len(ingredients) < 2:
         return None  # pravděpodobně špatný parse / listing stránka
