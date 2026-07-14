@@ -16,13 +16,14 @@ import time
 
 from rapidfuzz import fuzz, process
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
 from ..db import SessionLocal
 from ..models import Ingredient, IngredientAlias, Recipe, RecipeIngredient
 from .normalizer import (
     _clean_name,
+    _is_plausible_ingredient_name,
     _norm,
     create_ingredient_via_llm,
     parse_line_regex,
@@ -113,7 +114,7 @@ class _Matcher:
 
     def match(self, name: str) -> Ingredient | None:
         key = _clean_name(name)
-        if not key:
+        if not _is_plausible_ingredient_name(key):
             return None
         iid = self.alias_map.get(key)
         if iid is None:
@@ -140,7 +141,12 @@ class _Matcher:
         případný konflikt na uq_alias (stejný alias mezitím přidal jiný
         souběžný zápis – např. ruční přidání receptu s LLM tvorbou surovin)
         nezahodí celou dávku, jen ten jeden alias. Namísto něj se dohledá
-        existující mapování, ať se řádky se stejným textem stejně napárují."""
+        existující mapování, ať se řádky se stejným textem stejně napárují.
+
+        DataError (alias delší než VARCHAR(200)) by už neměl nastat – `match()`
+        i `create()` takové názvy odmítnou dřív, než se sem vůbec dostanou –
+        ale pojistka tu zůstává, ať jeden nečekaně dlouhý alias nezabije
+        zbytek dávky, kdyby se přece jen něco takového protáhlo."""
         if not self.pending_aliases:
             return
         for alias, iid in list(self.pending_aliases.items()):
@@ -155,6 +161,9 @@ class _Matcher:
                 if existing is not None:
                     self.alias_map[alias] = existing
                 log.info("backfill: alias %r už existoval (souběžný zápis), přeskočeno.", alias)
+            except DataError:
+                self.db.rollback()
+                log.warning("backfill: alias %r nešel uložit (moc dlouhý?), přeskočeno.", alias[:80])
         self.pending_aliases.clear()
 
 

@@ -10,6 +10,7 @@ Postup:
 """
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 
@@ -22,6 +23,8 @@ from ..config import settings
 from ..models import Ingredient, IngredientAlias
 from .nutrition import PIECE_GRAMS, UNIT_TO_G, UNIT_TO_ML
 from .ollamachat import chat_json
+
+log = logging.getLogger("kucharka.normalizer")
 
 _KNOWN_UNITS = set(UNIT_TO_G) | set(UNIT_TO_ML) | set(PIECE_GRAMS)
 
@@ -151,10 +154,24 @@ def _clean_name(name: str) -> str:
     return " ".join(words) or _norm(name)
 
 
+# ingredient_alias.alias je VARCHAR(200) (viz models.py) – navíc žádná
+# skutečná surovina takhle dlouhý název nemá. Když parser (regex nebo LLM)
+# omylem vezme za "název suroviny" celou větu/odstavec (typicky poznámka
+# vložená mezi ingredience na zdrojovém webu, ne skutečná surovina), radši
+# to vzdáme a necháme řádek nenapárovaný, než abychom se pokusili zapsat
+# alias delší než sloupec unese – to dřív shazovalo celý backfill job na
+# `DataError: Data too long for column 'alias'` uprostřed běhu.
+_MAX_ALIAS_LEN = 150
+
+
+def _is_plausible_ingredient_name(key: str) -> bool:
+    return bool(key) and len(key) <= _MAX_ALIAS_LEN
+
+
 def match_ingredient(db: Session, name: str) -> Ingredient | None:
     """Najdi kanonickou surovinu pro daný název."""
     key = _clean_name(name)
-    if not key:
+    if not _is_plausible_ingredient_name(key):
         return None
 
     # 1) alias cache
@@ -221,7 +238,11 @@ def create_ingredient_via_llm(db: Session, name: str) -> Ingredient | None:
     if not settings.ollama_enabled:
         return None
     clean = _clean_name(name)
-    if not clean:
+    if not _is_plausible_ingredient_name(clean):
+        log.info(
+            "create_ingredient_via_llm: přeskočeno (podezřele dlouhý 'název', "
+            "spíš věta/poznámka než surovina): %r…", name[:80],
+        )
         return None
     prompt = (
         f"Pro potravinu/surovinu '{name}' vrať typické výživové hodnoty na 100 g. "
@@ -243,6 +264,11 @@ def create_ingredient_via_llm(db: Session, name: str) -> Ingredient | None:
 
     name_cs = (data.get("name_cs") or "").strip()
     if not name_cs or data.get("kcal_100g") is None:
+        return None
+    if len(name_cs) > _MAX_ALIAS_LEN:
+        # LLM občas i do name_cs vrátí popisnou větu místo krátkého názvu –
+        # name_cs i alias jsou VARCHAR(200), radši zahodit než shodit insert.
+        log.info("create_ingredient_via_llm: LLM vrátilo moc dlouhý name_cs, zahazuji: %r…", name_cs[:80])
         return None
 
     ing = Ingredient(
