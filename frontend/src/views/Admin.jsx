@@ -962,6 +962,9 @@ function MatchPanel() {
           Pro doplnění chybějících surovin zapni Ollamu (OLLAMA_URL).
         </p>
       )}
+      {st.error && (
+        <p className="mt-2 text-xs text-miss">Poslední běh skončil chybou: {st.error}</p>
+      )}
       {manual && <ManualMatch onClose={() => { setManual(false); refresh(); }} />}
     </section>
   );

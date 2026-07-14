@@ -16,6 +16,7 @@ import time
 
 from rapidfuzz import fuzz, process
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..db import SessionLocal
@@ -34,13 +35,28 @@ log = logging.getLogger("kucharka.backfill")
 _lock = threading.Lock()
 _state: dict = {
     "running": False, "phase": None, "done": 0, "total": 0,
-    "matched": 0, "created": 0, "finished_at": None,
+    "matched": 0, "created": 0, "finished_at": None, "error": None,
 }
 
 
 def _set(**kw):
     with _lock:
         _state.update(kw)
+
+
+def _try_start() -> bool:
+    """Atomicky si zkus 'zamluvit' běh. Volá se tady rovnou uvnitř backfill(),
+    ne jen v backfill_async() – scheduler totiž může backfill() volat přímo
+    (viz scheduler.py: _run_match), mimo backfill_async(). Bez týhle pojistky
+    by tak mohly souběžně běžet dvě instance _Matcheru nad stejnou DB a
+    narazit na uq_alias (dvě vlákna najdou stejný nový alias skoro zároveň),
+    což shazovalo celý běh potichu hned ve Fázi 1 – žádné volání LLM se pak
+    vůbec nestihlo spustit."""
+    with _lock:
+        if _state["running"]:
+            return False
+        _state["running"] = True
+        return True
 
 
 def is_running() -> bool:
@@ -120,8 +136,25 @@ class _Matcher:
         return ing
 
     def flush_aliases(self):
-        for alias, iid in self.pending_aliases.items():
+        """Commitne nové aliasy JEDNOTLIVĚ (ne jedním velkým commitem), ať
+        případný konflikt na uq_alias (stejný alias mezitím přidal jiný
+        souběžný zápis – např. ruční přidání receptu s LLM tvorbou surovin)
+        nezahodí celou dávku, jen ten jeden alias. Namísto něj se dohledá
+        existující mapování, ať se řádky se stejným textem stejně napárují."""
+        if not self.pending_aliases:
+            return
+        for alias, iid in list(self.pending_aliases.items()):
             self.db.add(IngredientAlias(alias=alias, ingredient_id=iid))
+            try:
+                self.db.commit()
+            except IntegrityError:
+                self.db.rollback()
+                existing = self.db.scalar(
+                    select(IngredientAlias.ingredient_id).where(IngredientAlias.alias == alias)
+                )
+                if existing is not None:
+                    self.alias_map[alias] = existing
+                log.info("backfill: alias %r už existoval (souběžný zápis), přeskočeno.", alias)
         self.pending_aliases.clear()
 
 
@@ -136,6 +169,9 @@ def _apply(db: Session, row: RecipeIngredient, ing: Ingredient, amount, unit):
 
 
 def backfill(create_missing: bool = True, chunk: int = 30) -> dict:
+    if not _try_start():
+        log.info("backfill: už běží (spuštěno odjinud) – tenhle běh přeskakuji.")
+        return status()
     db = SessionLocal()
     affected: set[int] = set()
     matched = created = 0
@@ -144,8 +180,8 @@ def backfill(create_missing: bool = True, chunk: int = 30) -> dict:
         rows = db.scalars(
             select(RecipeIngredient).where(RecipeIngredient.ingredient_id.is_(None))
         ).all()
-        _set(running=True, phase="fuzzy", done=0, total=len(rows),
-             matched=0, created=0, finished_at=None)
+        _set(phase="fuzzy", done=0, total=len(rows),
+             matched=0, created=0, finished_at=None, error=None)
 
         # --- Fáze 1: regex → match v paměti (bez LLM) ---
         for i, row in enumerate(rows, 1):
@@ -206,6 +242,14 @@ def backfill(create_missing: bool = True, chunk: int = 30) -> dict:
         db.commit()
         log.info("backfill hotovo: napárováno %s, vytvořeno %s surovin, receptů %s",
                  matched, created, len(affected))
+    except Exception as exc:  # noqa: BLE001
+        # Dřív tahle výjimka doletěla až z vlákna ven a potichu ho zabila –
+        # navenek to vypadalo, že job "jen tak skončí" po Fázi 1, aniž by se
+        # Fáze 2 (LLM) vůbec spustila. Teď se zaloguje CELÝ traceback a chyba
+        # se uloží do stavu, ať je vidět v adminu (status().error).
+        log.exception("backfill selhal: %s", exc)
+        db.rollback()
+        _set(error=str(exc)[:500])
     finally:
         _set(running=False, phase=None, finished_at=time.time())
         db.close()
@@ -213,13 +257,12 @@ def backfill(create_missing: bool = True, chunk: int = 30) -> dict:
 
 
 def backfill_async(create_missing: bool = True) -> bool:
-    # running se nastavuje atomicky hned tady pod zámkem (ne až uvnitř backfill()
-    # ve vlákně), jinak by mezi kontrolou a startem vlákna mohlo proklouznout
-    # druhé souběžné volání a spustit se dvakrát zároveň.
-    with _lock:
-        if _state["running"]:
-            return False
-        _state["running"] = True
+    # Rychlá kontrola předem, ať se zbytečně nezakládá vlákno, když už jedna
+    # instance běží – skutečnou (atomickou) pojistku proti dvojímu běhu má
+    # backfill() sám přes _try_start(), protože ho volá i scheduler přímo
+    # (mimo tenhle wrapper).
+    if is_running():
+        return False
     threading.Thread(
         target=backfill, kwargs={"create_missing": create_missing}, daemon=True
     ).start()
