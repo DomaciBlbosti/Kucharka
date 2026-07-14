@@ -159,5 +159,6 @@ def tag_async(only_missing: bool = True) -> bool:
     with _lock:
         if _state["running"]:
             return False
+        _state["running"] = True
     threading.Thread(target=tag_all, args=(only_missing,), daemon=True).start()
     return True

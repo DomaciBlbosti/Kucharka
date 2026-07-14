@@ -213,9 +213,13 @@ def backfill(create_missing: bool = True, chunk: int = 30) -> dict:
 
 
 def backfill_async(create_missing: bool = True) -> bool:
+    # running se nastavuje atomicky hned tady pod zámkem (ne až uvnitř backfill()
+    # ve vlákně), jinak by mezi kontrolou a startem vlákna mohlo proklouznout
+    # druhé souběžné volání a spustit se dvakrát zároveň.
     with _lock:
         if _state["running"]:
             return False
+        _state["running"] = True
     threading.Thread(
         target=backfill, kwargs={"create_missing": create_missing}, daemon=True
     ).start()

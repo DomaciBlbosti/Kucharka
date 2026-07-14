@@ -177,6 +177,7 @@ def suggest_async(start, days, meals, daily_kcal, preferences, fill_empty=False)
     with _lock:
         if _state["running"]:
             return False
+        _state["running"] = True
     threading.Thread(
         target=suggest, args=(start, days, meals, daily_kcal, preferences, fill_empty), daemon=True
     ).start()

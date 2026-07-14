@@ -211,9 +211,13 @@ def retranslate_all() -> None:
 
 
 def retranslate_async() -> bool:
+    # running se nastavuje atomicky hned tady pod zámkem, aby dvě souběžná
+    # volání nemohla obě projít kontrolou dřív, než retranslate_all() (ve
+    # vlákně) stihne running nastavit samo.
     with _lock:
         if _state["running"]:
             return False
+        _state["running"] = True
     threading.Thread(target=retranslate_all, daemon=True).start()
     return True
 
@@ -304,5 +308,6 @@ def reset_translations_async() -> bool:
     with _reset_lock:
         if _reset_state["running"]:
             return False
+        _reset_state["running"] = True
     threading.Thread(target=reset_translations_all, daemon=True).start()
     return True

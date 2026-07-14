@@ -181,6 +181,7 @@ def crawl_async(
     with _lock:
         if _state["running"]:
             return False
+        _state["running"] = True
     t = threading.Thread(
         target=crawl,
         kwargs={"queries": queries, "max_recipes": max_recipes, "per_query": per_query},
@@ -473,6 +474,7 @@ def crawl_sites_async(
     with _lock:
         if _state["running"]:
             return False
+        _state["running"] = True
     t = threading.Thread(
         target=crawl_sites,
         kwargs={"domains": domains, "max_recipes": max_recipes, "per_site": per_site},
