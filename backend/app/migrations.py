@@ -86,6 +86,11 @@ _INDEXES: tuple[IndexAdd, ...] = (
     IndexAdd("recipe", "ix_recipe_crawl_status",      ("crawl_status",)),
     IndexAdd("recipe", "ix_recipe_enrichment_status", ("enrichment_status",)),
     IndexAdd("recipe", "ix_recipe_image_status",      ("image_status",)),
+    # Pokrývací index pro dostupnost receptů vůči spíži (GROUP BY recipe_id +
+    # filtr ingredient_id IN (...)) – hlavní stránka receptů a "Vařím z" na
+    # tenhle dotaz sahají při KAŽDÉM načtení, u 150k+ receptů to bez indexu
+    # znatelně brzdilo.
+    IndexAdd("recipe_ingredient", "ix_ri_recipe_ingredient", ("recipe_id", "ingredient_id")),
 )
 
 

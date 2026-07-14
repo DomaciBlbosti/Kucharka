@@ -12,8 +12,12 @@ const SORTS = [
   ["newest", "Nejnovější"],
 ];
 
+const PAGE_SIZE = 30;
+
 export default function Recipes() {
   const [recipes, setRecipes] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [q, setQ] = useState("");
   const [onlyHave, setOnlyHave] = useState(false);
   const [maxMissing, setMaxMissing] = useState("");
@@ -42,28 +46,61 @@ export default function Recipes() {
     setPicked((cur) => (cur.some((p) => p.id === o.id) ? cur : [...cur, o]));
   const removePick = (id) => setPicked((cur) => cur.filter((p) => p.id !== id));
 
+  const filters = {
+    q,
+    only_have: onlyHave || undefined,
+    max_missing: maxMissing,
+    max_time: maxTime,
+    category: category || undefined,
+    tags: selectedTags,
+    sort,
+  };
+
   useEffect(() => {
     let live = true;
     setRecipes(null);
+    setTotal(0);
     const t = setTimeout(() => {
-      const req = cookMode
-        ? api.cookFrom(picked.map((p) => p.id))
-        : api.recipes({
-            q,
-            only_have: onlyHave || undefined,
-            max_missing: maxMissing,
-            max_time: maxTime,
-            category: category || undefined,
-            tags: selectedTags,
-            sort,
-          });
-      req.then((r) => live && setRecipes(r)).catch(() => live && setRecipes([]));
+      if (cookMode) {
+        api
+          .cookFrom(picked.map((p) => p.id))
+          .then((r) => {
+            if (!live) return;
+            setRecipes(r);
+            setTotal(r.length);
+          })
+          .catch(() => live && setRecipes([]));
+        return;
+      }
+      api
+        .recipes({ ...filters, limit: PAGE_SIZE, offset: 0 })
+        .then((r) => {
+          if (!live) return;
+          setRecipes(r.items);
+          setTotal(r.total);
+        })
+        .catch(() => live && setRecipes([]));
     }, 200);
     return () => {
       live = false;
       clearTimeout(t);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, onlyHave, maxMissing, maxTime, sort, category, selectedTags, cookMode, pickedKey]);
+
+  const loadMore = async () => {
+    if (cookMode || loadingMore || recipes === null) return;
+    setLoadingMore(true);
+    try {
+      const r = await api.recipes({ ...filters, limit: PAGE_SIZE, offset: recipes.length });
+      setRecipes((cur) => [...cur, ...r.items]);
+      setTotal(r.total);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const hasMore = !cookMode && recipes !== null && recipes.length < total;
 
   return (
     <div>
@@ -248,11 +285,29 @@ export default function Recipes() {
           )}
         </EmptyState>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {recipes.map((r) => (
-            <RecipeCard key={r.id} r={r} cookMode={cookMode} />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {recipes.map((r) => (
+              <RecipeCard key={r.id} r={r} cookMode={cookMode} />
+            ))}
+          </div>
+          {!cookMode && (
+            <div className="mt-6 flex flex-col items-center gap-2">
+              <p className="nums text-xs text-ink/40">
+                Zobrazeno {recipes.length} z {total}
+              </p>
+              {hasMore && (
+                <button
+                  onClick={loadMore}
+                  disabled={loadingMore}
+                  className="rounded-full border border-line bg-white px-5 py-2 text-sm font-medium text-ink/70 hover:border-basil disabled:opacity-50"
+                >
+                  {loadingMore ? "Načítám…" : "Načíst další"}
+                </button>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

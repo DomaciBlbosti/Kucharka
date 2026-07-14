@@ -54,6 +54,14 @@ class RecipeCard(BaseModel):
     ratio: float = 0.0
 
 
+class RecipeListOut(BaseModel):
+    """Stránkovaná odpověď /api/recipes – karty aktuální stránky + celkový počet."""
+    items: list[RecipeCard]
+    total: int
+    limit: int
+    offset: int
+
+
 class RecipeDetail(RecipeCard):
     source_url: str
     video_url: str | None = None

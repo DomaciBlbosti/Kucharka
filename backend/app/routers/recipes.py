@@ -5,7 +5,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import case, func, literal, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import settings
@@ -16,12 +16,58 @@ from ..modules.nutrition import recompute_recipe_kcal
 from ..modules import photo_recipe
 from ..modules.ingest import persist as persist_recipe
 from ..seed.starter_tags import NAMESPACE_LABELS
-from ..schemas import RecipeCard, RecipeDetail, RecipeEdit
+from ..schemas import RecipeCard, RecipeDetail, RecipeEdit, RecipeListOut
 
 router = APIRouter(prefix="/api/recipes", tags=["recipes"])
 
 
-@router.get("", response_model=list[RecipeCard])
+def _availability_cols(have_ids: set[int]):
+    """Spočítej 'total'/'have' dostupnosti PŘÍMO V SQL (agregace přes
+    recipe_ingredient), místo abychom kvůli dvěma číslům tahali do Pythonu
+    kompletní seznam ingrediencí každého receptu v celé DB. U 150k+ receptů
+    byl tohle hlavní důvod, proč se hlavní stránka načítala pomalu.
+
+    Vrací (subquery, total_col, have_col, missing_col) – total_col/have_col/
+    missing_col jsou SQL výrazy použitelné ve WHERE i ORDER BY, takže filtrování
+    ('jen co můžu uvařit', 'max chybí') i řazení ('smart') jde udělat v DB a
+    LIMIT/OFFSET pak opravdu stránkuje, ne až post-hoc v Pythonu.
+    """
+    total_expr = func.sum(case((RecipeIngredient.ingredient_id.isnot(None), 1), else_=0))
+    have_expr = (
+        func.sum(case((RecipeIngredient.ingredient_id.in_(have_ids), 1), else_=0))
+        if have_ids else literal(0)
+    )
+    sub = (
+        select(
+            RecipeIngredient.recipe_id.label("recipe_id"),
+            total_expr.label("total"),
+            have_expr.label("have"),
+        )
+        .group_by(RecipeIngredient.recipe_id)
+        .subquery()
+    )
+    total_col = func.coalesce(sub.c.total, 0)
+    have_col = func.coalesce(sub.c.have, 0)
+    missing_col = total_col - have_col
+    return sub, total_col, have_col, missing_col
+
+
+def _tags_by_recipe(db: Session, recipe_ids: list[int]) -> dict[int, list[Tag]]:
+    """Tagy jen pro danou stránku receptů (ne pro celou DB)."""
+    if not recipe_ids:
+        return {}
+    rows = db.execute(
+        select(RecipeTag.recipe_id, Tag)
+        .join(Tag, RecipeTag.tag_id == Tag.id)
+        .where(RecipeTag.recipe_id.in_(recipe_ids))
+    ).all()
+    out: dict[int, list[Tag]] = {}
+    for rid, tag in rows:
+        out.setdefault(rid, []).append(tag)
+    return out
+
+
+@router.get("", response_model=RecipeListOut)
 def list_recipes(
     db: Session = Depends(get_db),
     q: str | None = Query(None, description="hledání v názvu"),
@@ -33,23 +79,30 @@ def list_recipes(
     category: str | None = Query(None, description="recepty se surovinou z kategorie"),
     tags: list[str] = Query(default=[], description="filtr 'namespace:slug' – víc namespace = AND, víc tagů v jednom = OR"),
     sort: str = Query("smart", pattern="^(smart|rating|time|kcal|newest)$"),
+    limit: int = Query(30, ge=1, le=100),
+    offset: int = Query(0, ge=0),
 ):
-    stmt = select(Recipe).options(selectinload(Recipe.ingredients), selectinload(Recipe.tags))
+    have = pantry_ingredient_ids(db)
+    _sub, total_col, have_col, missing_col = _availability_cols(have)
+
+    base = select(Recipe, total_col.label("total"), have_col.label("have"), missing_col.label("missing_count")).outerjoin(
+        _sub, _sub.c.recipe_id == Recipe.id
+    )
     if q:
-        stmt = stmt.where(Recipe.title.ilike(f"%{q}%"))
+        base = base.where(Recipe.title.ilike(f"%{q}%"))
     if max_kcal is not None:
-        stmt = stmt.where(Recipe.kcal_per_serving <= max_kcal)
+        base = base.where(Recipe.kcal_per_serving <= max_kcal)
     if max_time is not None:
-        stmt = stmt.where(Recipe.total_time <= max_time)
+        base = base.where(Recipe.total_time <= max_time)
     if min_rating is not None:
-        stmt = stmt.where(Recipe.rating >= min_rating)
+        base = base.where(Recipe.rating >= min_rating)
     if category:
         sub = (
             select(RecipeIngredient.recipe_id)
             .join(Ingredient, RecipeIngredient.ingredient_id == Ingredient.id)
             .where(Ingredient.category_path.ilike(f"{category}%"))
         )
-        stmt = stmt.where(Recipe.id.in_(sub))
+        base = base.where(Recipe.id.in_(sub))
     if tags:
         by_ns: dict[str, list[str]] = {}
         for t in tags:
@@ -63,36 +116,52 @@ def list_recipes(
                 .join(Tag, RecipeTag.tag_id == Tag.id)
                 .where(Tag.namespace == ns, Tag.slug.in_(slugs))
             )
-            stmt = stmt.where(Recipe.id.in_(sub))
+            base = base.where(Recipe.id.in_(sub))
+    if only_have:
+        base = base.where(missing_col == 0)
+    if max_missing is not None:
+        base = base.where(missing_col <= max_missing)
 
-    recipes = db.scalars(stmt).all()
-    have = pantry_ingredient_ids(db)
-
-    cards: list[RecipeCard] = []
-    for r in recipes:
-        av = recipe_availability(r, have)
-        if only_have and av["missing_count"] > 0:
-            continue
-        if max_missing is not None and av["missing_count"] > max_missing:
-            continue
-        card = RecipeCard.model_validate(r)
-        card.have = av["have"]
-        card.total = av["total"]
-        card.missing_count = av["missing_count"]
-        card.ratio = round(av["ratio"], 3)
-        cards.append(card)
+    # Celkový počet (stejné filtry, bez řazení/limitu) – pro "Načíst další" v UI.
+    total_count = db.scalar(select(func.count()).select_from(base.order_by(None).subquery())) or 0
 
     if sort == "rating":
-        cards.sort(key=lambda c: (c.rating or 0), reverse=True)
+        base = base.order_by(func.coalesce(Recipe.rating, 0).desc())
     elif sort == "time":
-        cards.sort(key=lambda c: (c.total_time or 9999))
+        base = base.order_by(func.coalesce(Recipe.total_time, 9999).asc())
     elif sort == "kcal":
-        cards.sort(key=lambda c: (c.kcal_per_serving or 9e9))
+        base = base.order_by(func.coalesce(Recipe.kcal_per_serving, 1_000_000_000).asc())
     elif sort == "newest":
-        cards.sort(key=lambda c: c.id, reverse=True)
+        base = base.order_by(Recipe.id.desc())
     else:  # smart: nejmíň chybějících, pak nejlepší hodnocení
-        cards.sort(key=lambda c: (c.missing_count, -(c.rating or 0)))
-    return cards
+        base = base.order_by(missing_col.asc(), func.coalesce(Recipe.rating, 0).desc())
+
+    rows = db.execute(base.limit(limit).offset(offset)).all()
+    recipe_ids = [r.Recipe.id for r in rows]
+    tags_map = _tags_by_recipe(db, recipe_ids)
+
+    items = []
+    for r in rows:
+        recipe = r.Recipe
+        items.append(
+            RecipeCard(
+                id=recipe.id,
+                title=recipe.title,
+                source_domain=recipe.source_domain,
+                image_url=recipe.image_url,
+                servings=recipe.servings,
+                total_time=recipe.total_time,
+                rating=recipe.rating,
+                rating_count=recipe.rating_count,
+                kcal_per_serving=recipe.kcal_per_serving,
+                tags=tags_map.get(recipe.id, []),
+                have=r.have,
+                total=r.total,
+                missing_count=r.missing_count,
+                ratio=round(r.have / r.total, 3) if r.total else 0.0,
+            )
+        )
+    return RecipeListOut(items=items, total=total_count, limit=limit, offset=offset)
 
 
 @router.get("/tags")
@@ -149,22 +218,49 @@ def cook_from(
     if not ingredient_ids:
         return []
     sel = set(ingredient_ids)
-    recipes = db.scalars(
-        select(Recipe).options(selectinload(Recipe.ingredients), selectinload(Recipe.tags))
-    ).all()
+
+    # Nejdřív v SQL zúžit na recepty, co aspoň JEDNU vybranou surovinu vůbec
+    # obsahují – dřív se tahalo úplně všech ~150k receptů se všemi
+    # ingrediencemi jen proto, aby se pak 99 % z nich v Pythonu zahodilo.
+    candidate_ids = select(RecipeIngredient.recipe_id).where(
+        RecipeIngredient.ingredient_id.in_(sel)
+    ).distinct()
+
+    _sub, total_col, have_col, missing_col = _availability_cols(sel)
+    stmt = (
+        select(Recipe, total_col.label("total"), have_col.label("have"), missing_col.label("missing_count"))
+        .outerjoin(_sub, _sub.c.recipe_id == Recipe.id)
+        .where(Recipe.id.in_(candidate_ids))
+        .where(have_col > 0)
+        .order_by(missing_col.asc(), have_col.desc(), func.coalesce(Recipe.rating, 0).desc())
+        .limit(limit)
+    )
+    rows = db.execute(stmt).all()
+    recipe_ids = [r.Recipe.id for r in rows]
+    tags_map = _tags_by_recipe(db, recipe_ids)
+
     cards: list[RecipeCard] = []
-    for r in recipes:
-        av = recipe_availability(r, sel)
-        if av["total"] == 0 or av["have"] == 0:
-            continue  # recept nevyužívá žádnou z vybraných surovin
-        card = RecipeCard.model_validate(r)
-        card.have = av["have"]
-        card.total = av["total"]
-        card.missing_count = av["missing_count"]
-        card.ratio = round(av["ratio"], 3)
-        cards.append(card)
-    cards.sort(key=lambda c: (c.missing_count, -c.have, -(c.rating or 0)))
-    return cards[:limit]
+    for r in rows:
+        recipe = r.Recipe
+        cards.append(
+            RecipeCard(
+                id=recipe.id,
+                title=recipe.title,
+                source_domain=recipe.source_domain,
+                image_url=recipe.image_url,
+                servings=recipe.servings,
+                total_time=recipe.total_time,
+                rating=recipe.rating,
+                rating_count=recipe.rating_count,
+                kcal_per_serving=recipe.kcal_per_serving,
+                tags=tags_map.get(recipe.id, []),
+                have=r.have,
+                total=r.total,
+                missing_count=r.missing_count,
+                ratio=round(r.have / r.total, 3) if r.total else 0.0,
+            )
+        )
+    return cards
 
 
 class PhotoRecipeSave(BaseModel):

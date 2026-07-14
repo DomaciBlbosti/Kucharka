@@ -461,7 +461,7 @@ function RecipeSearchPicker({ onPick, disabled }) {
     if (tab !== "search" || !q.trim()) { setResults([]); return; }
     let live = true;
     const t = setTimeout(() => {
-      api.recipes({ q, sort: "rating" }).then((r) => live && setResults(r.slice(0, 10)));
+      api.recipes({ q, sort: "rating", limit: 10 }).then((r) => live && setResults(r.items));
     }, 200);
     return () => { live = false; clearTimeout(t); };
   }, [q, tab]);
