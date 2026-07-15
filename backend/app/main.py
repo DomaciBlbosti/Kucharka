@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import OperationalError
 
+from . import migrations
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .routers import (
@@ -37,6 +38,11 @@ def init_db(retries: int = 10) -> None:
         try:
             Base.metadata.create_all(engine)
             _ensure_columns()
+            # migrations.py: novější, strukturovaný systém (recipe.enrichment_status,
+            # ingredient_alias.lookup_key/kind/source/... a indexy). Existoval v repu,
+            # ale nikdy se odsud nevolal – doplněné sloupce tak byly v ORM mapované,
+            # ale ve skutečné DB chyběly. Idempotentní, bezpečné volat opakovaně.
+            migrations.run_all(engine)
             break
         except OperationalError as exc:
             log.warning("DB zatím nedostupná (%s/%s): %s", attempt, retries, exc)

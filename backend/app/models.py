@@ -61,10 +61,22 @@ class IngredientAlias(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     alias: Mapped[str] = mapped_column(String(200), index=True)
-    ingredient_id: Mapped[int] = mapped_column(
-        ForeignKey("ingredient.id", ondelete="CASCADE")
+    ingredient_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ingredient.id", ondelete="CASCADE"), nullable=True
     )
-    ingredient: Mapped[Ingredient] = relationship(back_populates="aliases")
+    ingredient: Mapped[Ingredient | None] = relationship(back_populates="aliases")
+
+    # Rozšíření pro LLM matching (llm_match.py) – přidává je migrations.py
+    # (ALTER TABLE), zde chybělo ORM mapování (stejný problém jako u Recipe výše).
+    lookup_key: Mapped[str | None] = mapped_column(String(200), nullable=True, unique=True)
+    kind: Mapped[str] = mapped_column(String(20), server_default="food")
+    source: Mapped[str] = mapped_column(String(20), server_default="manual")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    verified: Mapped[bool] = mapped_column(server_default="0")
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Recipe(Base):
