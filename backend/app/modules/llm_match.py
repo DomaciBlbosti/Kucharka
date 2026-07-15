@@ -39,7 +39,7 @@ log = logging.getLogger("kucharka.llm_match")
 
 _lock = threading.Lock()
 _state: dict = {
-    "running": False, "done": 0, "total": 0,
+    "running": False, "phase": None, "done": 0, "total": 0,
     "applied": 0, "rejected": 0, "nonfood": 0,
     "finished_at": None,
 }
@@ -398,26 +398,48 @@ def process_batch(batch_size: int | None = None) -> dict:
             "skipped_already_in_dict": skipped_already_in_dict,
         }
         all_touched_recipes: set[int] = set()
+        chunks = [inputs[i:i + bs] for i in range(0, len(inputs), bs)]
         with _lock:
             _state.update(total=len(inputs), done=0)
 
-        for start in range(0, len(inputs), bs):
-            chunk = inputs[start:start + bs]
-            # Dynamický katalog (embeddingy) – jen sémanticky relevantní kandidáti
-            # pro tuhle dávku, ne statický top-N podle popularity. Fallback na
-            # statický katalog, dokud neproběhl `ingredient_embed.reindex()`.
+        # ─── Fáze 1: VŠECHNY dynamické katalogy najednou (jen embed model) ──
+        # Dřív se embedding volalo uprostřed hlavní smyčky, prokládané s
+        # generate voláním na gemma4:12b – to nutilo Ollamu přehazovat
+        # modely (embed model ↔ chat model) při KAŽDÉ dávce, což na jedné
+        # GPU s omezenou VRAM způsobovalo neustálé reloady (viz log: "GPU
+        # discovery watchdog timed out" po každé dávce). Spočítat všechny
+        # katalogy dopředu = embed model zůstane nahraný po celou fázi 1,
+        # chat model po celou fázi 2 – dva loady místo stovek/tisíců.
+        with _lock:
+            _state.update(phase="embeddings")
+        catalogs: list[list[tuple[int, str]]] = []
+        dynamic_ok = 0
+        for chunk in chunks:
             dynamic_catalog = ingredient_embed.candidates_for_batch(db, chunk, k=20)
-            if not dynamic_catalog:
-                log.warning(
-                    "dávka %s: dynamický katalog nedostupný (embeddingy?), fallback na statický top-N",
-                    totals["batches"] + 1,
-                )
-            catalog = dynamic_catalog or static_catalog
+            catalogs.append(dynamic_catalog)
+            if dynamic_catalog:
+                dynamic_ok += 1
+        if dynamic_ok < len(chunks):
+            log.warning(
+                "dynamický katalog dostupný jen pro %s/%s dávek, zbytek použije statický top-N",
+                dynamic_ok, len(chunks),
+            )
+
+        # ─── Fáze 2: VŠECHNY generate volání (jen chat model) ────────────
+        with _lock:
+            _state.update(phase="matching")
+        for idx, chunk in enumerate(chunks):
+            catalog = catalogs[idx] or static_catalog
             prompt = _make_prompt(catalog, chunk)
             resp = _call_ollama(prompt)
             totals["batches"] += 1
             if resp is None:
                 totals["rejected"] += len(chunk)
+                log.warning(
+                    "dávka %s selhala, čekám %ss na zotavení GPU",
+                    totals["batches"], settings.llm_match_failure_pause_s,
+                )
+                time.sleep(settings.llm_match_failure_pause_s)
             else:
                 items = resp.get("items", []) if isinstance(resp, dict) else []
                 if not items:
@@ -428,9 +450,11 @@ def process_batch(batch_size: int | None = None) -> dict:
                     totals["rejected"] += stats["rejected"]
                     totals["nonfood"] += stats["nonfood"]
                     all_touched_recipes.update(stats["recipe_ids"])
+                if settings.llm_match_batch_pause_s:
+                    time.sleep(settings.llm_match_batch_pause_s)
             with _lock:
                 _state.update(
-                    done=min(start + bs, len(inputs)),
+                    done=min((idx + 1) * bs, len(inputs)),
                     applied=totals["applied"], rejected=totals["rejected"],
                     nonfood=totals["nonfood"],
                 )
@@ -458,8 +482,8 @@ def process_batch_async(batch_size: int | None = None) -> bool:
     with _lock:
         if _state["running"]:
             return False
-        _state.update(running=True, done=0, total=0, applied=0, rejected=0,
-                       nonfood=0, finished_at=None)
+        _state.update(running=True, phase="collecting", done=0, total=0, applied=0,
+                       rejected=0, nonfood=0, finished_at=None)
     threading.Thread(target=_run_bg, args=(batch_size,), daemon=True).start()
     return True
 

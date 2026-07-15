@@ -72,6 +72,12 @@ class Settings:
         # vstupů + odpověď). Zvyš, pokud vidíš v logu ořezané/prázdné odpovědi.
         self.llm_match_num_ctx: int = int(_env("LLM_MATCH_NUM_CTX", "16384"))
         self.llm_match_temperature: float = float(_env("LLM_MATCH_TEMPERATURE", "0"))
+        # Pauza mezi dávkami (s) – ať GPU dostane chvíli oddych mezi requesty
+        # místo nepřetržitého zatížení hodiny v kuse. Po neúspěšné dávce se
+        # čeká déle – opakované selhání bez pauzy jen přitěžuje GPU, která
+        # už evidentně nestíhá (viz "GPU discovery watchdog timed out").
+        self.llm_match_batch_pause_s: float = float(_env("LLM_MATCH_BATCH_PAUSE_S", "2"))
+        self.llm_match_failure_pause_s: float = float(_env("LLM_MATCH_FAILURE_PAUSE_S", "20"))
 
         # --- Služby na pozadí (překlad / párování) ---------------------
         self.auto_translate_enabled: bool = _truthy(_env("AUTO_TRANSLATE_ENABLED", "false"))

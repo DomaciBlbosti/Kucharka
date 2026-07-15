@@ -1673,7 +1673,11 @@ function LlmMatchCard() {
         </p>
       )}
       {st?.running ? (
-        <Spinner label={`Zpracovávám… ${st.done}/${st.total} (napárováno ${st.applied})`} />
+        <Spinner label={
+          st.phase === "embeddings"
+            ? "Počítám embeddingy pro dynamický katalog…"
+            : `Párování… ${st.done}/${st.total} (napárováno ${st.applied})`
+        } />
       ) : (
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-3">
