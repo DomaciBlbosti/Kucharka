@@ -1,15 +1,17 @@
-"""LLM batch matching pro recepty s `enrichment_status='manual_review'`.
+"""LLM batch matching pro nenamatchnuté suroviny (recipe_ingredient.ingredient_id IS NULL).
 
 Cíl: dorovnat to, co slovník + fuzzy match nezachytily — typicky cizojazyčné
 suroviny (anglicky, italsky, indicky) na cizích webech.
 
 Postup:
-  1. Vyber všechny recepty s `manual_review`.
-  2. Posbírej jejich nematchnuté `recipe_ingredient` řádky.
-  3. Deduplikuj podle `lookup_key` — stejný "chicken breast" se ptáme jen jednou.
-  4. Batch 30–50 surovin → 1 LLM volání s kontextem (seznam ingredient_id+name_cs).
-  5. Validuj odpověď, ulož platné mapování do `ingredient_alias` (source='llm').
-  6. Re-enrichment dotčených receptů (slovník teď zná → projde).
+  1. Posbírej všechny nematchnuté `recipe_ingredient` řádky (bez ohledu na
+     `Recipe.enrichment_status` — původně filtrováno na 'manual_review', ale
+     ten stav v produkci nikdy nenastává, takže fronta byla trvale prázdná;
+     stejná definice jako `backfill.py` používá).
+  2. Deduplikuj podle `lookup_key` — stejný "chicken breast" se ptáme jen jednou.
+  3. Batch 30–50 surovin → 1 LLM volání s kontextem (seznam ingredient_id+name_cs).
+  4. Validuj odpověď, ulož platné mapování do `ingredient_alias` (source='llm').
+  5. Re-enrichment dotčených receptů (slovník teď zná → projde).
 
 Opt-in přes `LLM_MATCH_ENABLED=true`. Default off — abychom se neopírali
 o Ollamu, dokud uživatel explicitně neřekne.
@@ -52,13 +54,9 @@ def status() -> dict:
         s = dict(_state)
     db = SessionLocal()
     try:
-        s["unmatched_manual_review"] = db.scalar(
+        s["unmatched"] = db.scalar(
             select(func.count(RecipeIngredient.id))
-            .join(Recipe, RecipeIngredient.recipe_id == Recipe.id)
-            .where(
-                Recipe.enrichment_status == "manual_review",
-                RecipeIngredient.ingredient_id.is_(None),
-            )
+            .where(RecipeIngredient.ingredient_id.is_(None))
         ) or 0
     finally:
         db.close()
@@ -95,14 +93,19 @@ def _build_ingredient_catalog(db: Session, limit: int = DEFAULT_INGREDIENT_LIST_
 
 
 def _collect_unmatched_raw_texts(db: Session) -> dict[str, list[int]]:
-    """Vrátí mapping `raw_text → list[recipe_id]` pro nematchnuté řádky
-    v receptech s `manual_review`. Stejný raw_text mezi recepty se deduplikuje.
+    """Vrátí mapping `raw_text → list[recipe_id]` pro nematchnuté řádky.
+
+    Původně filtrovalo na `Recipe.enrichment_status == 'manual_review'`, ale
+    ten stav v praxi nastavuje jen `enrichment.py` worker, který v produkci
+    neběží – fronta tak byla trvale prázdná. Skutečný backlog nenamatchnutých
+    řádků (viz /api/maintenance/match-status → rows_unmatched) drží
+    `backfill.py`, který jede nad VŠEMI řádky s `ingredient_id IS NULL` bez
+    ohledu na stav receptu. Sjednoceno na stejnou definici, ať `llm_match`
+    a `backfill` míří na tu samou frontu.
     """
     rows = db.execute(
         select(RecipeIngredient.id, RecipeIngredient.raw_text, RecipeIngredient.recipe_id)
-        .join(Recipe, RecipeIngredient.recipe_id == Recipe.id)
         .where(
-            Recipe.enrichment_status == "manual_review",
             RecipeIngredient.ingredient_id.is_(None),
             RecipeIngredient.raw_text.is_not(None),
         )

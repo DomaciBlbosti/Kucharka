@@ -1632,7 +1632,7 @@ function LlmMatchCard() {
       </p>
       {st && (
         <p className="mb-3 text-sm text-ink/70">
-          Čeká na revizi: <b>{st.unmatched_manual_review}</b>
+          Nenapárováno: <b>{st.unmatched}</b>
         </p>
       )}
       {st?.running ? (
@@ -1642,7 +1642,7 @@ function LlmMatchCard() {
           <div className="flex items-center gap-3">
             <Button
               onClick={run}
-              disabled={!st || !st.enabled || !st.ollama || st.unmatched_manual_review === 0}
+              disabled={!st || !st.enabled || !st.ollama || st.unmatched === 0}
             >
               Spustit dávkové dopárování
             </Button>
@@ -1654,7 +1654,7 @@ function LlmMatchCard() {
             {st && st.enabled && !st.ollama && (
               <span className="text-sm text-miss">Ollama není dostupná.</span>
             )}
-            {st && st.enabled && st.ollama && st.unmatched_manual_review === 0 && (
+            {st && st.enabled && st.ollama && st.unmatched === 0 && (
               <span className="text-sm text-have">Nic k dopárování ✓</span>
             )}
           </div>
