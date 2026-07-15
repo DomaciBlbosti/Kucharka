@@ -32,6 +32,22 @@ from .rag import embed_text, embed_texts_batch  # stejná funkce, stejný model 
 
 log = logging.getLogger("kucharka.ingredient_embed")
 
+# ─── Circuit breaker ──────────────────────────────────────────────────────
+# Když embedding endpoint vytrvale padá (viz proxy nespolehlivost), nemá
+# smysl to zkoušet znovu a znovu na KAŽDÉ dávce – s retry logikou v
+# embed_texts_batch by to u tisíců dávek znamenalo hodiny čekání na retry
+# timeouty, než se cokoliv reálně napáruje. Po pár selháních v řadě appka
+# na zbytek běhu embeddingy přeskočí a jede rovnou na statický katalog.
+_CIRCUIT_THRESHOLD = 3
+_circuit_state = {"consecutive_failures": 0, "open": False}
+
+
+def reset_circuit() -> None:
+    """Volej na začátku každého procesu párování, ať předchozí běh
+    neovlivní ten nový (třeba se mezitím proxy uzdravila)."""
+    _circuit_state["consecutive_failures"] = 0
+    _circuit_state["open"] = False
+
 
 def reindex(rebuild: bool = False, chunk_size: int = 100) -> dict:
     """Zembeduj suroviny, které embedding ještě nemají (nebo všechny při rebuild).
@@ -96,10 +112,25 @@ def candidates_for_batch(db: Session, inputs: list[str], k: int = 20) -> list[tu
         return []
     ids, names, mat = loaded
 
+    if _circuit_state["open"]:
+        return []  # embeddingy vytrvale padají, nezkoušej to znovu na týhle dávce
+
     try:
         qvecs = embed_texts_batch(inputs)  # JEDNO volání na celou dávku, ne cyklus
+        _circuit_state["consecutive_failures"] = 0
     except Exception as exc:  # noqa: BLE001
-        log.warning("embedding dávky (%s vstupů) selhal: %s", len(inputs), exc)
+        _circuit_state["consecutive_failures"] += 1
+        log.warning(
+            "embedding dávky (%s vstupů) selhal (%s/%s po sobě): %s",
+            len(inputs), _circuit_state["consecutive_failures"], _CIRCUIT_THRESHOLD, exc,
+        )
+        if _circuit_state["consecutive_failures"] >= _CIRCUIT_THRESHOLD:
+            _circuit_state["open"] = True
+            log.warning(
+                "embedding endpoint selhal %sx po sobě – vypínám dynamický katalog "
+                "pro zbytek tohohle běhu, jede se na statický top-N",
+                _CIRCUIT_THRESHOLD,
+            )
         return []
 
     picked: dict[int, str] = {}

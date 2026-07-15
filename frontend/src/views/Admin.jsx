@@ -1675,7 +1675,7 @@ function LlmMatchCard() {
       {st?.running ? (
         <Spinner label={
           st.phase === "embeddings"
-            ? "Počítám embeddingy pro dynamický katalog…"
+            ? `Počítám embeddingy… ${st.embed_done}/${st.embed_total} dávek`
             : `Párování… ${st.done}/${st.total} (napárováno ${st.applied})`
         } />
       ) : (

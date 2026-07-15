@@ -42,16 +42,14 @@ def embed_text(text: str) -> np.ndarray:
     return vec / n if n else vec  # normalizace → kosinus = dot
 
 
-def embed_texts_batch(texts: list[str], timeout: float = 120, retries: int = 3) -> list[np.ndarray]:
+def embed_texts_batch(texts: list[str], timeout: float = 60, retries: int = 2) -> list[np.ndarray]:
     """Zaembeduj víc textů JEDNÍM HTTP voláním (novější `/api/embed`, ne
     `/api/embeddings`) – zásadně méně round-tripů než volat `embed_text` v
     cyklu.
 
-    Pozorováno v provozu: volání občas selže (500/501) i na endpointu, který
-    o chvíli později (nebo při ručním testu) projde bez problému – vypadá to
-    na přechodnou nespolehlivost proxy mezi appkou a Ollamou, ne na trvalou
-    nekompatibilitu. Proto pár rychlých pokusů s krátkou prodlevou, než se
-    to vzdá a spadne na sekvenční `embed_text` (což taky zkusí víckrát).
+    Krátký retry (ne agresivní) – vytrvalé selhání řeší circuit breaker v
+    `ingredient_embed.py`, ne opakování tady. Moc pokusů na volání by při
+    tisících dávek znamenalo hodiny čekání, než se cokoliv reálně napáruje.
     """
     if not texts:
         return []
@@ -76,33 +74,18 @@ def embed_texts_batch(texts: list[str], timeout: float = 120, retries: int = 3) 
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             if attempt < retries - 1:
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(1.0)
     log.warning(
         "dávkový /api/embed selhal %sx (%s), fallback na sekvenční volání", retries, last_exc,
     )
     return _embed_texts_sequential(texts)
 
 
-def _embed_texts_sequential(texts: list[str], retries: int = 2) -> list[np.ndarray]:
-    """Fallback po jednom, taky s pár pokusy na položku – jedna trvale
-    padající surovina by jinak strhla celou dávku (viz `embed_text`)."""
-    out = []
-    for t in texts:
-        vec = None
-        last_exc: Exception | None = None
-        for attempt in range(retries):
-            try:
-                vec = embed_text(t)
-                break
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                if attempt < retries - 1:
-                    time.sleep(1.0)
-        if vec is None:
-            log.warning("embedding '%s' selhal i po %sx pokusech: %s", t, retries, last_exc)
-            raise last_exc  # zachovej původní chování - volající (candidates_for_batch) to odchytí
-        out.append(vec)
-    return out
+def _embed_texts_sequential(texts: list[str]) -> list[np.ndarray]:
+    """Fallback po jednom, BEZ retry na položku – jeden pokus stačí, o
+    vytrvalé selhání se stará circuit breaker o úroveň výš, ne opakování
+    tady (u 40 položek by retry na každou znamenalo desítky sekund navíc)."""
+    return [embed_text(t) for t in texts]
 
 
 def recipe_doc(r: Recipe) -> str:

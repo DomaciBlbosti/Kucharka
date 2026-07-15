@@ -40,6 +40,7 @@ log = logging.getLogger("kucharka.llm_match")
 _lock = threading.Lock()
 _state: dict = {
     "running": False, "phase": None, "done": 0, "total": 0,
+    "embed_done": 0, "embed_total": 0,
     "applied": 0, "rejected": 0, "nonfood": 0,
     "finished_at": None,
 }
@@ -411,10 +412,15 @@ def process_batch(batch_size: int | None = None) -> dict:
         # katalogy dopředu = embed model zůstane nahraný po celou fázi 1,
         # chat model po celou fázi 2 – dva loady místo stovek/tisíců.
         with _lock:
-            _state.update(phase="embeddings")
+            _state.update(phase="embeddings", embed_done=0, embed_total=len(chunks))
+        ingredient_embed.reset_circuit()
         catalogs: list[list[tuple[int, str]]] = []
         dynamic_ok = 0
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
+            if i % 100 == 0 and i > 0:
+                log.info("fáze 1 (embeddingy): %s/%s dávek zpracováno", i, len(chunks))
+            with _lock:
+                _state.update(embed_done=i)
             dynamic_catalog = ingredient_embed.candidates_for_batch(db, chunk, k=20)
             catalogs.append(dynamic_catalog)
             if dynamic_catalog:
