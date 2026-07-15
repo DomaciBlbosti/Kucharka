@@ -42,7 +42,9 @@ function ToolsCard() {
   const save = async () => {
     const keys = ["ollama_url", "ollama_model", "ollama_fast_model", "embed_model",
       "ocr_model", "searxng_url", "translate_to_cs", "auto_ingredients", "scraper_verify_ssl",
-      "rag_k", "ollama_keep_alive", "bg_workers"];
+      "rag_k", "ollama_keep_alive", "bg_workers",
+      "llm_match_enabled", "llm_match_model", "llm_match_batch_size",
+      "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature"];
     const vals = Object.fromEntries(keys.map((k) => [k, s[k]]));
     const r = await api.adminSaveSettings(vals);
     setS({ ...s, ...r.settings });
@@ -91,6 +93,41 @@ function ToolsCard() {
           <input type="number" min="1" className={input} value={s.bg_workers ?? 2}
             onChange={(e) => set("bg_workers", Number(e.target.value))} />
         </Field>
+      </div>
+
+      <h3 className="mb-3 mt-6 text-sm font-bold text-ink/70">
+        Dávkové dopárování surovin (LLM)
+      </h3>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Model pro dávkové párování" hint="prázdné = rychlý model výše">
+          <input className={input} value={s.llm_match_model || ""}
+            onChange={(e) => set("llm_match_model", e.target.value)} placeholder="gemma4:12b" />
+        </Field>
+        <Field label="Velikost dávky" hint="surovin na jedno LLM volání">
+          <input type="number" min="1" className={input} value={s.llm_match_batch_size ?? 40}
+            onChange={(e) => set("llm_match_batch_size", Number(e.target.value))} />
+        </Field>
+        <Field label="num_ctx" hint="kontextové okno – musí pokrýt katalog + dávku">
+          <input type="number" min="512" step="512" className={input} value={s.llm_match_num_ctx ?? 16384}
+            onChange={(e) => set("llm_match_num_ctx", Number(e.target.value))} />
+        </Field>
+        <Field label="Temperature">
+          <input type="number" min="0" max="2" step="0.1" className={input}
+            value={s.llm_match_temperature ?? 0}
+            onChange={(e) => set("llm_match_temperature", Number(e.target.value))} />
+        </Field>
+        <Field label="Minimální confidence" hint="pod touto hranicí se match zahodí">
+          <input type="number" min="0" max="1" step="0.05" className={input}
+            value={s.llm_match_min_confidence ?? 0.7}
+            onChange={(e) => set("llm_match_min_confidence", Number(e.target.value))} />
+        </Field>
+      </div>
+      <div className="mt-3">
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" className="accent-basil" checked={!!s.llm_match_enabled}
+            onChange={(e) => set("llm_match_enabled", e.target.checked)} />
+          Povolit dávkové dopárování (karta níže v administraci)
+        </label>
       </div>
       <div className="mt-4 flex flex-wrap gap-4">
         <label className="flex items-center gap-2 text-sm">
@@ -1648,7 +1685,7 @@ function LlmMatchCard() {
             </Button>
             {st && !st.enabled && (
               <span className="text-sm text-miss">
-                Vypnuto (LLM_MATCH_ENABLED=false v .env).
+                Vypnuto — zapni v Administraci → Nástroje (servery) → „Povolit dávkové dopárování".
               </span>
             )}
             {st && st.enabled && !st.ollama && (

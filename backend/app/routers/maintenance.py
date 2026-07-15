@@ -102,7 +102,7 @@ def llm_match_status():
 def run_llm_match():
     if not settings.llm_match_enabled:
         return {"started": False, "status": llm_match.status(),
-                "error": "LLM_MATCH_ENABLED=false – zapni v .env."}
+                "error": "Vypnuto – zapni v Administraci → Nástroje (servery)."}
     if not settings.ollama_enabled:
         return {"started": False, "status": llm_match.status(), "error": "Ollama není dostupná."}
     err = _fast_model_error()

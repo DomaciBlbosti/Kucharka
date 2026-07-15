@@ -180,6 +180,8 @@ class Settings:
         "auto_translate_enabled", "auto_translate_interval_min",
         "auto_match_enabled", "auto_match_interval_min",
         "lidl_sync_enabled", "lidl_sync_interval_min",
+        "llm_match_enabled", "llm_match_model", "llm_match_batch_size",
+        "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
     )
 
     CRAWLER_KEYS = ("crawler_enabled", "crawler_interval_min", "crawler_max_per_run")
@@ -215,6 +217,12 @@ class Settings:
             "auto_match_interval_min": self.auto_match_interval_min,
             "lidl_sync_enabled": self.lidl_sync_enabled,
             "lidl_sync_interval_min": self.lidl_sync_interval_min,
+            "llm_match_enabled": self.llm_match_enabled,
+            "llm_match_model": self.llm_match_model,
+            "llm_match_batch_size": self.llm_match_batch_size,
+            "llm_match_min_confidence": self.llm_match_min_confidence,
+            "llm_match_num_ctx": self.llm_match_num_ctx,
+            "llm_match_temperature": self.llm_match_temperature,
             "ollama_enabled": self.ollama_enabled,
             "searxng_enabled": self.searxng_enabled,
             "auth_enabled": self.auth_enabled,
@@ -223,7 +231,8 @@ class Settings:
     def set_admin(self, key: str, value) -> bool:
         if key not in self.ADMIN_KEYS:
             return False
-        if key in ("ollama_url", "ollama_model", "embed_model", "searxng_url", "ocr_model", "hmi_token"):
+        if key in ("ollama_url", "ollama_model", "embed_model", "searxng_url", "ocr_model", "hmi_token",
+                   "llm_match_model"):
             setattr(self, key, str(value or "").strip())
         elif key == "ollama_fast_model":
             self._fast_model = str(value or "").strip()
@@ -238,6 +247,7 @@ class Settings:
         elif key in (
             "translate_to_cs", "auto_ingredients", "crawler_enabled",
             "auto_translate_enabled", "auto_match_enabled", "lidl_sync_enabled",
+            "llm_match_enabled",
         ):
             setattr(self, key, _truthy(value))
         elif key == "scraper_verify_ssl":
@@ -246,9 +256,15 @@ class Settings:
             else:
                 bundle = "/etc/ssl/certs/ca-certificates.crt"
                 self.scraper_verify = bundle if os.path.exists(bundle) else True
+        elif key in ("llm_match_min_confidence", "llm_match_temperature"):
+            try:
+                setattr(self, key, float(value))
+            except (TypeError, ValueError):
+                pass
         elif key in (
             "rag_k", "crawler_interval_min", "crawler_max_per_run", "bg_workers",
             "auto_translate_interval_min", "auto_match_interval_min", "lidl_sync_interval_min",
+            "llm_match_batch_size", "llm_match_num_ctx",
         ):
             try:
                 setattr(self, key, max(1, int(value)))
