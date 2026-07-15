@@ -96,6 +96,20 @@ class Recipe(Base):
     original_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
+    # Stavové sloupce – přidává je migrations.py (ALTER TABLE), zde jen
+    # chybělo ORM mapování, takže SQLAlchemy o nich nevědělo (AttributeError
+    # při select(Recipe.enrichment_status) apod.), i když ve skutečné DB byly.
+    crawl_status: Mapped[str] = mapped_column(String(20), server_default="scraped")
+    enrichment_status: Mapped[str] = mapped_column(String(20), server_default="pending", index=True)
+    image_status: Mapped[str] = mapped_column(String(20), server_default="pending")
+    enrichment_attempts: Mapped[int] = mapped_column(Integer, server_default="0")
+    enrichment_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_enriched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    local_image_path: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    local_thumb_path: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    kcal_per_100g: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_weight_g: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     ingredients: Mapped[list["RecipeIngredient"]] = relationship(
         back_populates="recipe", cascade="all, delete-orphan"
     )
