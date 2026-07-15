@@ -1522,6 +1522,7 @@ export default function Admin() {
       <CrawlerPanel />
       <CrawlQueueCard />
       <MatchPanel />
+      <LlmMatchCard />
       <TranslateCard />
       <ResetTranslateCard />
       <CategorizeCard />
@@ -1591,6 +1592,80 @@ function ServicesCard() {
         <Button onClick={save}>Uložit</Button>
         {saved && <span className="text-sm text-have">Uloženo ✓ (přeplánováno)</span>}
       </div>
+    </section>
+  );
+}
+
+function LlmMatchCard() {
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState(null);
+  const timer = useRef(null);
+  const load = () => api.llmMatchStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    load();
+    return () => clearInterval(timer.current);
+  }, []);
+  useEffect(() => {
+    if (st?.running && !timer.current) {
+      timer.current = setInterval(load, 2000);
+    } else if (!st?.running && timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+    }
+  }, [st?.running]);
+
+  const run = async () => {
+    setErr(null);
+    const r = await api.runLlmMatch();
+    setSt(r.status);
+    if (r.error) setErr(r.error);
+  };
+
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <h2 className="mb-1 text-lg font-bold">Dávkové dopárování (LLM)</h2>
+      <p className="mb-4 text-sm text-ink/60">
+        Doplní nenapárované suroviny u receptů čekajících na ruční revizi –
+        dávkově, s deduplikací, přes jedno LLM volání na desítky surovin
+        najednou. Vhodné pro velké množství nenamatchnutých řádků, kdy je
+        běžné párování (výše) pomalé.
+      </p>
+      {st && (
+        <p className="mb-3 text-sm text-ink/70">
+          Čeká na revizi: <b>{st.unmatched_manual_review}</b>
+        </p>
+      )}
+      {st?.running ? (
+        <Spinner label={`Zpracovávám… ${st.done}/${st.total} (napárováno ${st.applied})`} />
+      ) : (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <Button
+              onClick={run}
+              disabled={!st || !st.enabled || !st.ollama || st.unmatched_manual_review === 0}
+            >
+              Spustit dávkové dopárování
+            </Button>
+            {st && !st.enabled && (
+              <span className="text-sm text-miss">
+                Vypnuto (LLM_MATCH_ENABLED=false v .env).
+              </span>
+            )}
+            {st && st.enabled && !st.ollama && (
+              <span className="text-sm text-miss">Ollama není dostupná.</span>
+            )}
+            {st && st.enabled && st.ollama && st.unmatched_manual_review === 0 && (
+              <span className="text-sm text-have">Nic k dopárování ✓</span>
+            )}
+          </div>
+          {st && (st.applied || st.rejected || st.nonfood) ? (
+            <p className="text-sm text-ink/60">
+              Poslední běh: napárováno {st.applied}, zamítnuto {st.rejected}, non-food {st.nonfood}
+            </p>
+          ) : null}
+          {err && <p className="text-sm text-miss">{err}</p>}
+        </div>
+      )}
     </section>
   );
 }

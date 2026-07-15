@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import get_db
 from ..models import Ingredient, IngredientAlias, Recipe, RecipeIngredient
-from ..modules import backfill, categorize, tagging, translate
+from ..modules import backfill, categorize, llm_match, tagging, translate
 from ..modules.normalizer import is_section_header
 from ..modules.nutrition import recompute_recipe_kcal
 
@@ -88,6 +88,28 @@ def run_categorize():
         return {"started": False, "status": categorize.status(), "error": err}
     started = categorize.categorize_async(only_missing=True)
     return {"started": started, "status": categorize.status(), "error": None}
+
+
+@router.get("/llm-match-status")
+def llm_match_status():
+    s = llm_match.status()
+    s["ollama"] = settings.ollama_enabled
+    s["enabled"] = settings.llm_match_enabled
+    return s
+
+
+@router.post("/llm-match")
+def run_llm_match():
+    if not settings.llm_match_enabled:
+        return {"started": False, "status": llm_match.status(),
+                "error": "LLM_MATCH_ENABLED=false – zapni v .env."}
+    if not settings.ollama_enabled:
+        return {"started": False, "status": llm_match.status(), "error": "Ollama není dostupná."}
+    err = _fast_model_error()
+    if err:
+        return {"started": False, "status": llm_match.status(), "error": err}
+    started = llm_match.process_batch_async()
+    return {"started": started, "status": llm_match.status(), "error": None}
 
 
 # ---- ruční párování nenapárovaných řádků ----

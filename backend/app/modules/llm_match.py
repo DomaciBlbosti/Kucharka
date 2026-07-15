@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from collections import defaultdict
 from datetime import datetime
 
@@ -31,6 +33,36 @@ from ..models import Ingredient, IngredientAlias, Recipe, RecipeIngredient
 from .lookup import make_lookup_key
 
 log = logging.getLogger("kucharka.llm_match")
+
+_lock = threading.Lock()
+_state: dict = {
+    "running": False, "done": 0, "total": 0,
+    "applied": 0, "rejected": 0, "nonfood": 0,
+    "finished_at": None,
+}
+
+
+def is_running() -> bool:
+    with _lock:
+        return bool(_state["running"])
+
+
+def status() -> dict:
+    with _lock:
+        s = dict(_state)
+    db = SessionLocal()
+    try:
+        s["unmatched_manual_review"] = db.scalar(
+            select(func.count(RecipeIngredient.id))
+            .join(Recipe, RecipeIngredient.recipe_id == Recipe.id)
+            .where(
+                Recipe.enrichment_status == "manual_review",
+                RecipeIngredient.ingredient_id.is_(None),
+            )
+        ) or 0
+    finally:
+        db.close()
+    return s
 
 
 # ─── Konfigurace ─────────────────────────────────────────────────────────────
@@ -84,17 +116,44 @@ def _collect_unmatched_raw_texts(db: Session) -> dict[str, list[int]]:
 
 # ─── LLM volání ──────────────────────────────────────────────────────────────
 
-_PROMPT_HEADER = """Jsi expert na český kulinář. Tvým úkolem je přiřadit suroviny z receptů (často cizojazyčné) k odpovídajícím záznamům v české databázi surovin.
+# JSON schéma odpovědi – posílá se v `format`, Ollama pak vynutí strukturu
+# přes constrained sampling (ne jen "je to nějaký JSON", ale přesně tohle).
+_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string"},
+                    "ingredient_id": {"type": ["integer", "null"]},
+                    "category": {
+                        "type": "string",
+                        "enum": ["food", "equipment", "garnish", "packaging", "unknown"],
+                    },
+                    "confidence": {"type": "number"},
+                },
+                "required": ["input", "category", "confidence"],
+            },
+        }
+    },
+    "required": ["items"],
+}
 
-Vrať POUZE JSON ve tvaru:
-{"items":[{"input":"...","ingredient_id":int_or_null,"category":"food|equipment|garnish|packaging|unknown","confidence":0.0-1.0}]}
+_PROMPT_HEADER = """Jsi expert na český kulinář. Tvým úkolem je přiřadit suroviny z receptů (často cizojazyčné) k odpovídajícím záznamům v české databázi surovin.
 
 Pravidla:
 - ingredient_id MUSÍ být ID z databáze níže, nebo null pokud nic nepasuje.
 - category: "food" pro suroviny; "equipment" (forma, lžíce, struhadlo); "garnish" (na ozdobu); "packaging" (folie, alobal); "unknown" jinak.
 - confidence: 0.9+ = jistá shoda; 0.7-0.9 = pravděpodobná; <0.7 = NULL ingredient_id.
-- Cizojazyčné názvy preluč: "chicken breast" → kuřecí prsa; "soy sauce" → sójová omáčka; "cilantro" → koriandr.
+- Cizojazyčné názvy přelož: "chicken breast" → kuřecí prsa; "soy sauce" → sójová omáčka; "cilantro" → koriandr.
 - Při nejistotě raději null než hádat.
+
+Příklady chování:
+- "chicken breast" → přelož, najdi "kuřecí prsa" v databázi, category="food", confidence=0.95
+- "silikonová forma na muffiny" → category="equipment", ingredient_id=null, confidence=0.9
+- "trochu lásky :)" → category="unknown", ingredient_id=null, confidence=0.0
 
 Databáze surovin (id: name):
 """
@@ -111,7 +170,7 @@ def _call_ollama(prompt: str, model: str | None = None) -> dict | None:
     if not settings.ollama_url:
         log.warning("OLLAMA_URL není nastaven — LLM matching nelze spustit.")
         return None
-    use_model = model or getattr(settings, "llm_match_model", "") or settings.ollama_model
+    use_model = model or settings.llm_match_model or settings.ollama_fast_model
     try:
         r = httpx.post(
             f"{settings.ollama_url}/api/generate",
@@ -119,12 +178,15 @@ def _call_ollama(prompt: str, model: str | None = None) -> dict | None:
                 "model": use_model,
                 "prompt": prompt,
                 "stream": False,
-                "format": "json",
+                "format": _RESPONSE_SCHEMA,  # vynucené schéma, ne jen "je to JSON"
                 "think": False,
                 "keep_alive": settings.ollama_keep_alive,
-                "options": {"temperature": 0},
+                "options": {
+                    "temperature": settings.llm_match_temperature,
+                    "num_ctx": settings.llm_match_num_ctx,
+                },
             },
-            timeout=120,  # batch může být pomalý, dej mu 2 min
+            timeout=180,  # batch může být pomalý, dej mu 3 min
         )
         r.raise_for_status()
         raw = r.json().get("response", "")
@@ -267,13 +329,13 @@ def _reenrich_recipes(db: Session, recipe_ids: list[int]) -> dict:
 
 def process_batch(batch_size: int | None = None) -> dict:
     """Jedno spuštění workeru. Vrátí statistiky."""
-    if not getattr(settings, "llm_match_enabled", False):
+    if not settings.llm_match_enabled:
         return {"skipped": "llm_match disabled"}
     if not settings.ollama_url:
         return {"skipped": "ollama not configured"}
 
-    bs = batch_size or getattr(settings, "llm_match_batch_size", DEFAULT_BATCH_SIZE)
-    min_conf = getattr(settings, "llm_match_min_confidence", DEFAULT_MIN_CONFIDENCE)
+    bs = batch_size or settings.llm_match_batch_size or DEFAULT_BATCH_SIZE
+    min_conf = settings.llm_match_min_confidence
 
     db = SessionLocal()
     try:
@@ -316,6 +378,8 @@ def process_batch(batch_size: int | None = None) -> dict:
             "skipped_already_in_dict": skipped_already_in_dict,
         }
         all_touched_recipes: set[int] = set()
+        with _lock:
+            _state.update(total=len(inputs), done=0)
 
         for start in range(0, len(inputs), bs):
             chunk = inputs[start:start + bs]
@@ -324,16 +388,22 @@ def process_batch(batch_size: int | None = None) -> dict:
             totals["batches"] += 1
             if resp is None:
                 totals["rejected"] += len(chunk)
-                continue
-            items = resp.get("items", []) if isinstance(resp, dict) else []
-            if not items:
-                totals["rejected"] += len(chunk)
-                continue
-            stats = _apply_matches(db, items, raw_text_to_recipes, valid_ids, min_conf)
-            totals["applied"] += stats["applied"]
-            totals["rejected"] += stats["rejected"]
-            totals["nonfood"] += stats["nonfood"]
-            all_touched_recipes.update(stats["recipe_ids"])
+            else:
+                items = resp.get("items", []) if isinstance(resp, dict) else []
+                if not items:
+                    totals["rejected"] += len(chunk)
+                else:
+                    stats = _apply_matches(db, items, raw_text_to_recipes, valid_ids, min_conf)
+                    totals["applied"] += stats["applied"]
+                    totals["rejected"] += stats["rejected"]
+                    totals["nonfood"] += stats["nonfood"]
+                    all_touched_recipes.update(stats["recipe_ids"])
+            with _lock:
+                _state.update(
+                    done=min(start + bs, len(inputs)),
+                    applied=totals["applied"], rejected=totals["rejected"],
+                    nonfood=totals["nonfood"],
+                )
 
         # Re-enrichment receptů, kterých se LLM matche dotkly
         re = _reenrich_recipes(db, list(all_touched_recipes))
@@ -343,6 +413,25 @@ def process_batch(batch_size: int | None = None) -> dict:
         return totals
     finally:
         db.close()
+
+
+def _run_bg(batch_size: int | None) -> None:
+    try:
+        process_batch(batch_size=batch_size)
+    finally:
+        with _lock:
+            _state.update(running=False, finished_at=time.time())
+
+
+def process_batch_async(batch_size: int | None = None) -> bool:
+    """Spustí process_batch na pozadí. Vrátí False, pokud už něco běží."""
+    with _lock:
+        if _state["running"]:
+            return False
+        _state.update(running=True, done=0, total=0, applied=0, rejected=0,
+                       nonfood=0, finished_at=None)
+    threading.Thread(target=_run_bg, args=(batch_size,), daemon=True).start()
+    return True
 
 
 if __name__ == "__main__":

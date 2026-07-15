@@ -252,6 +252,9 @@ export const api = {
       body: JSON.stringify({ create_missing: createMissing }),
     }).then(J),
 
+  llmMatchStatus: () => afetch("/api/maintenance/llm-match-status").then(J),
+  runLlmMatch: () => afetch("/api/maintenance/llm-match", { method: "POST" }).then(J),
+
   sysVersion: () => afetch("/api/system/version").then(J),
   sysCheck: () => afetch("/api/system/check", { method: "POST" }).then(J),
   sysUpdate: () => afetch("/api/system/update", { method: "POST" }).then(J),

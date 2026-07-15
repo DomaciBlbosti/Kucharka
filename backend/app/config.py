@@ -58,6 +58,21 @@ class Settings:
         # Prodleva mezi recepty ZE STEJNÉ domény (s), aby se cizí web nezahltil.
         self.crawler_delay: float = float(_env("CRAWLER_DELAY", "0.4"))
 
+        # --- LLM batch matching (llm_match.py) --------------------------
+        # Dávkové dopárování nenamatchnutých surovin u receptů s
+        # enrichment_status='manual_review'. Na rozdíl od backfill.py (výše,
+        # /api/maintenance/backfill) dedupikuje vstupy a posílá je po
+        # dávkách s vynuceným JSON schématem – vhodné pro velké množství
+        # nenamatchnutých řádků najednou.
+        self.llm_match_enabled: bool = _truthy(_env("LLM_MATCH_ENABLED", "false"))
+        self.llm_match_batch_size: int = int(_env("LLM_MATCH_BATCH_SIZE", "40"))
+        self.llm_match_min_confidence: float = float(_env("LLM_MATCH_MIN_CONFIDENCE", "0.7"))
+        self.llm_match_model: str = _env("LLM_MATCH_MODEL", "")  # prázdné = ollama_fast_model
+        # Kontextové okno pro LLM matching volání (musí pokrýt katalog + dávku
+        # vstupů + odpověď). Zvyš, pokud vidíš v logu ořezané/prázdné odpovědi.
+        self.llm_match_num_ctx: int = int(_env("LLM_MATCH_NUM_CTX", "16384"))
+        self.llm_match_temperature: float = float(_env("LLM_MATCH_TEMPERATURE", "0"))
+
         # --- Služby na pozadí (překlad / párování) ---------------------
         self.auto_translate_enabled: bool = _truthy(_env("AUTO_TRANSLATE_ENABLED", "false"))
         self.auto_translate_interval_min: int = int(_env("AUTO_TRANSLATE_INTERVAL_MIN", "180"))
