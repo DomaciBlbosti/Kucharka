@@ -26,6 +26,24 @@ _BATCH = 6
 _lock = threading.Lock()
 _state: dict = {"running": False, "done": 0, "total": 0, "tagged": 0, "finished_at": None}
 
+_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "i": {"type": "integer"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["i", "tags"],
+            },
+        }
+    },
+    "required": ["items"],
+}
+
 
 def _set(**kw):
     with _lock:
@@ -100,6 +118,8 @@ def _tag_batch(recipe_ids: list[int]) -> None:
             prompt,
             keep_alive=settings.ollama_keep_alive,
             timeout=max(settings.http_timeout, 120),
+            format_schema=_SCHEMA,
+            num_ctx=8192,
         )
         if out is None:
             log.warning("otagování dávky selhalo (volání modelu nebo parsování).")

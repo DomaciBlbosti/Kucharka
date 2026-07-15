@@ -28,13 +28,17 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Ingredient, IngredientEmbedding
-from .rag import embed_text  # stejná funkce, stejný model (settings.embed_model)
+from .rag import embed_text, embed_texts_batch  # stejná funkce, stejný model (settings.embed_model)
 
 log = logging.getLogger("kucharka.ingredient_embed")
 
 
-def reindex(rebuild: bool = False) -> dict:
-    """Zembeduj suroviny, které embedding ještě nemají (nebo všechny při rebuild)."""
+def reindex(rebuild: bool = False, chunk_size: int = 100) -> dict:
+    """Zembeduj suroviny, které embedding ještě nemají (nebo všechny při rebuild).
+
+    Dávkově po `chunk_size` – jedno HTTP volání na `chunk_size` surovin
+    místo jednoho volání na surovinu (řádově rychlejší na tisících položek).
+    """
     db = SessionLocal()
     done = 0
     todo: list = []
@@ -45,19 +49,21 @@ def reindex(rebuild: bool = False) -> dict:
         have = set(db.scalars(select(IngredientEmbedding.ingredient_id)).all())
         rows = db.scalars(select(Ingredient)).all()
         todo = [i for i in rows if i.id not in have]
-        for ing in todo:
+        for start in range(0, len(todo), chunk_size):
+            chunk = todo[start:start + chunk_size]
             try:
-                vec = embed_text(ing.name_cs)
+                vecs = embed_texts_batch([ing.name_cs for ing in chunk])
+            except Exception as exc:  # noqa: BLE001
+                log.warning("embedding dávky (%s surovin) selhal: %s", len(chunk), exc)
+                continue
+            for ing, vec in zip(chunk, vecs):
                 db.merge(IngredientEmbedding(
                     ingredient_id=ing.id, model=settings.embed_model,
                     dim=int(vec.shape[0]), vec=vec.tobytes(),
                 ))
-                db.commit()
                 done += 1
-                if done % 200 == 0:
-                    log.info("ingredient embed reindex: %s/%s", done, len(todo))
-            except Exception as exc:  # noqa: BLE001
-                log.warning("embedding suroviny %s (%s) selhal: %s", ing.id, ing.name_cs, exc)
+            db.commit()
+            log.info("ingredient embed reindex: %s/%s", done, len(todo))
         log.info("ingredient embed reindex hotovo: %s/%s nových", done, len(todo))
     finally:
         db.close()
@@ -90,13 +96,14 @@ def candidates_for_batch(db: Session, inputs: list[str], k: int = 20) -> list[tu
         return []
     ids, names, mat = loaded
 
+    try:
+        qvecs = embed_texts_batch(inputs)  # JEDNO volání na celou dávku, ne cyklus
+    except Exception as exc:  # noqa: BLE001
+        log.warning("embedding dávky (%s vstupů) selhal: %s", len(inputs), exc)
+        return []
+
     picked: dict[int, str] = {}
-    for text in inputs:
-        try:
-            qvec = embed_text(text)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("embedding vstupu '%s' selhal: %s", text, exc)
-            continue
+    for qvec in qvecs:
         scores = mat @ qvec
         top = np.argsort(-scores)[:k]
         for i in top:

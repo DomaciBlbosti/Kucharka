@@ -27,12 +27,24 @@ def chat_json(
     keep_alive: str | None = None,
     timeout: float = 120,
     temperature: float = 0,
+    format_schema: dict | None = None,
+    num_ctx: int | None = None,
 ) -> dict | None:
     """Zavolej Ollama /api/chat a vrať naparsovaný JSON. None při jakékoli chybě
-    (síť, HTTP chyba, nevalidní JSON) – volající si rozhodne o fallbacku."""
+    (síť, HTTP chyba, nevalidní JSON) – volající si rozhodne o fallbacku.
+
+    `format_schema`: JSON schéma pro vynucený strukturovaný výstup (constrained
+    sampling) – spolehlivější než default `"format": "json"`, který jen řekne
+    "je to nějaký JSON", ale nehlídá strukturu ani typy. Bez zadání se chová
+    jako dřív.
+    `num_ctx`: explicitní kontextové okno. Bez zadání necháváš na Ollama
+    defaultu – u větších dávek (dlouhý katalog/slovník v promptu) stojí za to
+    nastavit, ať se prompt tiše neořízne.
+    """
     parsed, _raw = chat_json_raw(
         base_url, model, prompt,
         images=images, keep_alive=keep_alive, timeout=timeout, temperature=temperature,
+        format_schema=format_schema, num_ctx=num_ctx,
     )
     return parsed
 
@@ -46,6 +58,8 @@ def chat_json_raw(
     keep_alive: str | None = None,
     timeout: float = 120,
     temperature: float = 0,
+    format_schema: dict | None = None,
+    num_ctx: int | None = None,
 ) -> tuple[dict | None, str]:
     """Totéž jako chat_json, ale navíc vrací i syrový text odpovědi modelu
     (i když se nepodaří naparsovat) – pro debug náhled v UI (viz photo_recipe)."""
@@ -56,10 +70,12 @@ def chat_json_raw(
         "model": model,
         "messages": [message],
         "stream": False,
-        "format": "json",
+        "format": format_schema if format_schema is not None else "json",
         "think": False,
         "options": {"temperature": temperature},
     }
+    if num_ctx:
+        payload["options"]["num_ctx"] = num_ctx
     if keep_alive:
         payload["keep_alive"] = keep_alive
     try:

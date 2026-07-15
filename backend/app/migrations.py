@@ -63,6 +63,9 @@ _COLUMNS: tuple[ColumnAdd, ...] = (
     # Recipe — pipeline status sloupce
     ColumnAdd("recipe", "crawl_status",        "VARCHAR(20) NOT NULL DEFAULT 'scraped'"),
     ColumnAdd("recipe", "enrichment_status",   "VARCHAR(20) NOT NULL DEFAULT 'pending'"),
+    # RecipeTag – classifier.py na tohle spoléhá, ORM mapování scházelo
+    # (viz models.py), takže heuristické auto-tagování dosud tiše padalo.
+    ColumnAdd("recipe_tag", "source", "VARCHAR(20) NOT NULL DEFAULT 'auto'"),
     ColumnAdd("recipe", "image_status",        "VARCHAR(20) NOT NULL DEFAULT 'pending'"),
     ColumnAdd("recipe", "enrichment_attempts", "INT NOT NULL DEFAULT 0"),
     ColumnAdd("recipe", "enrichment_error",    "TEXT NULL"),

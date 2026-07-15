@@ -30,6 +30,24 @@ _BATCH = 25
 _lock = threading.Lock()
 _state: dict = {"running": False, "done": 0, "total": 0, "finished_at": None}
 
+_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "i": {"type": "integer"},
+                    "category_path": {"type": "string"},
+                },
+                "required": ["i", "category_path"],
+            },
+        }
+    },
+    "required": ["items"],
+}
+
 
 def _set(**kw):
     with _lock:
@@ -76,6 +94,8 @@ def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
         prompt,
         keep_alive=settings.ollama_keep_alive,
         timeout=max(settings.http_timeout, 120),
+        format_schema=_SCHEMA,
+        num_ctx=8192,
     )
     if out is None:
         log.warning("kategorizace dávky selhala (volání modelu nebo parsování).")

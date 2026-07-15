@@ -285,6 +285,10 @@ class RecipeTag(Base):
     tag_id: Mapped[int] = mapped_column(
         ForeignKey("tag.id", ondelete="CASCADE"), primary_key=True
     )
+    # Rozlišuje původ tagu: 'auto' (classifier.py, heuristika bez LLM) vs.
+    # LLM přiřazení z tagging.py. Používá classifier.py, ale sloupec tu
+    # chyběl – stejný vzor jako Recipe/IngredientAlias výše v souboru.
+    source: Mapped[str] = mapped_column(String(20), server_default="auto")
 
 
 class CrawlUrl(Base):

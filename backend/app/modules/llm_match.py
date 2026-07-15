@@ -406,7 +406,13 @@ def process_batch(batch_size: int | None = None) -> dict:
             # Dynamický katalog (embeddingy) – jen sémanticky relevantní kandidáti
             # pro tuhle dávku, ne statický top-N podle popularity. Fallback na
             # statický katalog, dokud neproběhl `ingredient_embed.reindex()`.
-            catalog = ingredient_embed.candidates_for_batch(db, chunk, k=20) or static_catalog
+            dynamic_catalog = ingredient_embed.candidates_for_batch(db, chunk, k=20)
+            if not dynamic_catalog:
+                log.warning(
+                    "dávka %s: dynamický katalog nedostupný (embeddingy?), fallback na statický top-N",
+                    totals["batches"] + 1,
+                )
+            catalog = dynamic_catalog or static_catalog
             prompt = _make_prompt(catalog, chunk)
             resp = _call_ollama(prompt)
             totals["batches"] += 1
