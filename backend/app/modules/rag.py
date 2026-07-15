@@ -42,33 +42,67 @@ def embed_text(text: str) -> np.ndarray:
     return vec / n if n else vec  # normalizace → kosinus = dot
 
 
-def embed_texts_batch(texts: list[str], timeout: float = 120) -> list[np.ndarray]:
+def embed_texts_batch(texts: list[str], timeout: float = 120, retries: int = 3) -> list[np.ndarray]:
     """Zaembeduj víc textů JEDNÍM HTTP voláním (novější `/api/embed`, ne
     `/api/embeddings`) – zásadně méně round-tripů než volat `embed_text` v
-    cyklu. Při chybě (starší Ollama bez `/api/embed`, síť) spadni na
-    sekvenční `embed_text` po jednom, ať volající nemusí řešit fallback sám.
+    cyklu.
+
+    Pozorováno v provozu: volání občas selže (500/501) i na endpointu, který
+    o chvíli později (nebo při ručním testu) projde bez problému – vypadá to
+    na přechodnou nespolehlivost proxy mezi appkou a Ollamou, ne na trvalou
+    nekompatibilitu. Proto pár rychlých pokusů s krátkou prodlevou, než se
+    to vzdá a spadne na sekvenční `embed_text` (což taky zkusí víckrát).
     """
     if not texts:
         return []
-    try:
-        r = httpx.post(
-            f"{settings.ollama_url}/api/embed",
-            json={"model": settings.embed_model, "input": texts},
-            timeout=timeout,
-        )
-        r.raise_for_status()
-        vecs = r.json()["embeddings"]
-        if len(vecs) != len(texts):
-            raise ValueError(f"počet vektorů ({len(vecs)}) nesedí na počet vstupů ({len(texts)})")
-        out = []
-        for v in vecs:
-            arr = np.asarray(v, dtype=np.float32)
-            n = np.linalg.norm(arr)
-            out.append(arr / n if n else arr)
-        return out
-    except Exception as exc:  # noqa: BLE001
-        log.warning("dávkový /api/embed selhal (%s), fallback na sekvenční volání", exc)
-        return [embed_text(t) for t in texts]
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            r = httpx.post(
+                f"{settings.ollama_url}/api/embed",
+                json={"model": settings.embed_model, "input": texts},
+                timeout=timeout,
+            )
+            r.raise_for_status()
+            vecs = r.json()["embeddings"]
+            if len(vecs) != len(texts):
+                raise ValueError(f"počet vektorů ({len(vecs)}) nesedí na počet vstupů ({len(texts)})")
+            out = []
+            for v in vecs:
+                arr = np.asarray(v, dtype=np.float32)
+                n = np.linalg.norm(arr)
+                out.append(arr / n if n else arr)
+            return out
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+    log.warning(
+        "dávkový /api/embed selhal %sx (%s), fallback na sekvenční volání", retries, last_exc,
+    )
+    return _embed_texts_sequential(texts)
+
+
+def _embed_texts_sequential(texts: list[str], retries: int = 2) -> list[np.ndarray]:
+    """Fallback po jednom, taky s pár pokusy na položku – jedna trvale
+    padající surovina by jinak strhla celou dávku (viz `embed_text`)."""
+    out = []
+    for t in texts:
+        vec = None
+        last_exc: Exception | None = None
+        for attempt in range(retries):
+            try:
+                vec = embed_text(t)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt < retries - 1:
+                    time.sleep(1.0)
+        if vec is None:
+            log.warning("embedding '%s' selhal i po %sx pokusech: %s", t, retries, last_exc)
+            raise last_exc  # zachovej původní chování - volající (candidates_for_batch) to odchytí
+        out.append(vec)
+    return out
 
 
 def recipe_doc(r: Recipe) -> str:
