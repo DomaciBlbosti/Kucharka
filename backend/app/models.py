@@ -199,6 +199,28 @@ class RecipeEmbedding(Base):
     )
 
 
+class IngredientEmbedding(Base):
+    """Vektorový embedding suroviny (pro dynamický katalog v llm_match.py).
+
+    Nahrazuje statický top-N katalog seřazený podle popularity – ten
+    systematicky vynechává vzácné/neobvyklé suroviny, takže je LLM nikdy
+    nemůže trefit. Místo toho se pro každou dávku vybere sémanticky
+    nejbližší podmnožina (viz modules/ingredient_embed.py).
+    """
+
+    __tablename__ = "ingredient_embedding"
+
+    ingredient_id: Mapped[int] = mapped_column(
+        ForeignKey("ingredient.id", ondelete="CASCADE"), primary_key=True
+    )
+    model: Mapped[str] = mapped_column(String(80))
+    dim: Mapped[int] = mapped_column(Integer)
+    vec: Mapped[bytes] = mapped_column(LargeBinary)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class AppSetting(Base):
     """Runtime nastavení (override env), editovatelné z administrace."""
 

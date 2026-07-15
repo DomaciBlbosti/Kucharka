@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Ingredient, IngredientAlias, Recipe, RecipeIngredient
+from . import ingredient_embed
 from .lookup import make_lookup_key
 
 log = logging.getLogger("kucharka.llm_match")
@@ -368,8 +369,8 @@ def process_batch(batch_size: int | None = None) -> dict:
             len(raw_text_to_recipes), bs,
         )
 
-        catalog = _build_ingredient_catalog(db)
-        valid_ids = {cid for cid, _ in catalog}
+        static_catalog = _build_ingredient_catalog(db)
+        valid_ids = {cid for cid, _ in static_catalog}
         # Plus všechny existující ingredient_id (i mimo top N) — LLM mohl trefit i hlubší ID
         all_ids = set(db.scalars(select(Ingredient.id)).all())
         valid_ids.update(all_ids)
@@ -386,6 +387,10 @@ def process_batch(batch_size: int | None = None) -> dict:
 
         for start in range(0, len(inputs), bs):
             chunk = inputs[start:start + bs]
+            # Dynamický katalog (embeddingy) – jen sémanticky relevantní kandidáti
+            # pro tuhle dávku, ne statický top-N podle popularity. Fallback na
+            # statický katalog, dokud neproběhl `ingredient_embed.reindex()`.
+            catalog = ingredient_embed.candidates_for_batch(db, chunk, k=20) or static_catalog
             prompt = _make_prompt(catalog, chunk)
             resp = _call_ollama(prompt)
             totals["batches"] += 1
