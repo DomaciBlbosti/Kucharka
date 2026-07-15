@@ -249,7 +249,17 @@ def _apply_matches(
         applied += 1
         recipes_touched.update(raw_text_to_recipes[raw])
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        # Poslední pojistka – s db.flush() v _upsert_alias by tohle nemělo
+        # nastat pro duplicity v rámci dávky, ale kdyby přece (souběh,
+        # cizí klíč apod.), ať aspoň nepadá celý běh a předchozí dávky
+        # zůstanou uložené.
+        log.error("commit dávky selhal, rollback: %s", exc)
+        db.rollback()
+        return {"applied": 0, "rejected": applied + rejected + nonfood, "nonfood": 0,
+                "recipes_touched": 0, "recipe_ids": []}
     return {
         "applied": applied,
         "rejected": rejected,
@@ -304,6 +314,12 @@ def _upsert_alias(
         hit_count=0,
         last_seen_at=datetime.utcnow(),
     ))
+    # Flush (ne commit) hned – bez tohohle další položka ve STEJNÉ dávce se
+    # stejným lookup_key (např. "1 ks sojový suk" a "2 ks sojový suk" →
+    # stejný normalizovaný klíč) neuvidí tenhle pending insert, zkusí vložit
+    # znovu, a IntegrityError na konci dávky odrolluje úplně všechno –
+    # včetně matchů, které jinak v pořádku prošly.
+    db.flush()
 
 
 # ─── Re-enrichment dotčených receptů ─────────────────────────────────────────
