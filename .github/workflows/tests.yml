@@ -1,0 +1,45 @@
+name: tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/tests.yml"
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        # Bez lidl-plus a recipe-scrapers: jejich tranzitivní závislost
+        # jstyleson má rozbitý sdist build a testy je nepotřebují.
+        run: |
+          grep -vE '^(lidl-plus|recipe-scrapers)' backend/requirements.txt > /tmp/req.txt
+          pip install -r /tmp/req.txt simplemma
+      - name: Run backend tests
+        working-directory: backend
+        run: |
+          python -m tests.test_lookup
+          python -m tests.test_llm_match
+          python -m tests.test_auth_and_search
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build

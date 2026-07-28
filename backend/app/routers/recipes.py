@@ -1,11 +1,12 @@
 """API pro recepty – výpis s filtry vůči spíži + detail."""
 from __future__ import annotations
 
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import case, func, literal, select
+from sqlalchemy import case, func, inspect as sa_inspect, literal, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import settings
@@ -52,6 +53,43 @@ def _availability_cols(have_ids: set[int]):
     return sub, total_col, have_col, missing_col
 
 
+# Fulltext hledání: MATCH..AGAINST na MariaDB (řádově rychlejší než LIKE-scan
+# a hledá i v postupu), fallback na ILIKE pro SQLite / krátké dotazy / chybějící
+# index. Dostupnost indexu se zjišťuje jednou a cachuje.
+_ft_available: bool | None = None
+
+
+def _fulltext_ok(db: Session) -> bool:
+    global _ft_available
+    if _ft_available is None:
+        try:
+            bind = db.get_bind()
+            if bind.dialect.name not in ("mysql", "mariadb"):
+                _ft_available = False
+            else:
+                names = {ix["name"] for ix in sa_inspect(bind).get_indexes("recipe")}
+                _ft_available = "ft_recipe_title_instructions" in names
+        except Exception:  # noqa: BLE001
+            _ft_available = False
+    return _ft_available
+
+
+def _search_clause(db: Session, q: str):
+    """WHERE podmínka pro hledání: fulltext (boolean mode, prefixy), jinak ILIKE."""
+    if _fulltext_ok(db):
+        # InnoDB fulltext ignoruje tokeny kratší než ~3 znaky – ty by dotaz
+        # jen tiše vyprázdnily, proto krátká slova vynecháváme; když nezbude
+        # nic, spadneme na ILIKE.
+        cleaned = (re.sub(r"[+*<>()~@\"'-]", "", t) for t in re.split(r"\s+", q.strip()))
+        terms = [t for t in cleaned if len(t) >= 3]
+        if terms:
+            boolean_q = " ".join(f"+{t}*" for t in terms)
+            return text(
+                "MATCH(recipe.title, recipe.instructions) AGAINST (:ftq IN BOOLEAN MODE)"
+            ).bindparams(ftq=boolean_q)
+    return Recipe.title.ilike(f"%{q}%")
+
+
 def _tags_by_recipe(db: Session, recipe_ids: list[int]) -> dict[int, list[Tag]]:
     """Tagy jen pro danou stránku receptů (ne pro celou DB)."""
     if not recipe_ids:
@@ -89,7 +127,7 @@ def list_recipes(
         _sub, _sub.c.recipe_id == Recipe.id
     )
     if q:
-        base = base.where(Recipe.title.ilike(f"%{q}%"))
+        base = base.where(_search_clause(db, q))
     if max_kcal is not None:
         base = base.where(Recipe.kcal_per_serving <= max_kcal)
     if max_time is not None:
@@ -313,7 +351,10 @@ def get_recipe(recipe_id: int, db: Session = Depends(get_db)):
     r = db.scalar(
         select(Recipe)
         .where(Recipe.id == recipe_id)
-        .options(selectinload(Recipe.ingredients), selectinload(Recipe.tags))
+        .options(
+            selectinload(Recipe.ingredients).selectinload(RecipeIngredient.ingredient),
+            selectinload(Recipe.tags),
+        )
     )
     if r is None:
         raise HTTPException(404, "Recept nenalezen")
@@ -325,6 +366,17 @@ def get_recipe(recipe_id: int, db: Session = Depends(get_db)):
     detail.missing_count = av["missing_count"]
     detail.ratio = round(av["ratio"], 3)
     detail.missing_ingredient_ids = [ri.ingredient_id for ri in av["missing"]]
+
+    # Spolehlivost výživy: podíl řádků, kde kalorie stojí na odhadu –
+    # surovina vytvořená LLM (source='ollama') nebo řádek bez gramáže.
+    matched = [ri for ri in r.ingredients if ri.ingredient_id is not None]
+    if matched:
+        estimated = sum(
+            1 for ri in matched
+            if (ri.ingredient is not None and ri.ingredient.source == "ollama")
+            or ri.grams is None
+        )
+        detail.nutrition_estimated_pct = round(100 * estimated / len(matched))
     return detail
 
 

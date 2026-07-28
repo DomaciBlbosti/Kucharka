@@ -65,11 +65,16 @@ def _run_translate():
 
 
 def _run_match():
-    from .modules import backfill
+    """Automatické párování: nejdřív rychlá slovník+fuzzy fáze (backfill),
+    pak – je-li povolené – dávkové LLM dopárování přes katalog rozhodnutí.
+    Obojí synchronně v jednom workeru, ať se úlohy nepřekrývají."""
+    from .modules import backfill, llm_match
 
-    if backfill.status().get("running"):
+    if backfill.is_running():
         return
-    backfill.backfill(create_missing=settings.auto_ingredients and settings.ollama_enabled)
+    backfill.backfill()
+    if settings.llm_match_enabled and not llm_match.is_running():
+        llm_match.process_batch()
 
 
 def _run_lidl_sync():
@@ -130,9 +135,9 @@ def _translate_running() -> bool:
 
 
 def _match_running() -> bool:
-    from .modules import backfill
+    from .modules import backfill, llm_match
 
-    return backfill.is_running()
+    return backfill.is_running() or llm_match.is_running()
 
 
 _JOB_META = {

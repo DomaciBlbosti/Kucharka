@@ -73,6 +73,10 @@ class RecipeDetail(RecipeCard):
     original_instructions: str | None = None
     ingredients: list[RecipeIngredientOut] = []
     missing_ingredient_ids: list[int] = []
+    # Spolehlivost výživy: kolik % napárovaných řádků stojí na odhadu
+    # (surovina s výživou odhadnutou LLM, nebo řádek bez určené gramáže).
+    # None = žádné napárované řádky (kalorie nejsou vůbec).
+    nutrition_estimated_pct: int | None = None
 
 
 class RecipeEdit(BaseModel):
