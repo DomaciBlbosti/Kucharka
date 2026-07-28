@@ -6,9 +6,11 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from datetime import datetime
+
 from ..config import settings
 from ..db import get_db
-from ..models import Ingredient, IngredientAlias, Recipe, RecipeIngredient
+from ..models import Ingredient, IngredientAlias, MatchDecision, Recipe, RecipeIngredient
 from ..modules import backfill, categorize, llm_match, tagging, translate
 from ..modules.normalizer import is_section_header
 from ..modules.nutrition import recompute_recipe_kcal
@@ -35,8 +37,13 @@ def run_backfill(req: BackfillRequest):
 
 
 def _fast_model_error() -> str | None:
-    """None když je rychlý model dostupný, jinak srozumitelná hláška."""
+    """None když je zvolený LLM provider použitelný, jinak srozumitelná hláška."""
     import httpx
+
+    from ..modules import llmclient
+
+    if settings.llm_provider == "api":
+        return llmclient.availability_error()
 
     model = settings.ollama_fast_model
     try:
@@ -74,15 +81,16 @@ def run_translate():
 
 @router.get("/categorize-status")
 def categorize_status():
+    from ..modules import llmclient
+
     s = categorize.status()
     s["ollama"] = settings.ollama_enabled
+    s["llm_ready"] = llmclient.is_available()
     return s
 
 
 @router.post("/categorize")
 def run_categorize():
-    if not settings.ollama_enabled:
-        return {"started": False, "status": categorize.status(), "error": "Ollama není dostupná."}
     err = _fast_model_error()
     if err:
         return {"started": False, "status": categorize.status(), "error": err}
@@ -92,8 +100,11 @@ def run_categorize():
 
 @router.get("/llm-match-status")
 def llm_match_status():
+    from ..modules import llmclient
+
     s = llm_match.status()
     s["ollama"] = settings.ollama_enabled
+    s["llm_ready"] = llmclient.is_available()
     s["enabled"] = settings.llm_match_enabled
     return s
 
@@ -103,8 +114,6 @@ def run_llm_match():
     if not settings.llm_match_enabled:
         return {"started": False, "status": llm_match.status(),
                 "error": "Vypnuto – zapni v Administraci → Nástroje (servery)."}
-    if not settings.ollama_enabled:
-        return {"started": False, "status": llm_match.status(), "error": "Ollama není dostupná."}
     err = _fast_model_error()
     if err:
         return {"started": False, "status": llm_match.status(), "error": err}
@@ -208,6 +217,17 @@ def match_one(req: MatchOne, db: Session = Depends(get_db)):
         select(IngredientAlias).where(IngredientAlias.alias == alias_key)
     ):
         db.add(IngredientAlias(alias=alias_key, ingredient_id=ing.id))
+
+    # zaznamenej i do katalogu rozhodnutí (ruční = finální)
+    from ..modules.lookup import make_lookup_key
+
+    key = make_lookup_key(req.raw_text)
+    if key:
+        llm_match._upsert_decision(
+            db, key, req.raw_text, status="applied", category="food",
+            ingredient_id=ing.id, confidence=1.0, model="manual",
+            occurrences=len(rows),
+        )
     db.commit()
 
     for rid in affected:
@@ -224,17 +244,141 @@ def match_one(req: MatchOne, db: Session = Depends(get_db)):
     }
 
 
+# ---- katalog rozhodnutí (match_decision) ----
+
+def _decision_out(d: MatchDecision) -> dict:
+    return {
+        "id": d.id,
+        "lookup_key": d.lookup_key,
+        "sample_text": d.sample_text,
+        "status": d.status,
+        "category": d.category,
+        "ingredient_id": d.ingredient_id,
+        "ingredient_name": d.ingredient.name_cs if d.ingredient else None,
+        "confidence": d.confidence,
+        "model": d.model,
+        "occurrences": d.occurrences,
+        "attempts": d.attempts,
+        "error": d.error,
+        "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+    }
+
+
+@router.get("/decisions")
+def list_decisions(
+    status: str = Query("", description="filtr stavu; 'review' = suggested+no_match+error"),
+    q: str = Query("", description="hledání v textu"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Katalog rozhodnutí párování: co LLM/člověk rozhodl, s jakou jistotou,
+    a co čeká na ruční dořešení."""
+    stmt = select(MatchDecision)
+    if status == "review":
+        stmt = stmt.where(MatchDecision.status.in_(("suggested", "no_match", "error")))
+    elif status:
+        stmt = stmt.where(MatchDecision.status == status)
+    if q.strip():
+        needle = f"%{q.strip()}%"
+        stmt = stmt.where(
+            MatchDecision.sample_text.like(needle) | MatchDecision.lookup_key.like(needle)
+        )
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = db.scalars(
+        stmt.order_by(MatchDecision.occurrences.desc(), MatchDecision.id.desc())
+        .limit(limit).offset(offset)
+    ).all()
+    return {
+        "items": [_decision_out(d) for d in rows],
+        "total": total,
+        "summary": llm_match.decisions_summary(db),
+    }
+
+
+class DecisionResolve(BaseModel):
+    action: str  # accept | assign | nonfood | ignore | retry
+    ingredient_id: int | None = None
+    new_name: str | None = None
+
+
+@router.post("/decisions/{decision_id}/resolve")
+def resolve_decision(decision_id: int, req: DecisionResolve, db: Session = Depends(get_db)):
+    """Ruční dořešení položky katalogu: přijmout návrh LLM, přiřadit jinou
+    surovinu, označit jako ne-surovinu, ignorovat, nebo poslat znovu do LLM."""
+    d = db.get(MatchDecision, decision_id)
+    if d is None:
+        raise HTTPException(404, "Rozhodnutí nenalezeno.")
+
+    if req.action == "retry":
+        # smazání záznamu = příští běh LLM se položky zeptá znovu
+        db.delete(d)
+        db.commit()
+        return {"ok": True, "action": "retry"}
+
+    if req.action == "ignore":
+        d.status = "ignored"
+        d.model = "manual"
+        d.error = None
+        d.updated_at = datetime.utcnow()
+        db.commit()
+        return {"ok": True, "action": "ignore", "decision": _decision_out(d)}
+
+    if req.action == "nonfood":
+        llm_match._upsert_alias(
+            db, d.sample_text, lookup_key=d.lookup_key, ingredient_id=None,
+            kind="unknown", source="manual", confidence=1.0, verified=True,
+        )
+        d.status = "nonfood"
+        d.category = d.category if d.category and d.category != "food" else "unknown"
+        d.ingredient_id = None
+        d.model = "manual"
+        d.error = None
+        d.updated_at = datetime.utcnow()
+        db.commit()
+        return {"ok": True, "action": "nonfood", "decision": _decision_out(d)}
+
+    if req.action in ("accept", "assign"):
+        if req.action == "accept":
+            if not d.ingredient_id:
+                raise HTTPException(400, "Položka nemá žádný návrh k přijetí.")
+            ing = db.get(Ingredient, d.ingredient_id)
+            if ing is None:
+                raise HTTPException(404, "Navržená surovina už neexistuje.")
+        elif req.ingredient_id:
+            ing = db.get(Ingredient, req.ingredient_id)
+            if ing is None:
+                raise HTTPException(404, "Surovina nenalezena.")
+        elif req.new_name and req.new_name.strip():
+            name = req.new_name.strip()
+            ing = db.scalar(
+                select(Ingredient).where(func.lower(Ingredient.name_cs) == name.lower())
+            )
+            if ing is None:
+                ing = Ingredient(name_cs=name, source="manual")
+                db.add(ing)
+                db.flush()
+        else:
+            raise HTTPException(400, "Zadej surovinu nebo nový název.")
+
+        result = llm_match.apply_manual_match(db, d, ing)
+        return {"ok": True, "action": req.action, "decision": _decision_out(d), **result}
+
+    raise HTTPException(400, f"Neznámá akce '{req.action}'.")
+
+
 @router.get("/tag-status")
 def tag_status():
+    from ..modules import llmclient
+
     s = tagging.status()
     s["ollama"] = settings.ollama_enabled
+    s["llm_ready"] = llmclient.is_available()
     return s
 
 
 @router.post("/tag-recipes")
 def run_tagging():
-    if not settings.ollama_enabled:
-        return {"started": False, "status": tagging.status(), "error": "Ollama není dostupná."}
     err = _fast_model_error()
     if err:
         return {"started": False, "status": tagging.status(), "error": err}

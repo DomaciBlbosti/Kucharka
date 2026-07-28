@@ -79,6 +79,50 @@ class IngredientAlias(Base):
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class MatchDecision(Base):
+    """Katalog rozhodnutí LLM/ručního párování surovin.
+
+    Jedna řádka na `lookup_key` (normalizovaný text suroviny). Ukládá se KAŽDÝ
+    výsledek dávkového párování – i zamítnutí a chyby – takže:
+      * opakované běhy se neptají LLM znovu na už rozhodnuté položky,
+      * v administraci je vidět, co a proč bylo rozhodnuto (s confidence),
+      * nejisté položky ("suggested"/"no_match") čekají v katalogu na ruční
+        potvrzení místo tichého zahození.
+
+    Stavy:
+      applied    – alias vytvořen, řádky napárovány (finální)
+      nonfood    – není surovina (equipment/garnish/packaging/unknown), finální
+      suggested  – LLM má kandidáta, ale confidence < práh → čeká na člověka
+      no_match   – LLM nenašlo kandidáta → čeká na člověka
+      ignored    – člověk řekl "neřešit" (finální)
+      error      – LLM volání selhalo; opakuje se do MAX_ATTEMPTS, pak čeká
+    """
+
+    __tablename__ = "match_decision"
+    __table_args__ = (UniqueConstraint("lookup_key", name="uq_match_decision_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lookup_key: Mapped[str] = mapped_column(String(200))
+    sample_text: Mapped[str] = mapped_column(String(400))
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    # kategorie z LLM (food/equipment/garnish/packaging/unknown)
+    category: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    ingredient_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ingredient.id", ondelete="SET NULL"), nullable=True
+    )
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # kdo rozhodl: název modelu, nebo 'manual'
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # kolika řádků recipe_ingredient se položka týkala při posledním běhu
+    occurrences: Mapped[int] = mapped_column(Integer, default=0)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    ingredient: Mapped[Ingredient | None] = relationship()
+
+
 class Recipe(Base):
     __tablename__ = "recipe"
     __table_args__ = (UniqueConstraint("source_url", name="uq_source_url"),)

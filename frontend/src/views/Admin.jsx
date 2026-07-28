@@ -21,6 +21,9 @@ function ToolsCard() {
   const [saved, setSaved] = useState(false);
   const [test, setTest] = useState(null);
   const [testing, setTesting] = useState(false);
+  const [apiKey, setApiKey] = useState(""); // klíč se z API nikdy nevrací, drží se zvlášť
+  const [apiTest, setApiTest] = useState(null);
+  const [apiTesting, setApiTesting] = useState(false);
   useEffect(() => {
     api.adminSettings().then(setS).catch(() => {});
   }, []);
@@ -39,15 +42,32 @@ function ToolsCard() {
       setTesting(false);
     }
   };
+  const testApi = async () => {
+    setApiTesting(true);
+    setApiTest(null);
+    try {
+      setApiTest(await api.testLlmApi());
+    } finally {
+      setApiTesting(false);
+    }
+  };
+  const forgetApiKey = async () => {
+    const r = await api.adminSaveSettings({ llm_api_key_clear: true });
+    setS({ ...s, ...r.settings });
+    setApiKey("");
+  };
   const save = async () => {
     const keys = ["ollama_url", "ollama_model", "ollama_fast_model", "embed_model",
       "ocr_model", "searxng_url", "translate_to_cs", "auto_ingredients", "scraper_verify_ssl",
       "rag_k", "ollama_keep_alive", "bg_workers",
       "llm_match_enabled", "llm_match_model", "llm_match_batch_size",
-      "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature"];
+      "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
+      "llm_provider", "llm_api_url", "llm_api_model"];
     const vals = Object.fromEntries(keys.map((k) => [k, s[k]]));
+    if (apiKey.trim()) vals.llm_api_key = apiKey.trim();
     const r = await api.adminSaveSettings(vals);
     setS({ ...s, ...r.settings });
+    if (apiKey.trim()) setApiKey("");
     setSaved(true);
   };
 
@@ -94,6 +114,53 @@ function ToolsCard() {
             onChange={(e) => set("bg_workers", Number(e.target.value))} />
         </Field>
       </div>
+
+      <h3 className="mb-3 mt-6 text-sm font-bold text-ink/70">
+        LLM pro dávkové úlohy (párování / tagy / kategorie)
+      </h3>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Poskytovatel" hint="Ollama = lokální GPU · API = komerční služba (přesnější a rychlejší, platí se za tokeny)">
+          <select className={input} value={s.llm_provider || "ollama"}
+            onChange={(e) => set("llm_provider", e.target.value)}>
+            <option value="ollama">Lokální Ollama</option>
+            <option value="api">Komerční API (OpenAI-kompatibilní)</option>
+          </select>
+        </Field>
+      </div>
+      {s.llm_provider === "api" && (
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <Field label="API URL" hint="OpenAI: https://api.openai.com/v1 · DeepSeek: https://api.deepseek.com/v1 · funguje cokoliv s /chat/completions">
+            <input className={input} value={s.llm_api_url || ""}
+              onChange={(e) => set("llm_api_url", e.target.value)}
+              placeholder="https://api.openai.com/v1" />
+          </Field>
+          <Field label="Model" hint="levné mini modely bohatě stačí, např. gpt-4o-mini, deepseek-chat">
+            <input className={input} value={s.llm_api_model || ""}
+              onChange={(e) => set("llm_api_model", e.target.value)} placeholder="gpt-4o-mini" />
+          </Field>
+          <Field label="API klíč"
+            hint={s.llm_api_key_set ? "klíč je uložený – vyplň jen pro změnu" : "zatím žádný klíč"}>
+            <input type="password" className={input} value={apiKey}
+              onChange={(e) => { setApiKey(e.target.value); setSaved(false); }}
+              placeholder={s.llm_api_key_set ? "•••••••• (uloženo)" : "sk-…"} />
+          </Field>
+          <div className="flex items-end gap-2 pb-1">
+            <Button variant="ghost" onClick={testApi} disabled={apiTesting || !s.llm_api_key_set}>
+              {apiTesting ? "Testuji…" : "Test API"}
+            </Button>
+            {s.llm_api_key_set && (
+              <button onClick={forgetApiKey} className="text-sm text-miss hover:underline">
+                zapomenout klíč
+              </button>
+            )}
+          </div>
+          {apiTest && (
+            <p className={`sm:col-span-2 text-sm ${apiTest.ok ? "text-have" : "text-miss"}`}>
+              {apiTest.ok ? `✓ API odpovídá (model ${apiTest.model})` : `✗ ${apiTest.error}`}
+            </p>
+          )}
+        </div>
+      )}
 
       <h3 className="mb-3 mt-6 text-sm font-bold text-ink/70">
         Dávkové dopárování surovin (LLM)
@@ -1560,6 +1627,7 @@ export default function Admin() {
       <CrawlQueueCard />
       <MatchPanel />
       <LlmMatchCard />
+      <DecisionsCard />
       <TranslateCard />
       <ResetTranslateCard />
       <CategorizeCard />
@@ -1586,6 +1654,8 @@ function ServicesCard() {
       auto_translate_interval_min: Number(s.auto_translate_interval_min),
       auto_match_enabled: s.auto_match_enabled,
       auto_match_interval_min: Number(s.auto_match_interval_min),
+      lidl_sync_enabled: s.lidl_sync_enabled,
+      lidl_sync_interval_min: Number(s.lidl_sync_interval_min),
     });
     setS({ ...s, ...r.settings });
     setSaved(true);
@@ -1621,6 +1691,19 @@ function ServicesCard() {
             každých
             <input type="number" min="1" className={`${input} w-20`} value={s.auto_match_interval_min ?? 180}
               onChange={(e) => set("auto_match_interval_min", e.target.value)} />
+            min
+          </label>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" className="accent-basil" checked={!!s.lidl_sync_enabled}
+              onChange={(e) => set("lidl_sync_enabled", e.target.checked)} />
+            Synchronizace Lidl účtenek
+          </label>
+          <label className="flex items-center gap-1.5 text-sm text-ink/60">
+            každých
+            <input type="number" min="1" className={`${input} w-20`} value={s.lidl_sync_interval_min ?? 360}
+              onChange={(e) => set("lidl_sync_interval_min", e.target.value)} />
             min
           </label>
         </div>
@@ -1674,16 +1757,20 @@ function LlmMatchCard() {
       )}
       {st?.running ? (
         <Spinner label={
-          st.phase === "embeddings"
+          st.phase === "dictionary"
+            ? `Aplikuji slovník… (${st.dict_applied} řádků bez LLM)`
+            : st.phase === "embeddings"
             ? `Počítám embeddingy… ${st.embed_done}/${st.embed_total} dávek`
-            : `Párování… ${st.done}/${st.total} (napárováno ${st.applied})`
+            : st.phase === "kcal"
+            ? "Přepočítávám kalorie dotčených receptů…"
+            : `Párování… ${st.done}/${st.total} (napárováno ${st.applied}, návrhů ${st.suggested})`
         } />
       ) : (
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-3">
             <Button
               onClick={run}
-              disabled={!st || !st.enabled || !st.ollama || st.unmatched === 0}
+              disabled={!st || !st.enabled || !(st.llm_ready ?? st.ollama) || st.unmatched === 0}
             >
               Spustit dávkové dopárování
             </Button>
@@ -1692,20 +1779,203 @@ function LlmMatchCard() {
                 Vypnuto — zapni v Administraci → Nástroje (servery) → „Povolit dávkové dopárování".
               </span>
             )}
-            {st && st.enabled && !st.ollama && (
-              <span className="text-sm text-miss">Ollama není dostupná.</span>
+            {st && st.enabled && !(st.llm_ready ?? st.ollama) && (
+              <span className="text-sm text-miss">LLM není dostupné (Ollama / API klíč).</span>
             )}
-            {st && st.enabled && st.ollama && st.unmatched === 0 && (
+            {st && st.enabled && (st.llm_ready ?? st.ollama) && st.unmatched === 0 && (
               <span className="text-sm text-have">Nic k dopárování ✓</span>
             )}
           </div>
-          {st && (st.applied || st.rejected || st.nonfood) ? (
+          {st && (st.dict_applied || st.applied || st.suggested || st.no_match || st.nonfood || st.errors) ? (
             <p className="text-sm text-ink/60">
-              Poslední běh: napárováno {st.applied}, zamítnuto {st.rejected}, non-food {st.nonfood}
+              Poslední běh: slovníkem {st.dict_applied} řádků · LLM napárovalo {st.applied} ·
+              návrhy k potvrzení {st.suggested} · bez shody {st.no_match} · non-food {st.nonfood}
+              {st.errors ? <span className="text-miss"> · chyby {st.errors}</span> : null}
+              {" "}<span className="text-ink/45">(návrhy a bez shody čekají v katalogu níže)</span>
             </p>
           ) : null}
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
+      )}
+    </section>
+  );
+}
+
+const DECISION_STATUS = {
+  suggested: ["návrh", "bg-amber-100 text-amber-700"],
+  no_match: ["bez shody", "bg-miss/10 text-miss"],
+  error: ["chyba", "bg-miss/10 text-miss"],
+  applied: ["napárováno", "bg-have/10 text-have"],
+  nonfood: ["není surovina", "bg-ink/5 text-ink/45"],
+  ignored: ["ignorováno", "bg-ink/5 text-ink/45"],
+};
+
+function DecisionRow({ d, busy, onResolve }) {
+  const [newName, setNewName] = useState("");
+  const [label, cls] = DECISION_STATUS[d.status] || [d.status, "bg-ink/5 text-ink/45"];
+  const open = d.status === "suggested" || d.status === "no_match" || d.status === "error";
+  return (
+    <li className="rounded-lg border border-line/70 p-3">
+      <div className="mb-1 flex flex-wrap items-center gap-2 text-sm">
+        <span className="font-medium">{d.sample_text}</span>
+        <span className={`rounded-full px-2 py-0.5 text-xs ${cls}`}>{label}</span>
+        {d.occurrences > 0 && <span className="nums text-xs text-ink/45">×{d.occurrences} řádků</span>}
+        {d.confidence != null && (
+          <span className="nums text-xs text-ink/45">jistota {Math.round(d.confidence * 100)} %</span>
+        )}
+        {d.model && <span className="text-xs text-ink/35">{d.model}</span>}
+      </div>
+      {(d.ingredient_name || d.error) && (
+        <p className="mb-2 text-xs text-ink/55">
+          {d.ingredient_name && <>návrh: <b>{d.ingredient_name}</b></>}
+          {d.error && <span className="text-miss"> {d.error}</span>}
+        </p>
+      )}
+      {open ? (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          {d.status === "suggested" && d.ingredient_id && (
+            <Button onClick={() => onResolve({ action: "accept" })} disabled={busy}>
+              {busy ? "…" : `Přijmout „${d.ingredient_name}"`}
+            </Button>
+          )}
+          <div className="min-w-0 flex-1">
+            <IngredientPicker
+              placeholder="Přiřadit jinou surovinu…"
+              onPick={(o) => onResolve({ action: "assign", ingredient_id: o.id })}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && newName.trim()
+                && onResolve({ action: "assign", new_name: newName.trim() })}
+              placeholder="…nebo nová surovina"
+              className="w-40 rounded-lg border border-line bg-paper px-3 py-2 text-sm outline-none focus:border-basil"
+            />
+            <button onClick={() => onResolve({ action: "nonfood" })} disabled={busy}
+              className="text-xs text-ink/50 hover:text-ink hover:underline">není surovina</button>
+            <button onClick={() => onResolve({ action: "ignore" })} disabled={busy}
+              className="text-xs text-ink/50 hover:text-ink hover:underline">ignorovat</button>
+            <button onClick={() => onResolve({ action: "retry" })} disabled={busy}
+              className="text-xs text-ink/50 hover:text-ink hover:underline"
+              title="Smaže rozhodnutí – příští běh dopárování se AI zeptá znovu">zeptat se znovu</button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center gap-3 text-xs text-ink/45">
+          {d.status !== "applied" && (
+            <button onClick={() => onResolve({ action: "retry" })} disabled={busy}
+              className="hover:text-ink hover:underline">zeptat se znovu</button>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function DecisionsCard() {
+  const [status, setStatus] = useState("review");
+  const [q, setQ] = useState("");
+  const [data, setData] = useState(null);
+  const [offset, setOffset] = useState(0);
+  const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const LIMIT = 30;
+
+  const load = () =>
+    api.decisions({ status, q, limit: LIMIT, offset }).then(setData).catch(() => {});
+  useEffect(() => { setOffset(0); }, [status, q]);
+  useEffect(() => { load(); }, [status, q, offset]);
+
+  const resolve = async (id, body) => {
+    setBusy(id);
+    setMsg(null);
+    try {
+      const r = await api.resolveDecision(id, body);
+      if (r.rows !== undefined) {
+        setMsg(`Napárováno ${r.rows} řádků${r.ingredient_name ? ` na „${r.ingredient_name}"` : ""}.`);
+      }
+      load();
+    } catch (e) {
+      setMsg(`chyba: ${e?.message || e}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sum = data?.summary || {};
+  const reviewCount = (sum.suggested || 0) + (sum.no_match || 0) + (sum.error || 0);
+  const chips = [
+    ["review", "k vyřešení", reviewCount],
+    ["suggested", "návrhy", sum.suggested || 0],
+    ["no_match", "bez shody", sum.no_match || 0],
+    ["error", "chyby", sum.error || 0],
+    ["applied", "napárováno", sum.applied || 0],
+    ["nonfood", "není surovina", sum.nonfood || 0],
+    ["ignored", "ignorováno", sum.ignored || 0],
+    ["", "vše", Object.values(sum).reduce((a, b) => a + b, 0)],
+  ];
+
+  const items = data?.items ?? null;
+  const total = data?.total ?? 0;
+  const page = Math.floor(offset / LIMIT) + 1;
+  const pages = Math.max(1, Math.ceil(total / LIMIT));
+
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <h2 className="mb-1 text-lg font-bold">Katalog rozhodnutí (párování)</h2>
+      <p className="mb-4 text-sm text-ink/60">
+        Každý výsledek dávkového dopárování se tu ukládá – i zamítnutí a chyby.
+        AI se na už rozhodnuté položky znovu neptá. „Návrhy" jsou shody s nízkou
+        jistotou čekající na tvoje potvrzení; „bez shody" AI nedokázala přiřadit
+        a čekají na ruční výběr.
+      </p>
+
+      <div className="mb-3 flex flex-wrap items-center gap-1.5">
+        {chips.map(([val, label, n]) => (
+          <button key={label} onClick={() => setStatus(val)}
+            className={`nums rounded-full border px-2.5 py-1 text-xs ${
+              status === val ? "border-basil text-basil-dark" : "border-line text-ink/50"}`}>
+            {label} {n}
+          </button>
+        ))}
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="hledat…"
+          className="ml-auto w-40 rounded-lg border border-line bg-paper px-3 py-1.5 text-sm outline-none focus:border-basil"
+        />
+      </div>
+      {msg && <p className="mb-3 text-sm text-ink/70">{msg}</p>}
+
+      {items === null ? (
+        <Spinner label="Načítám katalog…" />
+      ) : items.length === 0 ? (
+        <p className="text-sm text-ink/45">
+          {status === "review"
+            ? "Nic nečeká na rozhodnutí ✓ (spusť dávkové dopárování výše, ať se katalog plní)"
+            : "Nic tu není (podle filtru)."}
+        </p>
+      ) : (
+        <>
+          <ul className="space-y-2">
+            {items.map((d) => (
+              <DecisionRow key={d.id} d={d} busy={busy === d.id}
+                onResolve={(body) => resolve(d.id, body)} />
+            ))}
+          </ul>
+          <div className="mt-3 flex items-center justify-between text-sm text-ink/50">
+            <span className="nums">{offset + 1}–{Math.min(offset + LIMIT, total)} z {total}</span>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setOffset(Math.max(0, offset - LIMIT))} disabled={offset === 0}
+                className="rounded-lg border border-line px-3 py-1 disabled:opacity-40">← předchozí</button>
+              <span className="nums text-xs">{page}/{pages}</span>
+              <button onClick={() => setOffset(offset + LIMIT)} disabled={offset + LIMIT >= total}
+                className="rounded-lg border border-line px-3 py-1 disabled:opacity-40">další →</button>
+            </div>
+          </div>
+        </>
       )}
     </section>
   );
@@ -1754,14 +2024,17 @@ function CategorizeCard() {
       ) : (
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-3">
-            <Button onClick={run} disabled={!st || !st.ollama || st.uncategorized === 0}>
+            <Button onClick={run} disabled={!st || !(st.llm_ready ?? st.ollama) || st.uncategorized === 0}>
               Zařadit do kategorií
             </Button>
-            {st && !st.ollama && <span className="text-sm text-miss">Ollama není dostupná.</span>}
-            {st && st.ollama && st.uncategorized === 0 && (
+            {st && !(st.llm_ready ?? st.ollama) && <span className="text-sm text-miss">LLM není dostupné (Ollama / API klíč).</span>}
+            {st && (st.llm_ready ?? st.ollama) && st.uncategorized === 0 && (
               <span className="text-sm text-have">Vše zařazeno ✓</span>
             )}
           </div>
+          {st?.errors > 0 && !st.running && (
+            <p className="text-xs text-miss">Poslední běh: {st.errors} dávek selhalo (zkusí se příště znovu).</p>
+          )}
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}
@@ -1813,14 +2086,17 @@ function TagCard() {
       ) : (
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-3">
-            <Button onClick={run} disabled={!st || !st.ollama || st.untagged === 0}>
+            <Button onClick={run} disabled={!st || !(st.llm_ready ?? st.ollama) || st.untagged === 0}>
               Otagovat recepty
             </Button>
-            {st && !st.ollama && <span className="text-sm text-miss">Ollama není dostupná.</span>}
-            {st && st.ollama && st.untagged === 0 && (
+            {st && !(st.llm_ready ?? st.ollama) && <span className="text-sm text-miss">LLM není dostupné (Ollama / API klíč).</span>}
+            {st && (st.llm_ready ?? st.ollama) && st.untagged === 0 && (
               <span className="text-sm text-have">Vše otagováno ✓</span>
             )}
           </div>
+          {st?.errors > 0 && !st.running && (
+            <p className="text-xs text-miss">Poslední běh: {st.errors} dávek selhalo (zkusí se příště znovu).</p>
+          )}
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}

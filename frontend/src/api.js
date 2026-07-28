@@ -255,6 +255,15 @@ export const api = {
   llmMatchStatus: () => afetch("/api/maintenance/llm-match-status").then(J),
   runLlmMatch: () => afetch("/api/maintenance/llm-match", { method: "POST" }).then(J),
 
+  decisions: (params = {}) => afetch(`/api/maintenance/decisions${qs(params)}`).then(J),
+  resolveDecision: (id, body) =>
+    afetch(`/api/maintenance/decisions/${id}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(J),
+  testLlmApi: () => afetch("/api/admin/test-llm-api").then(J),
+
   sysVersion: () => afetch("/api/system/version").then(J),
   sysCheck: () => afetch("/api/system/check", { method: "POST" }).then(J),
   sysUpdate: () => afetch("/api/system/update", { method: "POST" }).then(J),
