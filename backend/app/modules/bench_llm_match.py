@@ -84,10 +84,16 @@ def run(sample_size: int, batch_sizes: list[int], num_ctxs: list[int], temps: li
             if out is None:
                 total += len(chunk)
                 continue
-            got = {it.get("input"): it.get("ingredient_id") for it in out.get("items", [])}
-            for raw in inputs:
+            # odpověď se páruje podle indexu `i` (stejně jako v llm_match.py)
+            got = {}
+            for it in out.get("items", []):
+                try:
+                    got[int(it.get("i"))] = it.get("ingredient_id")
+                except (TypeError, ValueError):
+                    continue
+            for j, raw in enumerate(inputs):
                 total += 1
-                if got.get(raw) == truth[raw]:
+                if got.get(j) == truth[raw]:
                     correct += 1
 
         acc = correct / total if total else 0.0

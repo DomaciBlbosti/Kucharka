@@ -16,7 +16,7 @@ from sqlalchemy import func, or_, select
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Ingredient
-from .ollamachat import chat_json
+from . import llmclient
 
 log = logging.getLogger("kucharka.categorize")
 
@@ -28,7 +28,7 @@ TOP = [
 
 _BATCH = 25
 _lock = threading.Lock()
-_state: dict = {"running": False, "done": 0, "total": 0, "finished_at": None}
+_state: dict = {"running": False, "done": 0, "total": 0, "errors": 0, "finished_at": None}
 
 _SCHEMA = {
     "type": "object",
@@ -77,7 +77,7 @@ def status() -> dict:
 
 def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
     """pairs = [(id, name)]; přiřadí category_path a uloží."""
-    if not settings.ollama_enabled or not pairs:
+    if not llmclient.is_available() or not pairs:
         return
     listing = "\n".join(f"{i}. {name}" for i, (_id, name) in enumerate(pairs))
     prompt = (
@@ -88,17 +88,15 @@ def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
         "Odpověz POUZE JSON {\"items\":[{\"i\":<index>,\"category_path\":\"...\"}]}.\n"
         f"Potraviny:\n{listing}"
     )
-    out = chat_json(
-        settings.ollama_url,
-        settings.ollama_fast_model,
+    out = llmclient.structured_json(
         prompt,
-        keep_alive=settings.ollama_keep_alive,
+        schema=_SCHEMA,
         timeout=max(settings.http_timeout, 120),
-        format_schema=_SCHEMA,
         num_ctx=8192,
     )
     if out is None:
         log.warning("kategorizace dávky selhala (volání modelu nebo parsování).")
+        _inc("errors")
         _inc("done", len(pairs))
         return
     items = out.get("items", [])
@@ -133,7 +131,7 @@ def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
 
 
 def categorize_all(only_missing: bool = True) -> None:
-    _set(running=True, done=0, total=0, finished_at=None)
+    _set(running=True, done=0, total=0, errors=0, finished_at=None)
     db = SessionLocal()
     try:
         stmt = select(Ingredient.id, Ingredient.name_cs)

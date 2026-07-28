@@ -18,13 +18,13 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Recipe, RecipeTag, Tag
 from ..seed.starter_tags import NAMESPACE_LABELS
-from .ollamachat import chat_json
+from . import llmclient
 
 log = logging.getLogger("kucharka.tagging")
 
 _BATCH = 6
 _lock = threading.Lock()
-_state: dict = {"running": False, "done": 0, "total": 0, "tagged": 0, "finished_at": None}
+_state: dict = {"running": False, "done": 0, "total": 0, "tagged": 0, "errors": 0, "finished_at": None}
 
 _SCHEMA = {
     "type": "object",
@@ -112,17 +112,15 @@ def _tag_batch(recipe_ids: list[int]) -> None:
             '{"items":[{"i":<index>,"tags":["chod:hlavni-jidlo", ...]}]}.\n\n'
             f"Dostupné tagy:\n{vocab}\n\nRecepty:\n{listing}"
         )
-        out = chat_json(
-            settings.ollama_url,
-            settings.ollama_fast_model,
+        out = llmclient.structured_json(
             prompt,
-            keep_alive=settings.ollama_keep_alive,
+            schema=_SCHEMA,
             timeout=max(settings.http_timeout, 120),
-            format_schema=_SCHEMA,
             num_ctx=8192,
         )
         if out is None:
             log.warning("otagování dávky selhalo (volání modelu nebo parsování).")
+            _inc("errors")
             _inc("done", len(recipes))
             return
 
@@ -148,6 +146,7 @@ def _tag_batch(recipe_ids: list[int]) -> None:
         db.commit()
     except Exception as exc:  # noqa: BLE001
         log.warning("otagování dávky selhalo: %s", exc)
+        _inc("errors")
         db.rollback()
     finally:
         db.close()
@@ -155,7 +154,7 @@ def _tag_batch(recipe_ids: list[int]) -> None:
 
 
 def tag_all(only_missing: bool = True) -> None:
-    _set(running=True, done=0, total=0, tagged=0, finished_at=None)
+    _set(running=True, done=0, total=0, tagged=0, errors=0, finished_at=None)
     db = SessionLocal()
     try:
         stmt = select(Recipe.id)

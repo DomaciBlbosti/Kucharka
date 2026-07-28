@@ -79,6 +79,16 @@ class Settings:
         self.llm_match_batch_pause_s: float = float(_env("LLM_MATCH_BATCH_PAUSE_S", "2"))
         self.llm_match_failure_pause_s: float = float(_env("LLM_MATCH_FAILURE_PAUSE_S", "20"))
 
+        # --- Volitelné: komerční LLM API (OpenAI-kompatibilní) ----------
+        # Pro dávkové úlohy (párování, tagy, kategorie) jde místo lokální
+        # Ollamy použít levné komerční API (OpenAI, DeepSeek, Groq, Mistral…
+        # cokoliv s /chat/completions). Lokální GPU pak zůstává jen na
+        # embeddingy/OCR/RAG. Přepíná se přes LLM_PROVIDER=api.
+        self.llm_provider: str = _env("LLM_PROVIDER", "ollama").lower() or "ollama"
+        self.llm_api_url: str = _env("LLM_API_URL", "https://api.openai.com/v1")
+        self.llm_api_key: str = _env("LLM_API_KEY", "")
+        self.llm_api_model: str = _env("LLM_API_MODEL", "gpt-4o-mini")
+
         # --- Služby na pozadí (překlad / párování) ---------------------
         self.auto_translate_enabled: bool = _truthy(_env("AUTO_TRANSLATE_ENABLED", "false"))
         self.auto_translate_interval_min: int = int(_env("AUTO_TRANSLATE_INTERVAL_MIN", "180"))
@@ -175,6 +185,15 @@ class Settings:
     def ollama_fast_model(self) -> str:
         return self._fast_model or self.ollama_model
 
+    @property
+    def llm_api_enabled(self) -> bool:
+        """Komerční API je zvolené A nakonfigurované."""
+        return (
+            self.llm_provider == "api"
+            and bool(self.llm_api_key)
+            and bool(self.llm_api_url)
+        )
+
     ADMIN_KEYS = (
         "ollama_url", "ollama_model", "ollama_fast_model", "embed_model", "searxng_url",
         "ocr_model",
@@ -188,6 +207,7 @@ class Settings:
         "lidl_sync_enabled", "lidl_sync_interval_min",
         "llm_match_enabled", "llm_match_model", "llm_match_batch_size",
         "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
+        "llm_provider", "llm_api_url", "llm_api_key", "llm_api_model",
     )
 
     CRAWLER_KEYS = ("crawler_enabled", "crawler_interval_min", "crawler_max_per_run")
@@ -229,6 +249,12 @@ class Settings:
             "llm_match_min_confidence": self.llm_match_min_confidence,
             "llm_match_num_ctx": self.llm_match_num_ctx,
             "llm_match_temperature": self.llm_match_temperature,
+            "llm_provider": self.llm_provider,
+            "llm_api_url": self.llm_api_url,
+            # klíč se NIKDY nevrací ven, jen příznak, že je nastavený
+            "llm_api_key_set": bool(self.llm_api_key),
+            "llm_api_model": self.llm_api_model,
+            "llm_api_enabled": self.llm_api_enabled,
             "ollama_enabled": self.ollama_enabled,
             "searxng_enabled": self.searxng_enabled,
             "auth_enabled": self.auth_enabled,
@@ -238,8 +264,17 @@ class Settings:
         if key not in self.ADMIN_KEYS:
             return False
         if key in ("ollama_url", "ollama_model", "embed_model", "searxng_url", "ocr_model", "hmi_token",
-                   "llm_match_model"):
+                   "llm_match_model", "llm_api_url", "llm_api_model"):
             setattr(self, key, str(value or "").strip())
+        elif key == "llm_provider":
+            v = str(value or "").strip().lower()
+            self.llm_provider = v if v in ("ollama", "api") else "ollama"
+        elif key == "llm_api_key":
+            # Prázdná hodnota klíč NEMAŽE (formulář ho z bezpečnostních důvodů
+            # nikdy nedostane zpět, takže by se jinak smazal při každém uložení).
+            v = str(value or "").strip()
+            if v:
+                self.llm_api_key = v
         elif key == "ollama_fast_model":
             self._fast_model = str(value or "").strip()
         elif key == "ollama_keep_alive":

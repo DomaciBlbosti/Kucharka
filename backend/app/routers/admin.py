@@ -78,6 +78,14 @@ def test_ollama():
     }
 
 
+@router.get("/test-llm-api")
+def test_llm_api():
+    """Ověří komerční LLM API malým strukturovaným voláním (levné, pár tokenů)."""
+    from ..modules import llmclient
+
+    return llmclient.test_call()
+
+
 class SettingsUpdate(BaseModel):
     values: dict
 
@@ -93,8 +101,18 @@ def put_settings(req: SettingsUpdate, db: Session = Depends(get_db)):
     crawler_changed = False
     service_changed = False
     for key, value in req.values.items():
+        if key == "llm_api_key_clear" and value:
+            # explicitní zapomenutí API klíče (prázdná hodnota klíč nemaže)
+            settings.llm_api_key = ""
+            row = db.get(AppSetting, "llm_api_key")
+            if row is not None:
+                db.delete(row)
+            applied[key] = True
+            continue
         if key not in settings.ADMIN_KEYS:
             continue
+        if key == "llm_api_key" and not str(value or "").strip():
+            continue  # prázdný klíč z formuláře = beze změny, nepřepisovat v DB
         settings.set_admin(key, value)
         if key in settings.CRAWLER_KEYS:
             crawler_changed = True
