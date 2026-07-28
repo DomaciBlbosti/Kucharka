@@ -40,6 +40,8 @@ const J = async (r) => {
   return r.status === 204 ? null : r.json();
 };
 
+let _settingsCache = null; // sdílený promise GET /api/admin/settings
+
 const qs = (params) => {
   const u = new URLSearchParams();
   Object.entries(params || {}).forEach(([k, v]) => {
@@ -275,7 +277,17 @@ export const api = {
     return afetch(`/api/system/log${qs ? `?${qs}` : ""}`).then(J);
   },
 
-  adminSettings: () => afetch("/api/admin/settings").then(J),
+  // Nastavení čte při otevření administrace ~8 karet naráz – sdílíme jeden
+  // request přes memoizovaný promise; uložení cache invaliduje.
+  adminSettings: () => {
+    if (!_settingsCache) {
+      _settingsCache = afetch("/api/admin/settings").then(J).catch((e) => {
+        _settingsCache = null; // neúspěch necachovat
+        throw e;
+      });
+    }
+    return _settingsCache.then((s) => ({ ...s })); // každý volající vlastní kopii
+  },
   testOllama: () => afetch("/api/admin/test-ollama").then(J),
 
   lidlAccounts: () => afetch("/api/lidl/accounts").then(J),
@@ -324,12 +336,14 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then(J),
-  adminSaveSettings: (values) =>
-    afetch("/api/admin/settings", {
+  adminSaveSettings: (values) => {
+    _settingsCache = null; // po uložení ať si karty načtou čerstvý stav
+    return afetch("/api/admin/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ values }),
-    }).then(J),
+    }).then(J);
+  },
   domainsImport: (file) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -362,4 +376,5 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password }),
     }).then(J),
+  logout: () => afetch("/api/auth/logout", { method: "POST" }).then(J),
 };

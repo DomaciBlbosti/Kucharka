@@ -43,6 +43,7 @@ class IndexAdd:
     name: str
     cols: tuple[str, ...]
     unique: bool = False
+    fulltext: bool = False  # jen MariaDB/MySQL; na SQLite se přeskočí
 
 
 # Sloupce, které musí existovat na již vytvořených tabulkách.
@@ -94,6 +95,12 @@ _INDEXES: tuple[IndexAdd, ...] = (
     # tenhle dotaz sahají při KAŽDÉM načtení, u 150k+ receptů to bez indexu
     # znatelně brzdilo.
     IndexAdd("recipe_ingredient", "ix_ri_recipe_ingredient", ("recipe_id", "ingredient_id")),
+    # Fulltext pro hledání receptů (název + postup). ILIKE '%q%' na 100k+
+    # řádcích skenuje celou tabulku; MATCH..AGAINST je řádově rychlejší a
+    # umí i hledání v postupu. Vytvoření na velké tabulce chvíli trvá –
+    # jednorázově při prvním startu po aktualizaci.
+    IndexAdd("recipe", "ft_recipe_title_instructions", ("title", "instructions"),
+             fulltext=True),
 )
 
 
@@ -158,6 +165,8 @@ def _add_indexes(engine: Engine, insp, existing_tables: set[str]) -> None:
     for spec in _INDEXES:
         if spec.table not in existing_tables:
             continue
+        if spec.fulltext and engine.dialect.name == "sqlite":
+            continue  # SQLite FULLTEXT syntaxi nezná (hledání tam jede přes LIKE)
         existing = {ix["name"] for ix in insp.get_indexes(spec.table)}
         # UNIQUE constrainty hlásí get_unique_constraints jinde:
         if spec.unique:
@@ -168,7 +177,7 @@ def _add_indexes(engine: Engine, insp, existing_tables: set[str]) -> None:
         if spec.name in existing:
             continue
         cols = ", ".join(spec.cols)
-        kind = "UNIQUE INDEX" if spec.unique else "INDEX"
+        kind = "UNIQUE INDEX" if spec.unique else "FULLTEXT INDEX" if spec.fulltext else "INDEX"
         try:
             with engine.begin() as conn:
                 conn.execute(text(

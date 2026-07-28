@@ -155,6 +155,10 @@ class Settings:
         # /app volume (ten spravuje git self-update), ať je fotky nesmaže.
         self.upload_dir: str = _env("UPLOAD_DIR", "/data/uploads")
         self.rag_k: int = int(_env("RAG_K", "6"))  # kolik receptů jako kontext
+        # Strop RAG indexu: kolik nejlepších receptů (vlastní hodnocení >
+        # hodnocení webu > novost) se embedduje. 0 = bez stropu. U 100k+
+        # receptů drží indexaci i paměť v rozumných mezích.
+        self.rag_max_recipes: int = int(_env("RAG_MAX_RECIPES", "20000"))
         # Self-update z Gitu přes WEB UI
         self.update_enabled: bool = _env("UPDATE_ENABLED", "false").lower() in (
             "1", "true", "yes", "on"
@@ -199,7 +203,7 @@ class Settings:
         "ocr_model",
         "hmi_token",
         "recipe_domains", "translate_to_cs", "auto_ingredients",
-        "scraper_verify_ssl", "rag_k",
+        "scraper_verify_ssl", "rag_k", "rag_max_recipes",
         "crawler_enabled", "crawler_interval_min", "crawler_max_per_run",
         "ollama_keep_alive", "bg_workers",
         "auto_translate_enabled", "auto_translate_interval_min",
@@ -230,6 +234,7 @@ class Settings:
             "auto_ingredients": self.auto_ingredients,
             "scraper_verify_ssl": self.scraper_verify is not False,
             "rag_k": self.rag_k,
+            "rag_max_recipes": self.rag_max_recipes,
             "crawler_enabled": self.crawler_enabled,
             "crawler_interval_min": self.crawler_interval_min,
             "crawler_max_per_run": self.crawler_max_per_run,
@@ -297,6 +302,11 @@ class Settings:
             else:
                 bundle = "/etc/ssl/certs/ca-certificates.crt"
                 self.scraper_verify = bundle if os.path.exists(bundle) else True
+        elif key == "rag_max_recipes":
+            try:
+                self.rag_max_recipes = max(0, int(value))  # 0 = bez stropu
+            except (TypeError, ValueError):
+                pass
         elif key in ("llm_match_min_confidence", "llm_match_temperature"):
             try:
                 setattr(self, key, float(value))

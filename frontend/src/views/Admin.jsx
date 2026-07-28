@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, withToken } from "../api";
+import { api, auth, withToken } from "../api";
 import { IngredientPicker } from "../components/IngredientPicker";
 import { Button, Spinner } from "../components/ui";
 
@@ -59,7 +59,7 @@ function ToolsCard() {
   const save = async () => {
     const keys = ["ollama_url", "ollama_model", "ollama_fast_model", "embed_model",
       "ocr_model", "searxng_url", "translate_to_cs", "auto_ingredients", "scraper_verify_ssl",
-      "rag_k", "ollama_keep_alive", "bg_workers",
+      "rag_k", "rag_max_recipes", "ollama_keep_alive", "bg_workers",
       "llm_match_enabled", "llm_match_model", "llm_match_batch_size",
       "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
       "llm_provider", "llm_api_url", "llm_api_model"];
@@ -104,6 +104,10 @@ function ToolsCard() {
         <Field label="RAG – počet receptů jako kontext">
           <input type="number" className={input} value={s.rag_k ?? 6}
             onChange={(e) => set("rag_k", Number(e.target.value))} />
+        </Field>
+        <Field label="RAG – strop indexovaných receptů" hint="indexují se nejlépe hodnocené; 0 = vše (pomalé u 100k+)">
+          <input type="number" min="0" step="1000" className={input} value={s.rag_max_recipes ?? 20000}
+            onChange={(e) => set("rag_max_recipes", Number(e.target.value))} />
         </Field>
         <Field label="Držet model v paměti (keep_alive)" hint="méně reloadů = rychleji">
           <input className={input} value={s.ollama_keep_alive || ""}
@@ -990,7 +994,7 @@ function MatchPanel() {
     st.rows_total > 0
       ? Math.round(((st.rows_total - st.rows_unmatched) / st.rows_total) * 100)
       : 100;
-  const phaseLabel = { fuzzy: "páruji proti databázi", llm: "doptávám se AI", kcal: "přepočítávám kalorie" };
+  const phaseLabel = { fuzzy: "páruji proti slovníku a databázi", kcal: "přepočítávám kalorie" };
 
   const start = async () => {
     await api.backfill(true);
@@ -1017,7 +1021,8 @@ function MatchPanel() {
       </div>
       <p className="mb-4 text-sm text-ink/60">
         Recepty s nenapárovanými surovinami nemají správný cook-meter ani
-        kalorie. Tohle je zkusí dopárovat a chybějící suroviny nechá doplnit AI.
+        kalorie. Tohle je rychlá fáze bez AI: slovník aliasů + fuzzy match.
+        Co neprojde, řeší „Dávkové dopárování (LLM)" níže a katalog rozhodnutí.
       </p>
 
       <div className="mb-3 h-2 overflow-hidden rounded-full bg-line">
@@ -1032,7 +1037,6 @@ function MatchPanel() {
           </div>
           <div className="nums flex gap-4 text-sm text-ink/55">
             <span>napárováno <b className="text-have">{st.matched}</b></span>
-            <span>nově vytvořeno {st.created}</span>
           </div>
         </div>
       ) : (
@@ -1051,8 +1055,8 @@ function MatchPanel() {
               <Button variant="ghost" onClick={() => setManual(true)}>
                 Ručně…
               </Button>
-              <Button onClick={start} disabled={!st.ollama}>
-                Dopárovat přes AI
+              <Button onClick={start}>
+                Dopárovat (slovník + fuzzy)
               </Button>
             </div>
           ) : (
@@ -1061,11 +1065,6 @@ function MatchPanel() {
         </div>
       )}
       {purgeMsg && <p className="mt-2 text-xs text-ink/50">{purgeMsg}</p>}
-      {!st.ollama && st.rows_unmatched > 0 && (
-        <p className="mt-2 text-xs text-ink/45">
-          Pro doplnění chybějících surovin zapni Ollamu (OLLAMA_URL).
-        </p>
-      )}
       {st.error && (
         <p className="mt-2 text-xs text-miss">Poslední běh skončil chybou: {st.error}</p>
       )}
@@ -1351,6 +1350,15 @@ function SecurityCard() {
       </div>
       <div className="mt-4 flex items-center gap-3">
         <Button onClick={save}>{enabled ? "Změnit / vypnout" : "Nastavit heslo"}</Button>
+        {enabled && (
+          <Button variant="ghost" onClick={async () => {
+            try { await api.logout(); } catch { /* i při chybě pokračuj */ }
+            auth.clear();
+            window.location.reload();
+          }}>
+            Odhlásit se (toto zařízení)
+          </Button>
+        )}
         {msg && <span className="text-sm text-ink/60">{msg}</span>}
       </div>
     </section>

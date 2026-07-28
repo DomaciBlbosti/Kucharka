@@ -12,6 +12,7 @@ import random
 import re
 import threading
 import time
+import urllib.robotparser
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -191,6 +192,51 @@ def crawl_async(
     return True
 
 
+# ===================== robots.txt =====================
+# Slušnost k cizím webům: před scrapem URL se ověří robots.txt dané domény
+# (parsovaný jednou per doména a proces). Nedostupný/rozbitý robots.txt
+# neblokuje nic – chybějící soubor znamená "vše povoleno".
+_robots_cache: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+_robots_lock = threading.Lock()
+
+
+def _robots_for(domain: str) -> urllib.robotparser.RobotFileParser | None:
+    with _robots_lock:
+        if domain in _robots_cache:
+            return _robots_cache[domain]
+    rp: urllib.robotparser.RobotFileParser | None = urllib.robotparser.RobotFileParser()
+    try:
+        raw = _fetch_bytes(f"https://{domain}/robots.txt").decode("utf-8", "ignore")
+        rp.parse(raw.splitlines())
+    except Exception:  # noqa: BLE001 - bez robots.txt se neblokuje
+        rp = None
+    with _robots_lock:
+        _robots_cache[domain] = rp
+    return rp
+
+
+def robots_allowed(domain: str, url: str) -> bool:
+    rp = _robots_for(domain)
+    if rp is None:
+        return True
+    try:
+        return rp.can_fetch(settings.user_agent, url)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def robots_crawl_delay(domain: str) -> float | None:
+    """Crawl-delay z robots.txt (zastropovaný, ať jeden web nezablokuje běh)."""
+    rp = _robots_for(domain)
+    if rp is None:
+        return None
+    try:
+        d = rp.crawl_delay(settings.user_agent)
+        return min(float(d), 10.0) if d else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ===================== Procházení webů přes sitemapy =====================
 def _fetch_bytes(url: str) -> bytes:
     headers = {"User-Agent": settings.user_agent, "Accept-Language": "cs,en;q=0.8"}
@@ -347,6 +393,13 @@ def _process_one(db, row_id: int) -> str:
     row.attempts += 1
     with _lock:
         _state["found"] += 1
+    if not robots_allowed(row.domain, row.url):
+        row.status = "skip"
+        row.error = "Blokováno robots.txt."
+        with _lock:
+            _state["skipped"] += 1
+        db.commit()
+        return "skip"
     try:
         recipe = ingest_url(db, row.url)
         if recipe:
@@ -388,10 +441,15 @@ def _domain_worker(row_ids: list[int]) -> None:
     souběžně – na jeden web tak nikdy nemlátí víc vláken naráz."""
     db = SessionLocal()
     try:
+        # respektuj i Crawl-delay z robots.txt, pokud je přísnější než náš default
+        first = db.get(CrawlUrl, row_ids[0]) if row_ids else None
+        delay = settings.crawler_delay
+        if first is not None:
+            delay = max(delay, robots_crawl_delay(first.domain) or 0)
         for rid in row_ids:
             _process_one(db, rid)
-            if settings.crawler_delay > 0:
-                time.sleep(settings.crawler_delay)
+            if delay > 0:
+                time.sleep(delay)
     finally:
         db.close()
 

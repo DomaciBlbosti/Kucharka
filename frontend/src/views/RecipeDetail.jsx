@@ -91,6 +91,14 @@ export default function RecipeDetail() {
             <Meta icon="⏱">{r.total_time ? `${r.total_time} min` : null}</Meta>
             <Meta icon="🍽">{r.servings ? `${r.servings} porce` : null}</Meta>
             <Meta icon="🔥">{r.kcal_per_serving ? `${Math.round(r.kcal_per_serving)} kcal/porce` : null}</Meta>
+            {r.kcal_per_serving != null && r.nutrition_estimated_pct != null && r.nutrition_estimated_pct > 0 && (
+              <span
+                className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700"
+                title="Část surovin má výživu jen odhadnutou (AI odhad nebo neurčená gramáž) – kalorie ber orientačně."
+              >
+                ~{r.nutrition_estimated_pct} % odhad
+              </span>
+            )}
             {r.source_domain && (
               <a href={r.source_url} target="_blank" rel="noreferrer" className="text-sm text-basil underline-offset-2 hover:underline">
                 {r.source_domain} ↗
