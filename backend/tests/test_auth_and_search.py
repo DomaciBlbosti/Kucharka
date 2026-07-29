@@ -42,6 +42,10 @@ def _seed(db) -> dict:
                          ingredient_id=tajna.id, amount=100, unit="g", grams=100, kcal=100),
         # nenapárovaný řádek pro backfill (fuzzy na "kuřecí prsa")
         RecipeIngredient(recipe_id=r.id, raw_text="2 ks kuřecích prs"),
+        # nadpis skupiny (5 slov) – musí ho smazat automatický purge
+        RecipeIngredient(recipe_id=r.id, raw_text="Na vymazání a vysypání formy:"),
+        # builtin ne-surovina – zůstane nenapárovaná, ale slovník ji zná
+        RecipeIngredient(recipe_id=r.id, raw_text="alobal"),
     ])
     db.commit()
     return {"recipe": r.id, "kure": kure.id}
@@ -72,11 +76,21 @@ def run_tests() -> int:
         pct = r.json().get("nutrition_estimated_pct")
         check("detail nese nutrition_estimated_pct = 50 %", pct == 50, str(pct))
 
-        # ─── Backfill: fuzzy match + alias s lookup_key ──────────────────
+        # ─── Backfill: purge nadpisů + fuzzy match + alias s lookup_key ──
         out = backfill.backfill()
-        check("backfill napároval fuzzy řádek", out.get("rows_unmatched") == 0,
+        # zbývá jen "alobal" (builtin non-food – zůstává bez suroviny záměrně)
+        check("backfill napároval fuzzy řádek", out.get("rows_unmatched") == 1,
               str({k: out.get(k) for k in ('rows_unmatched', 'error')}))
         db.expire_all()
+        header = db.query(RecipeIngredient).filter_by(
+            raw_text="Na vymazání a vysypání formy:").one_or_none()
+        check("nadpis skupiny (5 slov) byl automaticky smazán", header is None)
+        alobal_alias = db.query(IngredientAlias).filter_by(
+            lookup_key=make_lookup_key("alobal")).one_or_none()
+        check("builtin ne-surovina 'alobal' je ve slovníku",
+              alobal_alias is not None and alobal_alias.kind == "packaging"
+              and alobal_alias.source == "builtin",
+              f"{alobal_alias and alobal_alias.kind}/{alobal_alias and alobal_alias.source}")
         row = db.query(RecipeIngredient).filter_by(raw_text="2 ks kuřecích prs").one()
         matched_name = db.get(Ingredient, row.ingredient_id).name_cs if row.ingredient_id else None
         # seed_starter obsahuje vlastní "kuřecí prsa" – stačí, že match míří na

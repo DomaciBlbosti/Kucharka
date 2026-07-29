@@ -75,6 +75,8 @@ _COLUMNS: tuple[ColumnAdd, ...] = (
     ColumnAdd("recipe", "local_thumb_path",    "VARCHAR(400) NULL"),
     ColumnAdd("recipe", "kcal_per_100g",       "FLOAT NULL"),
     ColumnAdd("recipe", "total_weight_g",      "FLOAT NULL"),
+    # MatchDecision – návrh nové suroviny od LLM (tabulka vznikla dřív bez něj)
+    ColumnAdd("match_decision", "suggested_name", "VARCHAR(200) NULL"),
 )
 
 # Změny existujících sloupců (pouze nezbytné).

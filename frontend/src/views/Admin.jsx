@@ -1769,6 +1769,8 @@ function LlmMatchCard() {
             ? `Aplikuji slovník… (${st.dict_applied} řádků bez LLM)`
             : st.phase === "embeddings"
             ? `Počítám embeddingy… ${st.embed_done}/${st.embed_total} dávek`
+            : st.phase === "nutrition"
+            ? "Odhaduji výživu nově založených surovin…"
             : st.phase === "kcal"
             ? "Přepočítávám kalorie dotčených receptů…"
             : `Párování… ${st.done}/${st.total} (napárováno ${st.applied}, návrhů ${st.suggested})`
@@ -1796,7 +1798,8 @@ function LlmMatchCard() {
           </div>
           {st && (st.dict_applied || st.applied || st.suggested || st.no_match || st.nonfood || st.errors) ? (
             <p className="text-sm text-ink/60">
-              Poslední běh: slovníkem {st.dict_applied} řádků · LLM napárovalo {st.applied} ·
+              Poslední běh: slovníkem {st.dict_applied} řádků · LLM napárovalo {st.applied}
+              {st.created ? <> (z toho {st.created} nově založených surovin)</> : null} ·
               návrhy k potvrzení {st.suggested} · bez shody {st.no_match} · non-food {st.nonfood}
               {st.errors ? <span className="text-miss"> · chyby {st.errors}</span> : null}
               {" "}<span className="text-ink/45">(návrhy a bez shody čekají v katalogu níže)</span>
@@ -1833,9 +1836,12 @@ function DecisionRow({ d, busy, onResolve }) {
         )}
         {d.model && <span className="text-xs text-ink/35">{d.model}</span>}
       </div>
-      {(d.ingredient_name || d.error) && (
+      {(d.ingredient_name || d.suggested_name || d.error) && (
         <p className="mb-2 text-xs text-ink/55">
           {d.ingredient_name && <>návrh: <b>{d.ingredient_name}</b></>}
+          {!d.ingredient_id && d.suggested_name && (
+            <>návrh AI: založit novou surovinu <b>„{d.suggested_name}"</b></>
+          )}
           {d.error && <span className="text-miss"> {d.error}</span>}
         </p>
       )}
@@ -1844,6 +1850,11 @@ function DecisionRow({ d, busy, onResolve }) {
           {d.status === "suggested" && d.ingredient_id && (
             <Button onClick={() => onResolve({ action: "accept" })} disabled={busy}>
               {busy ? "…" : `Přijmout „${d.ingredient_name}"`}
+            </Button>
+          )}
+          {d.status === "suggested" && !d.ingredient_id && d.suggested_name && (
+            <Button onClick={() => onResolve({ action: "accept" })} disabled={busy}>
+              {busy ? "…" : `Vytvořit „${d.suggested_name}"`}
             </Button>
           )}
           <div className="min-w-0 flex-1">

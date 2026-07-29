@@ -42,7 +42,10 @@ _FRACTION = {"½": 0.5, "¼": 0.25, "¾": 0.75, "⅓": 0.333, "⅔": 0.667}
 # ingrediencí a stejnou konvenci (text zakončený dvojtečkou) používá i OCR
 # receptů z fotky (viz photo_recipe.py) – proto ji poznáváme takhle napříč
 # celou appkou, ne jen na jednom místě.
-_HEADER_WORD_LIMIT = 4
+# Limit 6 slov: v produkci se objevovaly i delší nadpisy jako "Na vymazání
+# a vysypání formy:" (5 slov), které 4slovnému limitu proklouzly a plevelily
+# frontu párování po desítkách výskytů.
+_HEADER_WORD_LIMIT = 6
 
 
 def is_section_header(text: str) -> bool:

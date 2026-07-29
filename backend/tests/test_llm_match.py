@@ -204,6 +204,63 @@ def run_tests() -> int:
     res = resolve_decision(d_err.id, DecisionResolve(action="ignore"), db)
     check("ignore nastaví status ignored", res["decision"]["status"] == "ignored")
 
+    # ─── Nová surovina: auto-vytvoření (auto_ingredients=True) ───────────
+    # nejdřív uklidit zbylý error záznam, ať je fronta deterministická
+    for d in db.query(MatchDecision).filter_by(status="error").all():
+        resolve_decision(d.id, DecisionResolve(action="ignore"), db)
+    settings.auto_ingredients = True
+    db.add(RecipeIngredient(recipe_id=ids["recipe"], raw_text="1 balíček ztužovače šlehačky"))
+    db.commit()
+    fake.responses = [
+        {"items": [{"i": 0, "ingredient_id": None, "name_cs": "ztužovač šlehačky",
+                    "category": "food", "confidence": 0.9}]},
+        # druhé volání = dávkový odhad výživy nové suroviny
+        {"items": [{"i": 0, "kcal_100g": 380, "protein_100g": 0.5, "carbs_100g": 90,
+                    "fat_100g": 0.5, "density": None, "category": "ostatní"}]},
+    ]
+    fake.calls = 0
+    out = llm_match.process_batch()
+    check("auto-create: applied=1, created=1",
+          out.get("applied") == 1 and out.get("created") == 1, str(out))
+    from sqlalchemy import func as _f
+    ing_new = db.query(Ingredient).filter(
+        _f.lower(Ingredient.name_cs) == "ztužovač šlehačky").one_or_none()
+    check("auto-create: surovina existuje s odhadnutou výživou (source=ollama)",
+          ing_new is not None and ing_new.source == "ollama" and ing_new.kcal_100g == 380,
+          f"{ing_new and ing_new.source}/{ing_new and ing_new.kcal_100g}")
+    row_new2 = db.query(RecipeIngredient).filter_by(
+        raw_text="1 balíček ztužovače šlehačky").one()
+    db.refresh(row_new2)
+    check("auto-create: řádek je napárovaný", row_new2.ingredient_id == (ing_new.id if ing_new else None))
+
+    # ─── Nová surovina jako návrh (auto_ingredients=False) + accept ──────
+    settings.auto_ingredients = False
+    db.add(RecipeIngredient(recipe_id=ids["recipe"], raw_text="2 lžičky Glutasolu"))
+    db.commit()
+    fake.responses = [
+        {"items": [{"i": 0, "ingredient_id": None, "name_cs": "glutasol",
+                    "category": "food", "confidence": 0.85}]},
+    ]
+    llm_match.process_batch()
+    d_glut = db.query(MatchDecision).filter_by(
+        lookup_key=make_lookup_key("2 lžičky Glutasolu")).one_or_none()
+    check("bez auto_ingredients: návrh na založení v katalogu",
+          d_glut is not None and d_glut.status == "suggested"
+          and d_glut.suggested_name == "glutasol" and d_glut.ingredient_id is None,
+          f"{d_glut and d_glut.status}/{d_glut and d_glut.suggested_name}")
+    fake.responses = [
+        {"items": [{"i": 0, "kcal_100g": 250, "protein_100g": 10, "carbs_100g": 40,
+                    "fat_100g": 2, "density": None, "category": "koření"}]},
+    ]
+    res = resolve_decision(d_glut.id, DecisionResolve(action="accept"), db)
+    check("accept návrhu založí surovinu a napáruje", res.get("ok") is True
+          and res.get("rows") == 1, str(res))
+    ing_glut = db.query(Ingredient).filter(
+        _f.lower(Ingredient.name_cs) == "glutasol").one_or_none()
+    check("založená surovina má odhadnutou výživu",
+          ing_glut is not None and ing_glut.kcal_100g == 250,
+          str(ing_glut and ing_glut.kcal_100g))
+
     # ─── Přehled endpointu decisions ─────────────────────────────────────
     from app.routers.maintenance import list_decisions
 
