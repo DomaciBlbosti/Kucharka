@@ -58,6 +58,11 @@ def init_db(retries: int = 10) -> None:
         nt = seed_tags(db)
         if nt:
             log.info("Naseedováno %s kanonických tagů.", nt)
+        from .seed.nonfood_aliases import seed_nonfood
+
+        nn = seed_nonfood(db)
+        if nn:
+            log.info("Naseedováno %s builtin ne-surovin (alobal, pečicí papír…).", nn)
         _load_settings_overrides(db)
     finally:
         db.close()

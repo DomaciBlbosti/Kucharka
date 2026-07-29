@@ -255,6 +255,7 @@ def _decision_out(d: MatchDecision) -> dict:
         "category": d.category,
         "ingredient_id": d.ingredient_id,
         "ingredient_name": d.ingredient.name_cs if d.ingredient else None,
+        "suggested_name": d.suggested_name,
         "confidence": d.confidence,
         "model": d.model,
         "occurrences": d.occurrences,
@@ -340,11 +341,17 @@ def resolve_decision(decision_id: int, req: DecisionResolve, db: Session = Depen
 
     if req.action in ("accept", "assign"):
         if req.action == "accept":
-            if not d.ingredient_id:
+            if d.ingredient_id:
+                ing = db.get(Ingredient, d.ingredient_id)
+                if ing is None:
+                    raise HTTPException(404, "Navržená surovina už neexistuje.")
+            elif d.suggested_name:
+                # LLM navrhlo založit novou surovinu → založ a zkus doplnit výživu
+                ing = llm_match.get_or_create_ingredient(db, d.suggested_name)
+                if ing.kcal_100g is None:
+                    llm_match.estimate_nutrition(db, [ing])
+            else:
                 raise HTTPException(400, "Položka nemá žádný návrh k přijetí.")
-            ing = db.get(Ingredient, d.ingredient_id)
-            if ing is None:
-                raise HTTPException(404, "Navržená surovina už neexistuje.")
         elif req.ingredient_id:
             ing = db.get(Ingredient, req.ingredient_id)
             if ing is None:

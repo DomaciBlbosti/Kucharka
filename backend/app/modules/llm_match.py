@@ -52,7 +52,7 @@ _state: dict = {
     "running": False, "phase": None, "done": 0, "total": 0,
     "embed_done": 0, "embed_total": 0,
     "dict_applied": 0, "applied": 0, "suggested": 0, "no_match": 0,
-    "nonfood": 0, "errors": 0,
+    "nonfood": 0, "errors": 0, "created": 0,
     "finished_at": None,
 }
 
@@ -207,6 +207,7 @@ def _upsert_decision(
     status: str,
     category: str | None = None,
     ingredient_id: int | None = None,
+    suggested_name: str | None = None,
     confidence: float | None = None,
     model: str | None = None,
     occurrences: int | None = None,
@@ -221,6 +222,7 @@ def _upsert_decision(
     d.status = status
     d.category = category
     d.ingredient_id = ingredient_id
+    d.suggested_name = (suggested_name or None) and suggested_name[:200]
     d.confidence = confidence
     d.model = model
     d.error = error
@@ -273,6 +275,7 @@ _RESPONSE_SCHEMA = {
                 "properties": {
                     "i": {"type": "integer"},
                     "ingredient_id": {"type": ["integer", "null"]},
+                    "name_cs": {"type": "string"},
                     "category": {
                         "type": "string",
                         "enum": ["food", "equipment", "garnish", "packaging", "unknown"],
@@ -291,18 +294,35 @@ _PROMPT_HEADER = """Jsi expert na české kulinářství. Tvým úkolem je při�
 Pravidla:
 - Pro KAŽDOU očíslovanou položku vrať právě jeden objekt s jejím indexem "i".
 - ingredient_id MUSÍ být ID z databáze níže, nebo null pokud nic nepasuje.
-- category: "food" pro suroviny; "equipment" (forma, lžíce, struhadlo); "garnish" (na ozdobu); "packaging" (folie, alobal); "unknown" jinak.
+- name_cs: kanonický český název suroviny (1. pád, jednotné číslo, bez množství). Vyplň VŽDY u category="food" – i když v databázi nic nepasuje (podle name_cs se pak surovina založí). U ostatních kategorií nech prázdné.
+- category: "food" pro suroviny (i dochucovadla a přípravky jako ztužovač šlehačky, kypřicí prášek); "equipment" (forma, lžíce, struhadlo); "garnish" (na ozdobu); "packaging" (folie, alobal, pečicí papír); "unknown" jinak.
+- Text končící dvojtečkou ("Na těsto:", "Dále:") je nadpis skupiny, ne surovina → category="unknown".
 - confidence: 0.9+ = jistá shoda; 0.7-0.9 = pravděpodobná; pod 0.7 = nejistá.
 - Cizojazyčné názvy přelož: "chicken breast" → kuřecí prsa; "soy sauce" → sójová omáčka; "cilantro" → koriandr.
 - Při nejistotě dej nižší confidence, nehádej.
 
 Příklady chování:
-- "chicken breast" → najdi "kuřecí prsa" v databázi, category="food", confidence=0.95
+- "chicken breast" → najdi "kuřecí prsa" v databázi, category="food", name_cs="kuřecí prsa", confidence=0.95
+- "1 ztužovač šlehačky" (v databázi není) → category="food", ingredient_id=null, name_cs="ztužovač šlehačky", confidence=0.9
 - "silikonová forma na muffiny" → category="equipment", ingredient_id=null, confidence=0.9
 - "trochu lásky :)" → category="unknown", ingredient_id=null, confidence=0.0
 
 Databáze surovin (id: name):
 """
+
+# Návrh nového názvu suroviny musí vypadat jako název, ne věta/poznámka.
+_MAX_NEW_NAME_LEN = 60
+_MAX_NEW_NAME_WORDS = 6
+
+
+def _plausible_new_name(name: str) -> bool:
+    n = (name or "").strip()
+    return (
+        2 <= len(n) <= _MAX_NEW_NAME_LEN
+        and len(n.split()) <= _MAX_NEW_NAME_WORDS
+        and not n.endswith(":")
+        and not any(ch.isdigit() for ch in n)
+    )
 
 
 def _make_prompt(catalog: list[tuple[int, str]], inputs: list[str]) -> str:
@@ -320,6 +340,97 @@ def _call_llm(prompt: str) -> dict | None:
         num_ctx=settings.llm_match_num_ctx,
         ollama_model=settings.llm_match_model or settings.ollama_fast_model,
     )
+
+
+# ─── Tvorba nových surovin ───────────────────────────────────────────────────
+
+def get_or_create_ingredient(db: Session, name: str) -> Ingredient:
+    """Najdi surovinu podle názvu (case-insensitive), nebo ji založ.
+
+    Nové suroviny mají source='ollama' → v UI se počítají do "odhadované
+    výživy" a NutriDatabáze je při importu zpřesní/sloučí."""
+    name = name.strip()
+    ing = db.scalar(
+        select(Ingredient).where(func.lower(Ingredient.name_cs) == name.lower())
+    )
+    if ing is None:
+        ing = Ingredient(name_cs=name, source="ollama")
+        db.add(ing)
+        db.flush()
+    return ing
+
+
+_NUTRITION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "i": {"type": "integer"},
+                    "kcal_100g": {"type": ["number", "null"]},
+                    "protein_100g": {"type": ["number", "null"]},
+                    "carbs_100g": {"type": ["number", "null"]},
+                    "fat_100g": {"type": ["number", "null"]},
+                    "density": {"type": ["number", "null"]},
+                    "category": {"type": ["string", "null"]},
+                },
+                "required": ["i", "kcal_100g"],
+            },
+        }
+    },
+    "required": ["items"],
+}
+
+
+def estimate_nutrition(db: Session, ingredients: list[Ingredient], batch: int = 40) -> int:
+    """Dávkově odhadne výživu /100 g nově založených surovin (jedno LLM volání
+    na `batch` položek). Selhání nevadí – surovina zůstane bez výživy a
+    NutriDatabáze/ruční editace ji doplní později. Vrací počet doplněných."""
+    todo = [i for i in ingredients if i.kcal_100g is None]
+    filled = 0
+    for start in range(0, len(todo), batch):
+        chunk = todo[start:start + batch]
+        listing = "\n".join(f"{j}: {ing.name_cs}" for j, ing in enumerate(chunk))
+        prompt = (
+            "Pro každou potravinu níže odhadni typické výživové hodnoty na 100 g "
+            "a hustotu (g na 1 ml; null pokud nedává smysl). category = jedno "
+            "slovo (např. maso, zelenina, koření, pečivo). Odpověz POUZE JSON "
+            '{"items":[{"i":<index>,"kcal_100g":number,"protein_100g":number,'
+            '"carbs_100g":number,"fat_100g":number,"density":number|null,'
+            '"category":string}]}.\n'
+            f"Potraviny:\n{listing}"
+        )
+        out = llmclient.structured_json(prompt, schema=_NUTRITION_SCHEMA, timeout=120,
+                                        num_ctx=8192)
+        if out is None:
+            log.warning("odhad výživy dávky selhal – %s surovin zůstává bez výživy",
+                        len(chunk))
+            continue
+        by_i: dict[int, dict] = {}
+        for it in out.get("items", []):
+            try:
+                by_i[int(it.get("i"))] = it
+            except (TypeError, ValueError):
+                continue
+        for j, ing in enumerate(chunk):
+            it = by_i.get(j)
+            if it is None or it.get("kcal_100g") is None:
+                continue
+            try:
+                ing.kcal_100g = float(it["kcal_100g"])
+                ing.protein_100g = float(it["protein_100g"]) if it.get("protein_100g") is not None else None
+                ing.carbs_100g = float(it["carbs_100g"]) if it.get("carbs_100g") is not None else None
+                ing.fat_100g = float(it["fat_100g"]) if it.get("fat_100g") is not None else None
+                ing.density = float(it["density"]) if it.get("density") is not None else None
+                if not ing.category and it.get("category"):
+                    ing.category = str(it["category"])[:120]
+                filled += 1
+            except (TypeError, ValueError):
+                continue
+        db.commit()
+    return filled
 
 
 # ─── Zpracování odpovědi jedné dávky ─────────────────────────────────────────
@@ -391,10 +502,15 @@ def _process_response(
     valid_ids: set[int],
     min_conf: float,
     model_name: str,
-) -> tuple[dict, set[int]]:
-    """Zapíše rozhodnutí pro KAŽDOU položku dávky. Vrátí (statistiky, dotčené recepty)."""
-    stats = {"applied": 0, "suggested": 0, "no_match": 0, "nonfood": 0, "errors": 0}
+) -> tuple[dict, set[int], list[Ingredient]]:
+    """Zapíše rozhodnutí pro KAŽDOU položku dávky.
+
+    Vrátí (statistiky, dotčené recepty, nově založené suroviny k odhadu výživy).
+    """
+    stats = {"applied": 0, "suggested": 0, "no_match": 0, "nonfood": 0,
+             "errors": 0, "created": 0}
     affected: set[int] = set()
+    created: list[Ingredient] = []
 
     by_index: dict[int, dict] = {}
     if isinstance(resp, dict):
@@ -433,13 +549,41 @@ def _process_response(
             stats["nonfood"] += 1
             continue
 
+        name_cs = (it.get("name_cs") or "").strip()
+
         if ing_id is None or ing_id not in valid_ids:
-            _upsert_decision(
-                db, g.key, g.sample, status="no_match", category="food",
-                confidence=confidence, model=model_name, occurrences=occurrences,
-                error=(f"model vrátil neexistující ingredient_id {ing_id}" if ing_id else None),
-            )
-            stats["no_match"] += 1
+            # Katalog nic nenabídl. Když LLM vrátilo věrohodný název, surovina
+            # nejspíš v DB vůbec není → založit (auto_ingredients), nebo
+            # aspoň uložit návrh, ať jde založit jedním klikem z katalogu.
+            if _plausible_new_name(name_cs) and confidence >= min_conf:
+                if settings.auto_ingredients:
+                    ing = get_or_create_ingredient(db, name_cs)
+                    valid_ids.add(ing.id)
+                    if ing.kcal_100g is None:
+                        created.append(ing)
+                    _upsert_alias(db, g.sample, lookup_key=g.key, ingredient_id=ing.id,
+                                  kind="food", source="llm", confidence=confidence)
+                    affected |= _apply_rows(db, g.row_ids, ing)
+                    _upsert_decision(db, g.key, g.sample, status="applied",
+                                     category="food", ingredient_id=ing.id,
+                                     suggested_name=name_cs, confidence=confidence,
+                                     model=model_name, occurrences=occurrences)
+                    stats["applied"] += 1
+                    stats["created"] += 1
+                else:
+                    _upsert_decision(db, g.key, g.sample, status="suggested",
+                                     category="food", suggested_name=name_cs,
+                                     confidence=confidence, model=model_name,
+                                     occurrences=occurrences)
+                    stats["suggested"] += 1
+            else:
+                _upsert_decision(
+                    db, g.key, g.sample, status="no_match", category="food",
+                    suggested_name=name_cs if _plausible_new_name(name_cs) else None,
+                    confidence=confidence, model=model_name, occurrences=occurrences,
+                    error=(f"model vrátil neexistující ingredient_id {ing_id}" if ing_id else None),
+                )
+                stats["no_match"] += 1
             continue
 
         if confidence < min_conf:
@@ -470,8 +614,8 @@ def _process_response(
         log.error("commit dávky selhal, rollback: %s", exc)
         db.rollback()
         return {"applied": 0, "suggested": 0, "no_match": 0, "nonfood": 0,
-                "errors": len(batch)}, set()
-    return stats, affected
+                "errors": len(batch), "created": 0}, set(), []
+    return stats, affected, created
 
 
 # ─── Přepočet dotčených receptů ──────────────────────────────────────────────
@@ -542,7 +686,7 @@ def _try_start() -> bool:
             running=True, phase="collecting", done=0, total=0,
             embed_done=0, embed_total=0,
             dict_applied=0, applied=0, suggested=0, no_match=0,
-            nonfood=0, errors=0, finished_at=None,
+            nonfood=0, errors=0, created=0, finished_at=None,
         )
         return True
 
@@ -641,26 +785,28 @@ def _run(batch_size: int | None = None) -> dict:
         with _lock:
             _state.update(phase="matching")
         run_stats = {"applied": 0, "suggested": 0, "no_match": 0, "nonfood": 0,
-                     "errors": 0, "batches": 0}
+                     "errors": 0, "created": 0, "batches": 0}
+        created_ingredients: list[Ingredient] = []
         done_items = 0
         for idx, chunk in enumerate(chunks):
             catalog = catalogs[idx] or static_catalog
             prompt = _make_prompt(catalog, [g.sample for g in chunk])
             resp = _call_llm(prompt)
             run_stats["batches"] += 1
-            stats, batch_affected = _process_response(
+            stats, batch_affected, batch_created = _process_response(
                 db, resp, chunk, valid_ids, min_conf, model_name
             )
-            for k in ("applied", "suggested", "no_match", "nonfood", "errors"):
+            for k in ("applied", "suggested", "no_match", "nonfood", "errors", "created"):
                 run_stats[k] += stats[k]
             affected |= batch_affected
+            created_ingredients.extend(batch_created)
             done_items += len(chunk)
             with _lock:
                 _state.update(
                     done=done_items,
                     applied=run_stats["applied"], suggested=run_stats["suggested"],
                     no_match=run_stats["no_match"], nonfood=run_stats["nonfood"],
-                    errors=run_stats["errors"],
+                    errors=run_stats["errors"], created=run_stats["created"],
                 )
             if resp is None:
                 log.warning(
@@ -671,6 +817,28 @@ def _run(batch_size: int | None = None) -> dict:
             elif settings.llm_match_batch_pause_s and not settings.llm_api_enabled:
                 # oddych jen pro lokální GPU; komerční API pauzy nepotřebuje
                 time.sleep(settings.llm_match_batch_pause_s)
+
+        # ─── Odhad výživy nově založených surovin (dávkově) ─────────────
+        if created_ingredients:
+            with _lock:
+                _state.update(phase="nutrition")
+            totals["nutrition_filled"] = estimate_nutrition(db, created_ingredients)
+            # výživa se doplnila až teď → gramy/kcal řádků dotčených receptů
+            # dopočítá _finalize_recipes níž (kcal per řádek řeší _apply_rows,
+            # který u surovin bez kcal nechal None – přepočítej je)
+            for ing in created_ingredients:
+                if ing.kcal_100g is None:
+                    continue
+                rows = db.scalars(
+                    select(RecipeIngredient).where(
+                        RecipeIngredient.ingredient_id == ing.id,
+                        RecipeIngredient.kcal.is_(None),
+                    )
+                ).all()
+                for r in rows:
+                    r.grams = grams_for(r.amount, r.unit, ing)
+                    r.kcal = kcal_for(r.grams, ing)
+            db.commit()
 
         # ─── Přepočet kalorií dotčených receptů ─────────────────────────
         with _lock:

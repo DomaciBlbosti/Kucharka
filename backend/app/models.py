@@ -110,6 +110,10 @@ class MatchDecision(Base):
     ingredient_id: Mapped[int | None] = mapped_column(
         ForeignKey("ingredient.id", ondelete="SET NULL"), nullable=True
     )
+    # LLM navrhlo ZALOŽIT novou surovinu s tímhle názvem (v katalogu nebyla).
+    # Člověk ji z katalogu založí jedním klikem; s auto_ingredients se
+    # zakládá rovnou a tohle slouží jen jako záznam.
+    suggested_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     # kdo rozhodl: název modelu, nebo 'manual'
     model: Mapped[str | None] = mapped_column(String(120), nullable=True)

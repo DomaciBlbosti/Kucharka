@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 from ..db import SessionLocal
 from ..models import Ingredient, IngredientAlias, Recipe, RecipeIngredient
 from .lookup import make_lookup_key
-from .normalizer import _norm, parse_line_regex
+from .normalizer import _norm, is_section_header, parse_line_regex
 from .nutrition import grams_for, kcal_for, recompute_recipe_kcal
 
 log = logging.getLogger("kucharka.backfill")
@@ -157,6 +157,38 @@ class _Matcher:
             log.warning("backfill: alias %r nešel uložit: %s", key[:80], exc)
 
 
+def purge_headers(db: Session) -> int:
+    """Smaže nenapárované řádky, které jsou jen nadpis skupiny ("Dále:",
+    "Drobenka:", "Na vymazání a vysypání formy:"). Dřív jen ruční tlačítko
+    v administraci – teď běží automaticky na začátku každého párování,
+    ať se nadpisy nehromadí (v produkci jich čekaly tisíce)."""
+    removed = 0
+    last_id = 0
+    while True:
+        rows = db.execute(
+            select(RecipeIngredient.id, RecipeIngredient.raw_text)
+            .where(
+                RecipeIngredient.ingredient_id.is_(None),
+                RecipeIngredient.id > last_id,
+            )
+            .order_by(RecipeIngredient.id)
+            .limit(CHUNK)
+        ).all()
+        if not rows:
+            break
+        for row_id, raw_text in rows:
+            last_id = row_id
+            if is_section_header(raw_text or ""):
+                obj = db.get(RecipeIngredient, row_id)
+                if obj is not None:
+                    db.delete(obj)
+                    removed += 1
+        db.commit()
+    if removed:
+        log.info("purge nadpisů: smazáno %s řádků", removed)
+    return removed
+
+
 def _apply(row: RecipeIngredient, ing: Ingredient):
     amount, unit, _name = parse_line_regex(row.raw_text or "")
     if row.amount is None and amount is not None:
@@ -181,6 +213,9 @@ def backfill(create_missing: bool = False, chunk: int = CHUNK) -> dict:
     affected: set[int] = set()
     matched = 0
     try:
+        _set(phase="headers", done=0, total=0,
+             matched=0, created=0, finished_at=None, error=None)
+        purge_headers(db)
         total = db.scalar(
             select(func.count(RecipeIngredient.id)).where(
                 RecipeIngredient.ingredient_id.is_(None)
