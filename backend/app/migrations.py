@@ -99,8 +99,15 @@ _INDEXES: tuple[IndexAdd, ...] = (
     IndexAdd("recipe_ingredient", "ix_ri_recipe_ingredient", ("recipe_id", "ingredient_id")),
     # Fulltext pro hledání receptů (název + postup). ILIKE '%q%' na 100k+
     # řádcích skenuje celou tabulku; MATCH..AGAINST je řádově rychlejší a
-    # umí i hledání v postupu. Vytvoření na velké tabulce chvíli trvá –
-    # jednorázově při prvním startu po aktualizaci.
+    # umí i hledání v postupu.
+    #
+    # POZOR: první FULLTEXT index na InnoDB tabulce znamená přestavbu celé
+    # tabulky (přidává se skrytý FTS_DOC_ID) – u 150k+ receptů klidně mnoho
+    # minut. NESMÍ se stavět synchronně při startu: appka by po celou dobu
+    # neodpovídala, healthcheck/supervisor by ji zabil, rozdělaný ALTER se
+    # odrolloval a při dalším startu začal znovu – nekonečná smyčka „appka
+    # nenaběhla". Proto se fulltext indexy staví na POZADÍ (viz run_all) a
+    # hledání do té doby automaticky jede přes ILIKE fallback.
     IndexAdd("recipe", "ft_recipe_title_instructions", ("title", "instructions"),
              fulltext=True),
 )
@@ -109,15 +116,66 @@ _INDEXES: tuple[IndexAdd, ...] = (
 # ─── Provedení ───────────────────────────────────────────────────────────────
 
 def run_all(engine: Engine) -> None:
-    """Spusť všechny migrace ve správném pořadí. Tichá no-op, pokud je vše hotovo."""
+    """Spusť všechny migrace ve správném pořadí. Tichá no-op, pokud je vše hotovo.
+
+    Rychlé migrace běží synchronně; dlouhé (FULLTEXT index = přestavba
+    tabulky) se odloží do vlákna na pozadí, ať start appky nic neblokuje.
+    """
     insp = inspect(engine)
     existing_tables = set(insp.get_table_names())
 
     _add_columns(engine, insp, existing_tables)
     insp = inspect(engine)  # invalidovat cache po ADD COLUMN
     _modify_columns(engine, insp, existing_tables)
-    _add_indexes(engine, insp, existing_tables)
+    _add_indexes(engine, insp, existing_tables, fulltext=False)
     _backfill(engine, existing_tables)
+
+    # Dlouhé indexy na pozadí – appka mezitím normálně jede (hledání má
+    # ILIKE fallback, dokud index není hotový).
+    pending_ft = _missing_fulltext(engine, insp, existing_tables)
+    if pending_ft:
+        import threading
+
+        threading.Thread(
+            target=_add_fulltext_bg, args=(engine, pending_ft), daemon=True,
+            name="migrations-fulltext",
+        ).start()
+
+
+def _missing_fulltext(engine: Engine, insp, existing_tables: set[str]) -> list[IndexAdd]:
+    if engine.dialect.name == "sqlite":
+        return []
+    out = []
+    for spec in _INDEXES:
+        if not spec.fulltext or spec.table not in existing_tables:
+            continue
+        existing = {ix["name"] for ix in insp.get_indexes(spec.table)}
+        if spec.name not in existing:
+            out.append(spec)
+    return out
+
+
+def _add_fulltext_bg(engine: Engine, specs: list[IndexAdd]) -> None:
+    for spec in specs:
+        cols = ", ".join(spec.cols)
+        log.info(
+            "Migrace: stavím FULLTEXT index %s na %s(%s) NA POZADÍ – u velké "
+            "tabulky to může trvat minuty; hledání zatím jede přes LIKE.",
+            spec.name, spec.table, cols,
+        )
+        try:
+            # kontrola těsně před ALTERem – po restartu může být už hotový
+            insp = inspect(engine)
+            if spec.name in {ix["name"] for ix in insp.get_indexes(spec.table)}:
+                continue
+            with engine.begin() as conn:
+                conn.execute(text(
+                    f"CREATE FULLTEXT INDEX {spec.name} ON {spec.table} ({cols})"
+                ))
+            log.info("Migrace: FULLTEXT index %s hotový – hledání přepnuto na fulltext.", spec.name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Migrace FULLTEXT %s selhala (hledání zůstává na LIKE): %s",
+                        spec.name, exc)
 
 
 def _add_columns(engine: Engine, insp, existing_tables: set[str]) -> None:
@@ -163,12 +221,12 @@ def _modify_columns(engine: Engine, insp, existing_tables: set[str]) -> None:
             log.warning("Migrace MODIFY %s.%s selhala: %s", spec.table, spec.name, exc)
 
 
-def _add_indexes(engine: Engine, insp, existing_tables: set[str]) -> None:
+def _add_indexes(engine: Engine, insp, existing_tables: set[str], *, fulltext: bool = True) -> None:
     for spec in _INDEXES:
         if spec.table not in existing_tables:
             continue
-        if spec.fulltext and engine.dialect.name == "sqlite":
-            continue  # SQLite FULLTEXT syntaxi nezná (hledání tam jede přes LIKE)
+        if spec.fulltext and (not fulltext or engine.dialect.name == "sqlite"):
+            continue  # fulltext staví _add_fulltext_bg; SQLite syntaxi nezná
         existing = {ix["name"] for ix in insp.get_indexes(spec.table)}
         # UNIQUE constrainty hlásí get_unique_constraints jinde:
         if spec.unique:

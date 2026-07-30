@@ -55,23 +55,32 @@ def _availability_cols(have_ids: set[int]):
 
 # Fulltext hledání: MATCH..AGAINST na MariaDB (řádově rychlejší než LIKE-scan
 # a hledá i v postupu), fallback na ILIKE pro SQLite / krátké dotazy / chybějící
-# index. Dostupnost indexu se zjišťuje jednou a cachuje.
-_ft_available: bool | None = None
+# index. Index se staví na POZADÍ po startu (viz migrations), takže "není" je
+# jen dočasný stav – dokud není hotový, kontroluje se znovu max. 1× za minutu
+# a hledání mezitím jede přes ILIKE.
+_FT_RECHECK_S = 60.0
+_ft_state: dict = {"available": None, "checked_at": 0.0}
 
 
 def _fulltext_ok(db: Session) -> bool:
-    global _ft_available
-    if _ft_available is None:
-        try:
-            bind = db.get_bind()
-            if bind.dialect.name not in ("mysql", "mariadb"):
-                _ft_available = False
-            else:
-                names = {ix["name"] for ix in sa_inspect(bind).get_indexes("recipe")}
-                _ft_available = "ft_recipe_title_instructions" in names
-        except Exception:  # noqa: BLE001
-            _ft_available = False
-    return _ft_available
+    import time as _time
+
+    if _ft_state["available"] is True:
+        return True
+    now = _time.monotonic()
+    if _ft_state["available"] is False and now - _ft_state["checked_at"] < _FT_RECHECK_S:
+        return False
+    try:
+        bind = db.get_bind()
+        if bind.dialect.name not in ("mysql", "mariadb"):
+            ok = False
+        else:
+            names = {ix["name"] for ix in sa_inspect(bind).get_indexes("recipe")}
+            ok = "ft_recipe_title_instructions" in names
+    except Exception:  # noqa: BLE001
+        ok = False
+    _ft_state.update(available=ok, checked_at=now)
+    return ok
 
 
 def _search_clause(db: Session, q: str):
