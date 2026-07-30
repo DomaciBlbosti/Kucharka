@@ -17,12 +17,22 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_tmpdir}/test.db"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.db import SessionLocal  # noqa: E402
+from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Ingredient, IngredientAlias, Recipe, RecipeIngredient  # noqa: E402
 from app.modules import backfill  # noqa: E402
 from app.modules.lookup import make_lookup_key  # noqa: E402
 from app.routers.auth import COOKIE_NAME  # noqa: E402
+
+# Simulace produkční DB: legacy alias "alobal" (jen `alias`, bez lookup_key)
+# existuje UŽ PŘED startem appky. Seed builtin ne-surovin na něj nesmí
+# spadnout (unique je i sloupec alias) – přesně tohle položilo start
+# v produkci ("Application startup failed" + restart smyčka).
+Base.metadata.create_all(engine)
+_db = SessionLocal()
+_db.add(IngredientAlias(alias="alobal", ingredient_id=None))
+_db.commit()
+_db.close()
 
 
 def _seed(db) -> dict:
@@ -85,12 +95,18 @@ def run_tests() -> int:
         header = db.query(RecipeIngredient).filter_by(
             raw_text="Na vymazání a vysypání formy:").one_or_none()
         check("nadpis skupiny (5 slov) byl automaticky smazán", header is None)
-        alobal_alias = db.query(IngredientAlias).filter_by(
-            lookup_key=make_lookup_key("alobal")).one_or_none()
-        check("builtin ne-surovina 'alobal' je ve slovníku",
-              alobal_alias is not None and alobal_alias.kind == "packaging"
-              and alobal_alias.source == "builtin",
-              f"{alobal_alias and alobal_alias.kind}/{alobal_alias and alobal_alias.source}")
+        papir_alias = db.query(IngredientAlias).filter_by(
+            lookup_key=make_lookup_key("pečící papír")).one_or_none()
+        check("builtin ne-surovina 'pečící papír' je ve slovníku",
+              papir_alias is not None and papir_alias.kind == "packaging"
+              and papir_alias.source == "builtin",
+              f"{papir_alias and papir_alias.kind}/{papir_alias and papir_alias.source}")
+        # kolizní legacy alias přežil bez přepsání a start nespadl
+        legacy = db.query(IngredientAlias).filter_by(alias="alobal").one_or_none()
+        check("legacy alias 'alobal' seed nepřepsal ani neshodil start",
+              legacy is not None and legacy.lookup_key is None
+              and legacy.source != "builtin",
+              f"{legacy and legacy.lookup_key}/{legacy and legacy.source}")
         row = db.query(RecipeIngredient).filter_by(raw_text="2 ks kuřecích prs").one()
         matched_name = db.get(Ingredient, row.ingredient_id).name_cs if row.ingredient_id else None
         # seed_starter obsahuje vlastní "kuřecí prsa" – stačí, že match míří na

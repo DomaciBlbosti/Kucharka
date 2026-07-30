@@ -52,17 +52,23 @@ def init_db(retries: int = 10) -> None:
         return
     db = SessionLocal()
     try:
-        n = seed_starter(db)
-        if n:
-            log.info("Naseedováno %s základních surovin.", n)
-        nt = seed_tags(db)
-        if nt:
-            log.info("Naseedováno %s kanonických tagů.", nt)
-        from .seed.nonfood_aliases import seed_nonfood
+        # Seedy nesmí NIKDY položit start – při chybě se jen zaloguje celý
+        # traceback a jede se dál (appka bez seedu funguje, jen něco chybí).
+        try:
+            n = seed_starter(db)
+            if n:
+                log.info("Naseedováno %s základních surovin.", n)
+            nt = seed_tags(db)
+            if nt:
+                log.info("Naseedováno %s kanonických tagů.", nt)
+            from .seed.nonfood_aliases import seed_nonfood
 
-        nn = seed_nonfood(db)
-        if nn:
-            log.info("Naseedováno %s builtin ne-surovin (alobal, pečicí papír…).", nn)
+            nn = seed_nonfood(db)
+            if nn:
+                log.info("Naseedováno %s builtin ne-surovin (alobal, pečicí papír…).", nn)
+        except Exception:  # noqa: BLE001
+            log.exception("Seed dat selhal – start pokračuje bez něj.")
+            db.rollback()
         _load_settings_overrides(db)
     finally:
         db.close()
@@ -149,26 +155,42 @@ app.include_router(auth_router.router)
 
 @app.on_event("startup")
 def on_startup() -> None:
+    """Start musí být neprůstřelný: každá dílčí část je obalená vlastním
+    try/except s CELÝM tracebackem do logu. Jinak libovolná chyba v seedu
+    nebo migraci znamená "Application startup failed" + restart smyčku,
+    ze které se bez logu špatně diagnostikuje (a appka nikdy nenaběhne,
+    i když by bez té dílčí části fungovala)."""
     from .modules import logbuffer
 
     logbuffer.install()  # ať jde posledních pár log řádků číst přes API
     log.info("Aplikace startuje – instaluji log buffer a plánovač úloh.")
 
-    init_db()
+    try:
+        init_db()
+    except Exception:  # noqa: BLE001
+        log.exception("init_db selhal – appka startuje bez dokončené inicializace DB.")
+
     from . import auth as _auth
     from . import scheduler
 
-    db = SessionLocal()
     try:
-        _auth.load(db)
-        env_pw = os.environ.get("APP_PASSWORD", "").strip()
-        if env_pw and not settings.auth_password_hash:
-            _auth.set_password(env_pw)
-            log.info("Heslo nastaveno z APP_PASSWORD.")
-    finally:
-        db.close()
-    scheduler.configure_all()
-    log.info("Plánovač úloh nakonfigurován.")
+        db = SessionLocal()
+        try:
+            _auth.load(db)
+            env_pw = os.environ.get("APP_PASSWORD", "").strip()
+            if env_pw and not settings.auth_password_hash:
+                _auth.set_password(env_pw)
+                log.info("Heslo nastaveno z APP_PASSWORD.")
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001
+        log.exception("Načtení auth stavu selhalo.")
+
+    try:
+        scheduler.configure_all()
+        log.info("Plánovač úloh nakonfigurován.")
+    except Exception:  # noqa: BLE001
+        log.exception("Konfigurace plánovače selhala.")
 
 
 @app.middleware("http")
