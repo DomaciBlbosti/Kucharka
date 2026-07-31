@@ -261,6 +261,33 @@ def run_tests() -> int:
           ing_glut is not None and ing_glut.kcal_100g == 250,
           str(ing_glut and ing_glut.kcal_100g))
 
+    # ─── Prompt nese kontext receptu ─────────────────────────────────────
+    p = llm_match._make_prompt([(1, "bazalka")], ["čerstvá bazalka"],
+                               contexts=["Cannelloni s boloňskou omáčkou"])
+    check("prompt obsahuje název receptu jako kontext",
+          "recept: Cannelloni s boloňskou omáčkou" in p)
+    p2 = llm_match._make_prompt([(1, "bazalka")], ["čerstvá bazalka"])
+    check("prompt bez kontextu funguje dál", "0: čerstvá bazalka" in p2)
+
+    # ─── Migrace: jednorázové znovuotevření starých no_match ─────────────
+    from app import migrations
+    from app.db import engine as _engine
+
+    db.add(MatchDecision(lookup_key="stary-klic", sample_text="starý text",
+                         status="no_match", attempts=0, occurrences=1))
+    db.commit()
+    migrations.run_all(_engine)
+    db.expire_all()
+    check("migrace smazala staré no_match bez návrhu",
+          db.query(MatchDecision).filter_by(lookup_key="stary-klic").one_or_none() is None)
+    db.add(MatchDecision(lookup_key="novy-klic", sample_text="nový text",
+                         status="no_match", attempts=0, occurrences=1))
+    db.commit()
+    migrations.run_all(_engine)
+    db.expire_all()
+    check("migrace je jednorázová (marker) – nové no_match nechává",
+          db.query(MatchDecision).filter_by(lookup_key="novy-klic").one_or_none() is not None)
+
     # ─── Přehled endpointu decisions ─────────────────────────────────────
     from app.routers.maintenance import list_decisions
 

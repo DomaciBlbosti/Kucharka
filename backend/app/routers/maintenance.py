@@ -147,26 +147,49 @@ def unmatched(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Distinktní nenapárované texty surovin (seřazené podle četnosti)."""
-    total = db.scalar(
-        select(func.count(func.distinct(RecipeIngredient.raw_text))).where(
-            RecipeIngredient.ingredient_id.is_(None)
-        )
-    ) or 0
+    """Distinktní nenapárované texty surovin (seřazené podle četnosti).
+
+    Ukazuje jen SKUTEČNĚ nerozhodnuté: texty, které už systém vyhodnotil
+    jako ne-surovinu (alobal, pečicí papír…) nebo je člověk ignoroval,
+    zůstávají v řádcích receptů nenapárované záměrně – tady by jen mátly
+    ("proč to pořád visí ve frontě, když je to dávno vyřešené?")."""
+    from ..modules.lookup import make_lookup_key
+
     rows = db.execute(
         select(
             RecipeIngredient.raw_text,
             func.count().label("cnt"),
             func.min(RecipeIngredient.recipe_id).label("rid"),
         )
-        .where(RecipeIngredient.ingredient_id.is_(None))
+        .where(
+            RecipeIngredient.ingredient_id.is_(None),
+            RecipeIngredient.raw_text.is_not(None),
+        )
         .group_by(RecipeIngredient.raw_text)
         .order_by(func.count().desc(), RecipeIngredient.raw_text)
-        .limit(limit)
-        .offset(offset)
     ).all()
+
+    # klíče, o kterých už je finálně rozhodnuto (non-food slovník / ignorováno)
+    settled = set(db.scalars(
+        select(IngredientAlias.lookup_key).where(
+            IngredientAlias.lookup_key.is_not(None),
+            IngredientAlias.kind != "food",
+        )
+    ).all())
+    settled |= set(db.scalars(
+        select(MatchDecision.lookup_key).where(
+            MatchDecision.status.in_(("nonfood", "ignored"))
+        )
+    ).all())
+
+    filtered = [
+        (raw_text, cnt, rid) for raw_text, cnt, rid in rows
+        if make_lookup_key(raw_text) not in settled
+    ]
+    total = len(filtered)
+    page = filtered[offset:offset + limit]
     items = []
-    for raw_text, cnt, rid in rows:
+    for raw_text, cnt, rid in page:
         title = db.scalar(select(Recipe.title).where(Recipe.id == rid))
         items.append(
             {"raw_text": raw_text, "count": cnt, "recipe_id": rid, "recipe_title": title}

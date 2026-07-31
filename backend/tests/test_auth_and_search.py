@@ -56,6 +56,8 @@ def _seed(db) -> dict:
         RecipeIngredient(recipe_id=r.id, raw_text="Na vymazání a vysypání formy:"),
         # builtin ne-surovina – zůstane nenapárovaná, ale slovník ji zná
         RecipeIngredient(recipe_id=r.id, raw_text="alobal"),
+        # builtin ne-surovina se seedovaným lookup_key – /unmatched ji nesmí ukazovat
+        RecipeIngredient(recipe_id=r.id, raw_text="pečící papír"),
     ])
     db.commit()
     return {"recipe": r.id, "kure": kure.id}
@@ -88,8 +90,9 @@ def run_tests() -> int:
 
         # ─── Backfill: purge nadpisů + fuzzy match + alias s lookup_key ──
         out = backfill.backfill()
-        # zbývá jen "alobal" (builtin non-food – zůstává bez suroviny záměrně)
-        check("backfill napároval fuzzy řádek", out.get("rows_unmatched") == 1,
+        # zbývá "alobal" (legacy) a "pečící papír" (builtin non-food) –
+        # oba záměrně bez suroviny
+        check("backfill napároval fuzzy řádek", out.get("rows_unmatched") == 2,
               str({k: out.get(k) for k in ('rows_unmatched', 'error')}))
         db.expire_all()
         header = db.query(RecipeIngredient).filter_by(
@@ -116,6 +119,14 @@ def run_tests() -> int:
             lookup_key=make_lookup_key("2 ks kuřecích prs")).one_or_none()
         check("fuzzy alias má lookup_key (kompatibilní s llm_match)",
               alias is not None and alias.source == "import")
+
+        # ─── /unmatched neukazuje už rozhodnuté ne-suroviny ──────────────
+        r = c.get("/api/maintenance/unmatched")
+        texts = [it["raw_text"] for it in r.json()["items"]]
+        check("/unmatched neobsahuje builtin ne-surovinu 'pečící papír'",
+              "pečící papír" not in texts, str(texts))
+        check("/unmatched obsahuje nerozhodnutý 'alobal' (legacy alias)",
+              "alobal" in texts, str(texts))
 
         # ─── Cookie přihlašování ─────────────────────────────────────────
         r = c.put("/api/admin/password", json={"password": "tajneheslo"})
