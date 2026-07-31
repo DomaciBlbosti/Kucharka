@@ -94,13 +94,16 @@ _SETTLED_STATUSES = ("applied", "nonfood", "suggested", "no_match", "ignored")
 class _Group:
     """Všechny nenapárované řádky se stejným lookup_key."""
 
-    __slots__ = ("key", "sample", "row_ids", "recipe_ids")
+    __slots__ = ("key", "sample", "row_ids", "recipe_ids", "context_title")
 
     def __init__(self, key: str):
         self.key = key
         self.sample: str = ""
         self.row_ids: list[int] = []
         self.recipe_ids: set[int] = set()
+        # název jednoho z receptů – levný kontext pro LLM ("bazalka" u
+        # "Cannelloni s boloňskou omáčkou" je jasnější než "bazalka" samotná)
+        self.context_title: str | None = None
 
     def add(self, row_id: int, raw_text: str, recipe_id: int) -> None:
         self.row_ids.append(row_id)
@@ -325,10 +328,21 @@ def _plausible_new_name(name: str) -> bool:
     )
 
 
-def _make_prompt(catalog: list[tuple[int, str]], inputs: list[str]) -> str:
+def _make_prompt(
+    catalog: list[tuple[int, str]],
+    inputs: list[str],
+    contexts: list[str | None] | None = None,
+) -> str:
+    """`contexts` = název receptu k jednotlivým položkám – levná náhrada za
+    posílání celého receptu: pár tokenů navíc a model ví, v jakém jídle se
+    surovina objevila ("bazalka" u "Cannelloni s boloňskou omáčkou")."""
     catalog_str = "\n".join(f"{cid}: {name}" for cid, name in catalog)
-    inputs_str = "\n".join(f"{i}: {t}" for i, t in enumerate(inputs))
-    return f"{_PROMPT_HEADER}{catalog_str}\n\nSuroviny k přiřazení (i: text):\n{inputs_str}\n"
+    lines = []
+    for i, t in enumerate(inputs):
+        ctx = contexts[i] if contexts and i < len(contexts) else None
+        lines.append(f"{i}: {t} — recept: {ctx[:60]}" if ctx else f"{i}: {t}")
+    inputs_str = "\n".join(lines)
+    return f"{_PROMPT_HEADER}{catalog_str}\n\nSuroviny k přiřazení (i: text — recept: odkud pochází):\n{inputs_str}\n"
 
 
 def _call_llm(prompt: str) -> dict | None:
@@ -753,6 +767,23 @@ def _run(batch_size: int | None = None) -> dict:
             log.info("LLM match: nic nového k dotazování (%s už rozhodnuto). %s", skipped_decided, totals)
             return totals
 
+        # Nejčastější texty první – položky s stovkami výskytů se vyřeší
+        # v prvních dávkách, i kdyby se běh přerušil.
+        queue.sort(key=lambda g: len(g.row_ids), reverse=True)
+
+        # Kontext pro prompt: název jednoho receptu ke každé skupině.
+        title_ids = {min(g.recipe_ids) for g in queue if g.recipe_ids}
+        titles: dict[int, str] = {}
+        ids_list = sorted(title_ids)
+        for start in range(0, len(ids_list), 1000):
+            for rid, title in db.execute(
+                select(Recipe.id, Recipe.title).where(Recipe.id.in_(ids_list[start:start + 1000]))
+            ).all():
+                titles[rid] = title
+        for g in queue:
+            if g.recipe_ids:
+                g.context_title = titles.get(min(g.recipe_ids))
+
         log.info(
             "LLM match: %s unikátních surovin k dotazování (model %s, batch=%s, %s přeskočeno jako rozhodnuté)",
             len(queue), model_name, bs, skipped_decided,
@@ -790,7 +821,10 @@ def _run(batch_size: int | None = None) -> dict:
         done_items = 0
         for idx, chunk in enumerate(chunks):
             catalog = catalogs[idx] or static_catalog
-            prompt = _make_prompt(catalog, [g.sample for g in chunk])
+            prompt = _make_prompt(
+                catalog, [g.sample for g in chunk],
+                contexts=[g.context_title for g in chunk],
+            )
             resp = _call_llm(prompt)
             run_stats["batches"] += 1
             stats, batch_affected, batch_created = _process_response(

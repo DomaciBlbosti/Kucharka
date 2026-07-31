@@ -272,6 +272,39 @@ def _backfill(engine: Engine, existing_tables: set[str]) -> None:
             if r2.rowcount:
                 log.info("Migrace: backfill image_status='none' u %s receptů", r2.rowcount)
 
+    if "match_decision" in existing_tables and "app_setting" in existing_tables:
+        with engine.begin() as conn:
+            # JEDNORÁZOVÉ znovuotevření rozhodnutí "no_match" ze staré verze
+            # pipeline (bez suggested_name = model ještě neuměl navrhnout
+            # založení nové suroviny). Blokovala nová dopárování: "bazalka",
+            # "ztužovač šlehačky" apod. zůstaly navždy bez shody, přestože
+            # dnešní běh by je vyřešil. Smazání = příští běh se zeptá znovu.
+            # Ruční rozhodnutí (ignored/nonfood/applied) se nedotýká.
+            # Marker v app_setting, protože i NOVÁ pipeline legitimně ukládá
+            # no_match bez návrhu – bez markeru by se mazaly při každém startu.
+            marker = conn.execute(text(
+                "SELECT value FROM app_setting WHERE `key` = 'mig_reopen_no_match_v1'"
+            )).first()
+            if marker is None:
+                r4 = conn.execute(text("""
+                    DELETE FROM match_decision
+                     WHERE status = 'no_match'
+                       AND suggested_name IS NULL
+                """))
+                r5 = conn.execute(text("""
+                    UPDATE match_decision SET attempts = 0
+                     WHERE status = 'error' AND attempts > 0
+                """))
+                conn.execute(text(
+                    "INSERT INTO app_setting (`key`, value) VALUES ('mig_reopen_no_match_v1', '1')"
+                ))
+                if r4.rowcount or r5.rowcount:
+                    log.info(
+                        "Migrace: znovuotevřeno %s starých 'no_match' rozhodnutí a "
+                        "resetováno %s chybových (nová pipeline umí navrhnout/založit surovinu)",
+                        r4.rowcount, r5.rowcount,
+                    )
+
     if "ingredient_alias" in existing_tables:
         with engine.begin() as conn:
             # Stará data jsou ruční / importovaná → považuj za verified, source='import'.

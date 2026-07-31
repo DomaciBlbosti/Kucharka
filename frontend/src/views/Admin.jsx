@@ -1106,6 +1106,8 @@ function ManualMatch({ onClose }) {
             <p className="text-sm text-ink/55">
               Zbývá <b>{total}</b> různých textů{done > 0 && <> · vyřešeno {done}</>}.
               Přiřazení platí pro všechny recepty se stejným textem.
+              Ne-suroviny (alobal…) a ignorované se tu neukazují – jsou
+              v Katalogu rozhodnutí.
             </p>
           </div>
           <button onClick={onClose} className="text-2xl leading-none text-ink/40 hover:text-ink">×</button>
