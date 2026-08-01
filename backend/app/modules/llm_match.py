@@ -52,7 +52,7 @@ _state: dict = {
     "running": False, "phase": None, "done": 0, "total": 0,
     "embed_done": 0, "embed_total": 0,
     "dict_applied": 0, "applied": 0, "suggested": 0, "no_match": 0,
-    "nonfood": 0, "errors": 0, "created": 0,
+    "nonfood": 0, "errors": 0, "created": 0, "last_error": None,
     "finished_at": None,
 }
 
@@ -345,11 +345,18 @@ def _make_prompt(
     return f"{_PROMPT_HEADER}{catalog_str}\n\nSuroviny k přiřazení (i: text — recept: odkud pochází):\n{inputs_str}\n"
 
 
+# Po tolika selhaných dávkách V ŘADĚ se běh zastaví – když padá úplně všechno
+# (Ollama spadlá, model chybí, timeout moc krátký), nemá smysl hodiny mlít
+# další selhávající dávky. Položky zůstanou jako 'error' a příští běh je
+# zkusí znovu; skutečná příčina je vidět v UI (last_error).
+MAX_CONSECUTIVE_BATCH_FAILURES = 5
+
+
 def _call_llm(prompt: str) -> dict | None:
     return llmclient.structured_json(
         prompt,
         schema=_RESPONSE_SCHEMA,
-        timeout=180,  # batch může být pomalý, dej mu 3 min
+        timeout=max(30, settings.llm_match_timeout_s),
         temperature=settings.llm_match_temperature,
         num_ctx=settings.llm_match_num_ctx,
         ollama_model=settings.llm_match_model or settings.ollama_fast_model,
@@ -516,6 +523,7 @@ def _process_response(
     valid_ids: set[int],
     min_conf: float,
     model_name: str,
+    error_detail: str | None = None,
 ) -> tuple[dict, set[int], list[Ingredient]]:
     """Zapíše rozhodnutí pro KAŽDOU položku dávky.
 
@@ -538,10 +546,14 @@ def _process_response(
         it = by_index.get(idx)
         occurrences = len(g.row_ids)
         if it is None:
+            detail = (
+                f"LLM volání selhalo: {error_detail}" if error_detail
+                else "model položku v odpovědi vynechal"
+            )
             _upsert_decision(
                 db, g.key, g.sample, status="error", model=model_name,
                 occurrences=occurrences, bump_attempts=True,
-                error="LLM volání selhalo nebo model položku vynechal",
+                error=detail[:500],
             )
             stats["errors"] += 1
             continue
@@ -700,7 +712,7 @@ def _try_start() -> bool:
             running=True, phase="collecting", done=0, total=0,
             embed_done=0, embed_total=0,
             dict_applied=0, applied=0, suggested=0, no_match=0,
-            nonfood=0, errors=0, created=0, finished_at=None,
+            nonfood=0, errors=0, created=0, last_error=None, finished_at=None,
         )
         return True
 
@@ -715,7 +727,7 @@ def process_batch(batch_size: int | None = None) -> dict:
     if not _try_start():
         return {"skipped": "already running"}
     try:
-        return _run()
+        return _run(batch_size)
     finally:
         with _lock:
             _state.update(running=False, phase=None, finished_at=time.time())
@@ -819,6 +831,7 @@ def _run(batch_size: int | None = None) -> dict:
                      "errors": 0, "created": 0, "batches": 0}
         created_ingredients: list[Ingredient] = []
         done_items = 0
+        consecutive_failures = 0
         for idx, chunk in enumerate(chunks):
             catalog = catalogs[idx] or static_catalog
             prompt = _make_prompt(
@@ -826,9 +839,11 @@ def _run(batch_size: int | None = None) -> dict:
                 contexts=[g.context_title for g in chunk],
             )
             resp = _call_llm(prompt)
+            err_detail = llmclient.last_error() if resp is None else None
             run_stats["batches"] += 1
             stats, batch_affected, batch_created = _process_response(
-                db, resp, chunk, valid_ids, min_conf, model_name
+                db, resp, chunk, valid_ids, min_conf, model_name,
+                error_detail=err_detail,
             )
             for k in ("applied", "suggested", "no_match", "nonfood", "errors", "created"):
                 run_stats[k] += stats[k]
@@ -841,16 +856,32 @@ def _run(batch_size: int | None = None) -> dict:
                     applied=run_stats["applied"], suggested=run_stats["suggested"],
                     no_match=run_stats["no_match"], nonfood=run_stats["nonfood"],
                     errors=run_stats["errors"], created=run_stats["created"],
+                    last_error=err_detail,
                 )
             if resp is None:
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_BATCH_FAILURES:
+                    # padá úplně všechno – zastavit, ať se hodiny nemele naprázdno
+                    log.error(
+                        "LLM match: %s dávek selhalo v řadě (%s) – běh se zastavuje, "
+                        "zbytek fronty zůstává na příště.",
+                        consecutive_failures, err_detail,
+                    )
+                    totals["aborted"] = (
+                        f"zastaveno po {consecutive_failures} selhaných dávkách v řadě: "
+                        f"{err_detail or 'neznámá chyba'}"
+                    )
+                    break
                 log.warning(
-                    "dávka %s selhala, čekám %ss na zotavení",
-                    run_stats["batches"], settings.llm_match_failure_pause_s,
+                    "dávka %s selhala (%s), čekám %ss na zotavení",
+                    run_stats["batches"], err_detail, settings.llm_match_failure_pause_s,
                 )
                 time.sleep(settings.llm_match_failure_pause_s)
-            elif settings.llm_match_batch_pause_s and not settings.llm_api_enabled:
-                # oddych jen pro lokální GPU; komerční API pauzy nepotřebuje
-                time.sleep(settings.llm_match_batch_pause_s)
+            else:
+                consecutive_failures = 0
+                if settings.llm_match_batch_pause_s and not settings.llm_api_enabled:
+                    # oddych jen pro lokální GPU; komerční API pauzy nepotřebuje
+                    time.sleep(settings.llm_match_batch_pause_s)
 
         # ─── Odhad výživy nově založených surovin (dávkově) ─────────────
         if created_ingredients:

@@ -37,8 +37,13 @@ class FakeLLM:
     def structured_json(self, prompt, **kw):
         self.calls += 1
         if self.responses:
+            self._err = None
             return self.responses.pop(0)
+        self._err = "test: Ollama timeout po 300s"
         return None
+
+    def last_error(self):
+        return getattr(self, "_err", None)
 
     def availability_error(self):
         return None
@@ -260,6 +265,28 @@ def run_tests() -> int:
     check("založená surovina má odhadnutou výživu",
           ing_glut is not None and ing_glut.kcal_100g == 250,
           str(ing_glut and ing_glut.kcal_100g))
+
+    # ─── Circuit breaker: 5 selhaných dávek v řadě zastaví běh ───────────
+    for i in range(8):
+        db.add(RecipeIngredient(recipe_id=ids["recipe"], raw_text=f"exotická surovina {chr(97 + i)}"))
+    db.commit()
+    fake.responses = []  # všechna volání selžou
+    fake.calls = 0
+    out_cb = llm_match.process_batch(batch_size=1)
+    check("circuit breaker: běh se zastavil po 5 selhaných dávkách",
+          fake.calls == llm_match.MAX_CONSECUTIVE_BATCH_FAILURES
+          and "aborted" in out_cb,
+          f"calls={fake.calls} out={out_cb}")
+    d_cb = db.query(MatchDecision).filter_by(status="error").first()
+    check("chybové rozhodnutí nese skutečnou příčinu",
+          d_cb is not None and "Ollama timeout" in (d_cb.error or ""),
+          str(d_cb and d_cb.error))
+    check("stav běhu nese poslední chybu",
+          "Ollama timeout" in (llm_match.status().get("last_error") or ""))
+    # úklid pro další testy: chybové položky ignorovat
+    from app.routers.maintenance import DecisionResolve as _DR, resolve_decision as _rd
+    for d in db.query(MatchDecision).filter_by(status="error").all():
+        _rd(d.id, _DR(action="ignore"), db)
 
     # ─── Prompt nese kontext receptu ─────────────────────────────────────
     p = llm_match._make_prompt([(1, "bazalka")], ["čerstvá bazalka"],

@@ -54,6 +54,8 @@ def _seed(db) -> dict:
         RecipeIngredient(recipe_id=r.id, raw_text="2 ks kuřecích prs"),
         # nadpis skupiny (5 slov) – musí ho smazat automatický purge
         RecipeIngredient(recipe_id=r.id, raw_text="Na vymazání a vysypání formy:"),
+        # ozdobný oddělovač – po normalizaci prázdný klíč → purge ho smaže
+        RecipeIngredient(recipe_id=r.id, raw_text="-----"),
         # builtin ne-surovina – zůstane nenapárovaná, ale slovník ji zná
         RecipeIngredient(recipe_id=r.id, raw_text="alobal"),
         # builtin ne-surovina se seedovaným lookup_key – /unmatched ji nesmí ukazovat
@@ -98,6 +100,8 @@ def run_tests() -> int:
         header = db.query(RecipeIngredient).filter_by(
             raw_text="Na vymazání a vysypání formy:").one_or_none()
         check("nadpis skupiny (5 slov) byl automaticky smazán", header is None)
+        sep = db.query(RecipeIngredient).filter_by(raw_text="-----").one_or_none()
+        check("ozdobný oddělovač '-----' byl automaticky smazán", sep is None)
         papir_alias = db.query(IngredientAlias).filter_by(
             lookup_key=make_lookup_key("pečící papír")).one_or_none()
         check("builtin ne-surovina 'pečící papír' je ve slovníku",
