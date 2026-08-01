@@ -18,9 +18,23 @@ import httpx
 
 from ..config import settings
 from .llmjson import parse_json_response
-from .ollamachat import chat_json
+from .ollamachat import chat_json_raw
 
 log = logging.getLogger("kucharka.llmclient")
+
+# Poslední chyba LLM volání – volající (llm_match) ji ukládá k rozhodnutím
+# a do stavu běhu, ať je v UI vidět SKUTEČNÁ příčina ("timeout", "connection
+# refused", "model not found"…), ne jen generické "volání selhalo".
+_last_error: str | None = None
+
+
+def last_error() -> str | None:
+    return _last_error
+
+
+def _set_error(msg: str | None) -> None:
+    global _last_error
+    _last_error = msg[:300] if msg else None
 
 
 def availability_error() -> str | None:
@@ -66,8 +80,9 @@ def structured_json(
             prompt, schema=schema, timeout=timeout, temperature=temperature
         )
     if not settings.ollama_enabled:
+        _set_error("Ollama není nakonfigurovaná (OLLAMA_URL).")
         return None
-    return chat_json(
+    parsed, raw = chat_json_raw(
         settings.ollama_url,
         ollama_model or settings.ollama_fast_model,
         prompt,
@@ -77,6 +92,12 @@ def structured_json(
         format_schema=schema,
         num_ctx=num_ctx,
     )
+    if parsed is None:
+        # raw je buď "<chyba volání: …>" (síť/HTTP), nebo neparsovatelná odpověď
+        _set_error(raw or "prázdná odpověď modelu")
+    else:
+        _set_error(None)
+    return parsed
 
 
 def _api_chat_json(
@@ -126,14 +147,19 @@ def _api_chat_json(
                 continue
             body = exc.response.text[:300]
             log.warning("LLM API volání selhalo (HTTP %s): %s", code, body)
+            _set_error(f"HTTP {code}: {body}")
             return None
         except Exception as exc:  # noqa: BLE001 - síť, timeout…
             log.warning("LLM API volání selhalo: %s", exc)
+            _set_error(str(exc))
             return None
         try:
-            return parse_json_response(raw)
+            out = parse_json_response(raw)
+            _set_error(None)
+            return out
         except Exception as exc:  # noqa: BLE001
             log.warning("LLM API odpověď není validní JSON (%s): %r", exc, raw[:300])
+            _set_error(f"nevalidní JSON: {str(exc)[:120]}")
             return None
     return None
 

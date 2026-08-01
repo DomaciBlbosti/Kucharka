@@ -62,6 +62,7 @@ function ToolsCard() {
       "rag_k", "rag_max_recipes", "ollama_keep_alive", "bg_workers",
       "llm_match_enabled", "llm_match_model", "llm_match_batch_size",
       "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
+      "llm_match_timeout_s",
       "llm_provider", "llm_api_url", "llm_api_model"];
     const vals = Object.fromEntries(keys.map((k) => [k, s[k]]));
     if (apiKey.trim()) vals.llm_api_key = apiKey.trim();
@@ -181,6 +182,10 @@ function ToolsCard() {
         <Field label="num_ctx" hint="kontextové okno – musí pokrýt katalog + dávku">
           <input type="number" min="512" step="512" className={input} value={s.llm_match_num_ctx ?? 16384}
             onChange={(e) => set("llm_match_num_ctx", Number(e.target.value))} />
+        </Field>
+        <Field label="Timeout volání (s)" hint="lokální 12B model s dlouhým promptem klidně generuje minuty">
+          <input type="number" min="30" step="30" className={input} value={s.llm_match_timeout_s ?? 300}
+            onChange={(e) => set("llm_match_timeout_s", Number(e.target.value))} />
         </Field>
         <Field label="Temperature">
           <input type="number" min="0" max="2" step="0.1" className={input}
@@ -1807,6 +1812,12 @@ function LlmMatchCard() {
               {" "}<span className="text-ink/45">(návrhy a bez shody čekají v katalogu níže)</span>
             </p>
           ) : null}
+          {st?.last_error && (
+            <p className="text-sm text-miss">
+              Poslední chyba LLM: <span className="font-mono text-xs">{st.last_error}</span>
+              <span className="text-ink/45"> — zkontroluj Ollamu/model, případně zvyš timeout v Nástrojích.</span>
+            </p>
+          )}
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}

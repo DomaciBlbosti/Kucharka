@@ -72,6 +72,10 @@ class Settings:
         # vstupů + odpověď). Zvyš, pokud vidíš v logu ořezané/prázdné odpovědi.
         self.llm_match_num_ctx: int = int(_env("LLM_MATCH_NUM_CTX", "16384"))
         self.llm_match_temperature: float = float(_env("LLM_MATCH_TEMPERATURE", "0"))
+        # Timeout jednoho LLM volání (s). Lokální 12B model s dlouhým promptem
+        # (katalog + dávka + kontexty) klidně generuje přes 3 minuty – krátký
+        # timeout pak shodí KAŽDOU dávku a běh skončí samými chybami.
+        self.llm_match_timeout_s: int = int(_env("LLM_MATCH_TIMEOUT_S", "300"))
         # Pauza mezi dávkami (s) – ať GPU dostane chvíli oddych mezi requesty
         # místo nepřetržitého zatížení hodiny v kuse. Po neúspěšné dávce se
         # čeká déle – opakované selhání bez pauzy jen přitěžuje GPU, která
@@ -211,6 +215,7 @@ class Settings:
         "lidl_sync_enabled", "lidl_sync_interval_min",
         "llm_match_enabled", "llm_match_model", "llm_match_batch_size",
         "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
+        "llm_match_timeout_s",
         "llm_provider", "llm_api_url", "llm_api_key", "llm_api_model",
     )
 
@@ -254,6 +259,7 @@ class Settings:
             "llm_match_min_confidence": self.llm_match_min_confidence,
             "llm_match_num_ctx": self.llm_match_num_ctx,
             "llm_match_temperature": self.llm_match_temperature,
+            "llm_match_timeout_s": self.llm_match_timeout_s,
             "llm_provider": self.llm_provider,
             "llm_api_url": self.llm_api_url,
             # klíč se NIKDY nevrací ven, jen příznak, že je nastavený
@@ -315,7 +321,7 @@ class Settings:
         elif key in (
             "rag_k", "crawler_interval_min", "crawler_max_per_run", "bg_workers",
             "auto_translate_interval_min", "auto_match_interval_min", "lidl_sync_interval_min",
-            "llm_match_batch_size", "llm_match_num_ctx",
+            "llm_match_batch_size", "llm_match_num_ctx", "llm_match_timeout_s",
         ):
             try:
                 setattr(self, key, max(1, int(value)))

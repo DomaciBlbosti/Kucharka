@@ -158,10 +158,11 @@ class _Matcher:
 
 
 def purge_headers(db: Session) -> int:
-    """Smaže nenapárované řádky, které jsou jen nadpis skupiny ("Dále:",
-    "Drobenka:", "Na vymazání a vysypání formy:"). Dřív jen ruční tlačítko
-    v administraci – teď běží automaticky na začátku každého párování,
-    ať se nadpisy nehromadí (v produkci jich čekaly tisíce)."""
+    """Smaže nenapárované řádky, které nikdy nemohou být surovina:
+    * nadpisy skupin ("Dále:", "Drobenka:", "Na vymazání a vysypání formy:"),
+    * ozdobné oddělovače a čistě číselné řádky ("-----", "2") – po
+      normalizaci z nich nezbyde žádný klíč, takže je nejde napárovat nikdy.
+    Běží automaticky na začátku každého párování."""
     removed = 0
     last_id = 0
     while True:
@@ -178,14 +179,15 @@ def purge_headers(db: Session) -> int:
             break
         for row_id, raw_text in rows:
             last_id = row_id
-            if is_section_header(raw_text or ""):
+            raw = raw_text or ""
+            if is_section_header(raw) or not make_lookup_key(raw):
                 obj = db.get(RecipeIngredient, row_id)
                 if obj is not None:
                     db.delete(obj)
                     removed += 1
         db.commit()
     if removed:
-        log.info("purge nadpisů: smazáno %s řádků", removed)
+        log.info("purge nadpisů/oddělovačů: smazáno %s řádků", removed)
     return removed
 
 
