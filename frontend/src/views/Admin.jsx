@@ -1051,6 +1051,9 @@ function MatchPanel() {
             <span className="text-ink/55"> nenapárovaných řádků v </span>
             <b>{st.recipes_unmatched}</b>
             <span className="text-ink/55"> receptech</span>
+            {st.nonfood_rows > 0 && (
+              <span className="text-ink/45"> (z toho {st.nonfood_rows} rozhodnutých ne-surovin – bez kalorií záměrně)</span>
+            )}
           </div>
           {st.rows_unmatched > 0 ? (
             <div className="ml-auto flex gap-2">
@@ -1815,7 +1818,8 @@ function LlmMatchCard() {
           {st?.last_error && (
             <p className="text-sm text-miss">
               Poslední chyba LLM: <span className="font-mono text-xs">{st.last_error}</span>
-              <span className="text-ink/45"> — zkontroluj Ollamu/model, případně zvyš timeout v Nástrojích.</span>
+              <span className="text-ink/45"> — u timeoutů zmenši dávku a num_ctx (model se musí vejít do VRAM),
+              případně zvyš timeout, nebo přepni na komerční API v Nástrojích.</span>
             </p>
           )}
           {err && <p className="text-sm text-miss">{err}</p>}
