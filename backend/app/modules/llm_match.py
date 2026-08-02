@@ -644,6 +644,56 @@ def _process_response(
     return stats, affected, created
 
 
+# ─── Jedna dávka s auto-půlením při timeoutu ─────────────────────────────────
+
+def _attempt_batch(
+    db: Session,
+    chunk: list[_Group],
+    catalog: list[tuple[int, str]],
+    valid_ids: set[int],
+    min_conf: float,
+    model_name: str,
+    depth: int = 0,
+) -> tuple[dict, set[int], list[Ingredient], bool, int]:
+    """Zpracuje dávku; při timeoutu ji rozdělí na poloviny a zkusí znovu
+    (max 2 úrovně: 40 → 20 → 10). Lokální model, který se s velkým promptem
+    nevejde do limitu, tak dávky dokončí sám – bez ručního ladění velikosti.
+
+    Vrátí (stats, affected, created, failed_all, calls).
+    """
+    prompt = _make_prompt(
+        catalog, [g.sample for g in chunk],
+        contexts=[g.context_title for g in chunk],
+    )
+    resp = _call_llm(prompt)
+    if resp is not None:
+        stats, affected, created = _process_response(
+            db, resp, chunk, valid_ids, min_conf, model_name
+        )
+        return stats, affected, created, False, 1
+
+    err = llmclient.last_error() or ""
+    timeoutish = "timed out" in err.lower() or "timeout" in err.lower()
+    if timeoutish and depth < 2 and len(chunk) >= 4:
+        mid = len(chunk) // 2
+        log.warning(
+            "dávka %s položek vypršela (%s) – zkouším po polovinách (%s + %s)",
+            len(chunk), err[:80], mid, len(chunk) - mid,
+        )
+        s1, a1, c1, f1, n1 = _attempt_batch(
+            db, chunk[:mid], catalog, valid_ids, min_conf, model_name, depth + 1)
+        s2, a2, c2, f2, n2 = _attempt_batch(
+            db, chunk[mid:], catalog, valid_ids, min_conf, model_name, depth + 1)
+        merged = {k: s1.get(k, 0) + s2.get(k, 0) for k in
+                  ("applied", "suggested", "no_match", "nonfood", "errors", "created")}
+        return merged, a1 | a2, c1 + c2, f1 and f2, 1 + n1 + n2
+
+    stats, affected, created = _process_response(
+        db, None, chunk, valid_ids, min_conf, model_name, error_detail=err
+    )
+    return stats, affected, created, True, 1
+
+
 # ─── Přepočet dotčených receptů ──────────────────────────────────────────────
 
 def _finalize_recipes(db: Session, recipe_ids: set[int]) -> int:
@@ -834,17 +884,11 @@ def _run(batch_size: int | None = None) -> dict:
         consecutive_failures = 0
         for idx, chunk in enumerate(chunks):
             catalog = catalogs[idx] or static_catalog
-            prompt = _make_prompt(
-                catalog, [g.sample for g in chunk],
-                contexts=[g.context_title for g in chunk],
+            stats, batch_affected, batch_created, failed_all, calls = _attempt_batch(
+                db, chunk, catalog, valid_ids, min_conf, model_name
             )
-            resp = _call_llm(prompt)
-            err_detail = llmclient.last_error() if resp is None else None
-            run_stats["batches"] += 1
-            stats, batch_affected, batch_created = _process_response(
-                db, resp, chunk, valid_ids, min_conf, model_name,
-                error_detail=err_detail,
-            )
+            err_detail = llmclient.last_error() if failed_all else None
+            run_stats["batches"] += calls
             for k in ("applied", "suggested", "no_match", "nonfood", "errors", "created"):
                 run_stats[k] += stats[k]
             affected |= batch_affected
@@ -858,7 +902,7 @@ def _run(batch_size: int | None = None) -> dict:
                     errors=run_stats["errors"], created=run_stats["created"],
                     last_error=err_detail,
                 )
-            if resp is None:
+            if failed_all:
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_CONSECUTIVE_BATCH_FAILURES:
                     # padá úplně všechno – zastavit, ať se hodiny nemele naprázdno

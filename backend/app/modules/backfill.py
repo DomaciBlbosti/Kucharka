@@ -43,6 +43,10 @@ _lock = threading.Lock()
 _state: dict = {
     "running": False, "phase": None, "done": 0, "total": 0,
     "matched": 0, "created": 0, "finished_at": None, "error": None,
+    # kolik nenapárovaných řádků je ve skutečnosti UŽ rozhodnutá ne-surovina
+    # (zůstávají bez suroviny záměrně) – z posledního běhu; ať UI neukazuje
+    # děsivé číslo "13 562 nenapárováno", když víc než půlka je vyřešená
+    "nonfood_rows": None,
 }
 
 
@@ -229,6 +233,7 @@ def backfill(create_missing: bool = False, chunk: int = CHUNK) -> dict:
         m = _Matcher(db)
         done = 0
         last_id = 0
+        nonfood_rows = 0
         while True:
             rows = db.scalars(
                 select(RecipeIngredient)
@@ -248,13 +253,16 @@ def backfill(create_missing: bool = False, chunk: int = CHUNK) -> dict:
                 if not key:
                     continue
                 ing, nonfood = m.match(key)
-                if nonfood or ing is None:
+                if nonfood:
+                    nonfood_rows += 1
+                    continue
+                if ing is None:
                     continue
                 _apply(row, ing)
                 matched += 1
                 affected.add(row.recipe_id)
             db.commit()
-            _set(done=done, matched=matched)
+            _set(done=done, matched=matched, nonfood_rows=nonfood_rows)
 
         # --- přepočet kalorií dotčených receptů ---
         _set(phase="kcal")

@@ -37,8 +37,10 @@ class FakeLLM:
     def structured_json(self, prompt, **kw):
         self.calls += 1
         if self.responses:
-            self._err = None
-            return self.responses.pop(0)
+            resp = self.responses.pop(0)
+            # None ve frontě = simulovaný timeout (jako vyčerpaná fronta)
+            self._err = None if resp is not None else "test: Ollama timeout po 300s"
+            return resp
         self._err = "test: Ollama timeout po 300s"
         return None
 
@@ -265,6 +267,34 @@ def run_tests() -> int:
     check("založená surovina má odhadnutou výživu",
           ing_glut is not None and ing_glut.kcal_100g == 250,
           str(ing_glut and ing_glut.kcal_100g))
+
+    # ─── Auto-půlení dávky při timeoutu ──────────────────────────────────
+    # 4 nové položky v jedné dávce: první volání vyprší (timeout), poloviny
+    # (2+2) už projdou → všechno napárované, žádná chyba.
+    half_items = ["chia semínka bio", "quinoa červená", "kokosový cukr raw",
+                  "psyllium vláknina"]
+    for t in half_items:
+        db.add(RecipeIngredient(recipe_id=ids["recipe"], raw_text=t))
+    db.commit()
+    settings.auto_ingredients = True
+    fake.responses = [
+        None,  # celá dávka: timeout
+        {"items": [
+            {"i": 0, "ingredient_id": None, "name_cs": "chia semínka", "category": "food", "confidence": 0.9},
+            {"i": 1, "ingredient_id": None, "name_cs": "quinoa", "category": "food", "confidence": 0.9},
+        ]},
+        {"items": [
+            {"i": 0, "ingredient_id": None, "name_cs": "kokosový cukr", "category": "food", "confidence": 0.9},
+            {"i": 1, "ingredient_id": None, "name_cs": "psyllium", "category": "food", "confidence": 0.9},
+        ]},
+        {"items": []},  # dávkový odhad výživy (prázdný = bez výživy, nevadí)
+    ]
+    fake.calls = 0
+    out_half = llm_match.process_batch(batch_size=4)
+    check("timeout dávky → automatické půlení → vše napárováno",
+          out_half.get("applied") == 4 and out_half.get("errors") == 0
+          and "aborted" not in out_half,
+          f"calls={fake.calls} out={out_half}")
 
     # ─── Circuit breaker: 5 selhaných dávek v řadě zastaví běh ───────────
     for i in range(8):
