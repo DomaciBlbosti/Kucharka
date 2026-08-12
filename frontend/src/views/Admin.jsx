@@ -1779,6 +1779,8 @@ function LlmMatchCard() {
             ? `Aplikuji slovník… (${st.dict_applied} řádků bez LLM)`
             : st.phase === "embeddings"
             ? `Počítám embeddingy… ${st.embed_done}/${st.embed_total} dávek`
+            : st.phase === "context"
+            ? `Dořešuji v kontextu receptů… ${st.ctx_done}/${st.ctx_total} (dořešeno ${st.ctx_applied}, smazáno poznámek ${st.ctx_removed})`
             : st.phase === "nutrition"
             ? "Odhaduji výživu nově založených surovin…"
             : st.phase === "kcal"
@@ -1812,6 +1814,9 @@ function LlmMatchCard() {
               {st.created ? <> (z toho {st.created} nově založených surovin)</> : null} ·
               návrhy k potvrzení {st.suggested} · bez shody {st.no_match} · non-food {st.nonfood}
               {st.errors ? <span className="text-miss"> · chyby {st.errors}</span> : null}
+              {(st.ctx_applied || st.ctx_removed) ? (
+                <> · kontextem receptu dořešeno {st.ctx_applied}, smazáno poznámek/textu {st.ctx_removed}</>
+              ) : null}
               {" "}<span className="text-ink/45">(návrhy a bez shody čekají v katalogu níže)</span>
             </p>
           ) : null}

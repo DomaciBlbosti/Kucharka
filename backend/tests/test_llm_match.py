@@ -112,7 +112,9 @@ def run_tests() -> int:
     }]
     fake.calls = 0
     out = llm_match.process_batch()
-    check("běh 1: 1 LLM volání", fake.calls == 1, str(fake.calls))
+    # 1 dávkové volání + 1 pokus kontextové fáze o čerstvý no_match (selže,
+    # fronta odpovědí je prázdná – to je v pořádku, zkusí se příště)
+    check("běh 1: 1 dávkové + 1 kontextové volání", fake.calls == 2, str(fake.calls))
     check("běh 1: applied=1", out.get("applied") == 1, str(out))
     check("běh 1: suggested=1", out.get("suggested") == 1, str(out))
     check("běh 1: nonfood=1", out.get("nonfood") == 1, str(out))
@@ -143,6 +145,11 @@ def run_tests() -> int:
     check("alias pro jistý match existuje (source=llm)",
           alias_kure is not None and alias_kure.source == "llm"
           and alias_kure.ingredient_id == ids["kure"])
+
+    # označ no_match jako "kontextem už prošlé", ať další testy mají
+    # deterministické počty volání (kontextová fáze cílí na attempts==0)
+    db.query(MatchDecision).filter_by(status="no_match").update({"attempts": 1})
+    db.commit()
 
     # ─── Běh 2: nic nového → žádné LLM volání ────────────────────────────
     fake.responses = []
@@ -344,6 +351,70 @@ def run_tests() -> int:
     db.expire_all()
     check("migrace je jednorázová (marker) – nové no_match nechává",
           db.query(MatchDecision).filter_by(lookup_key="novy-klic").one_or_none() is not None)
+
+    # ─── Fáze 3: kontextové dořešení po receptech ────────────────────────
+    # úklid zbytků z circuit-breaker testu (3 exotické řádky bez rozhodnutí
+    # by jinak vstoupily do dávkové fronty a posunuly počty volání)
+    for ri in db.query(RecipeIngredient).filter(
+            RecipeIngredient.raw_text.like("exotická surovina%")).all():
+        db.delete(ri)
+    db.commit()
+
+    r2 = Recipe(title="Babiččin jablečný závin", source_url="http://test/2",
+                servings=6, instructions="Těsto rozválíme, poklademe jablky a pečeme.")
+    db.add(r2)
+    db.flush()
+    db.add_all([
+        RecipeIngredient(recipe_id=r2.id, raw_text="hrst čerstvé máty na dozdobení dortu"),
+        RecipeIngredient(recipe_id=r2.id, raw_text="dle chuti dosolíme a opepříme"),
+    ])
+    db.commit()
+    key_mata = make_lookup_key("hrst čerstvé máty na dozdobení dortu")
+    key_note = make_lookup_key("dle chuti dosolíme a opepříme")
+    # simulace: dávková fáze je už dřív vyhodnotila jako 'bez shody'
+    llm_match._upsert_decision(db, key_mata, "hrst čerstvé máty na dozdobení dortu",
+                               status="no_match", category="food", occurrences=1)
+    llm_match._upsert_decision(db, key_note, "dle chuti dosolíme a opepříme",
+                               status="no_match", category="food", occurrences=1)
+    db.commit()
+    settings.auto_ingredients = True
+    fake.responses = [
+        # kontextové volání (pořadí = pořadí řádků v receptu)
+        {"items": [
+            {"i": 0, "verdict": "ingredient", "name_cs": "máta", "confidence": 0.9},
+            {"i": 1, "verdict": "note", "confidence": 0.95},
+        ]},
+        # odhad výživy nové suroviny
+        {"items": [{"i": 0, "kcal_100g": 44, "protein_100g": 3.3, "carbs_100g": 8,
+                    "fat_100g": 0.7, "density": None, "category": "bylinky"}]},
+    ]
+    fake.calls = 0
+    out_ctx = llm_match.process_batch()
+    check("kontextová fáze: surovina dořešena, poznámka smazána",
+          out_ctx.get("ctx_applied") == 1 and out_ctx.get("ctx_removed") == 1,
+          f"calls={fake.calls} out={out_ctx}")
+    db.expire_all()
+    row_mata = db.query(RecipeIngredient).filter_by(
+        raw_text="hrst čerstvé máty na dozdobení dortu").one()
+    ing_mata = db.get(Ingredient, row_mata.ingredient_id) if row_mata.ingredient_id else None
+    check("kontext: řádek napárovaný na novou surovinu 'máta' s výživou",
+          ing_mata is not None and ing_mata.name_cs == "máta" and ing_mata.kcal_100g == 44,
+          f"{ing_mata and ing_mata.name_cs}/{ing_mata and ing_mata.kcal_100g}")
+    note_row = db.query(RecipeIngredient).filter_by(
+        raw_text="dle chuti dosolíme a opepříme").one_or_none()
+    check("kontext: poznámka smazána z receptu", note_row is None)
+    d_note = db.query(MatchDecision).filter_by(lookup_key=key_note).one()
+    check("kontext: rozhodnutí poznámky je ignored s vysvětlením",
+          d_note.status == "ignored" and "poznámka" in (d_note.error or ""),
+          f"{d_note.status}/{d_note.error}")
+    d_mata = db.query(MatchDecision).filter_by(lookup_key=key_mata).one()
+    check("kontext: rozhodnutí máty je applied a neopakuje se",
+          d_mata.status == "applied" and d_mata.attempts >= 1)
+    # druhý běh: nic dalšího k dotazování → žádné LLM volání
+    fake.responses = []
+    fake.calls = 0
+    llm_match.process_batch()
+    check("kontext: druhý běh se už neptá", fake.calls == 0, str(fake.calls))
 
     # ─── Přehled endpointu decisions ─────────────────────────────────────
     from app.routers.maintenance import list_decisions
