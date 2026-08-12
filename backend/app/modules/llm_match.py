@@ -53,6 +53,7 @@ _state: dict = {
     "embed_done": 0, "embed_total": 0,
     "dict_applied": 0, "applied": 0, "suggested": 0, "no_match": 0,
     "nonfood": 0, "errors": 0, "created": 0, "last_error": None,
+    "ctx_done": 0, "ctx_total": 0, "ctx_applied": 0, "ctx_removed": 0,
     "finished_at": None,
 }
 
@@ -694,7 +695,241 @@ def _attempt_batch(
     return stats, affected, created, True, 1
 
 
+# ─── Fáze 3: kontextové dořešení po receptech ────────────────────────────────
+# Dávková fáze pracuje s deduplikovanými texty BEZ kontextu – to stačí na
+# běžné suroviny, ale ne na útržky postupu, poznámky a fragmenty ze scrapu
+# ("dle chuti dosolíme", "recept pochází z…"). Ty skončí jako 'no_match'.
+# Kontextová fáze je vezme PO RECEPTECH: LLM dostane celý recept (název,
+# všechny suroviny s už napárovanými názvy, zkrácený postup) a rozhodne,
+# jestli je nerozpoznaný řádek surovina (→ založit/napárovat), poznámka či
+# kus textu (→ smazat, jako nadpisy), nebo pomůcka/obal.
+
+CONTEXT_MAX_RECIPES_PER_RUN = 300   # strop na jeden běh; zbytek příště
+_CTX_MIN_CONF_ACTION = 0.7          # pod tímhle prahem se nic nemaže/nezakládá
+_CTX_MAX_CONSECUTIVE_ERRORS = 3
+
+_CTX_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "i": {"type": "integer"},
+                    "verdict": {
+                        "type": "string",
+                        "enum": ["ingredient", "note", "nonfood", "unknown"],
+                    },
+                    "name_cs": {"type": "string"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["i", "verdict", "confidence"],
+            },
+        }
+    },
+    "required": ["items"],
+}
+
+_CTX_PROMPT_HEADER = """Jsi expert na české recepty. Dostaneš JEDEN recept a několik řádků z jeho seznamu surovin, které se nepodařilo rozpoznat. Podle kontextu celého receptu urči pro KAŽDÝ očíslovaný řádek:
+- verdict "ingredient": řádek JE surovina → vyplň name_cs (kanonický český název, 1. pád jednotného čísla, bez množství)
+- verdict "note": NENÍ surovina – poznámka, útržek postupu nebo textu stránky, reklama, odkaz (např. "dle chuti dosolíme", "recept pochází z webu…")
+- verdict "nonfood": kuchyňská pomůcka nebo obal (forma, alobal, pečicí papír)
+- verdict "unknown": nelze určit
+confidence: 0–1. Odpověz POUZE JSON {"items":[{"i":<index>,"verdict":"...","name_cs":"...","confidence":0.9}]} s právě jedním objektem pro každý index.
+"""
+
+
+def _context_pass(
+    db: Session,
+    min_conf: float,
+    model_name: str,
+    created_sink: list[Ingredient],
+) -> tuple[dict, set[int]]:
+    """Vrátí (statistiky, dotčené recepty). Necommitované změny commitne po receptu."""
+    stats = {"ctx_recipes": 0, "ctx_applied": 0, "ctx_suggested": 0,
+             "ctx_removed": 0, "ctx_nonfood": 0, "ctx_unknown": 0, "ctx_errors": 0}
+    affected: set[int] = set()
+
+    # kandidáti: 'no_match' rozhodnutí, která kontextem ještě neprošla
+    decisions_map = {
+        d.lookup_key: d for d in db.scalars(
+            select(MatchDecision).where(
+                MatchDecision.status == "no_match", MatchDecision.attempts == 0
+            )
+        ).all()
+    }
+    if not decisions_map:
+        return stats, affected
+
+    # živé nenapárované řádky těchhle klíčů, po receptech
+    rows = db.execute(
+        select(RecipeIngredient.id, RecipeIngredient.raw_text, RecipeIngredient.recipe_id)
+        .where(
+            RecipeIngredient.ingredient_id.is_(None),
+            RecipeIngredient.raw_text.is_not(None),
+        )
+    ).all()
+    per_recipe: dict[int, dict[str, tuple[str, list[int]]]] = {}
+    global_rows: dict[str, list[int]] = defaultdict(list)
+    for row_id, raw_text, recipe_id in rows:
+        raw = (raw_text or "").strip()
+        key = make_lookup_key(raw) if raw else ""
+        if not key or key not in decisions_map:
+            continue
+        bucket = per_recipe.setdefault(recipe_id, {})
+        sample, ids = bucket.get(key, (raw, []))
+        ids.append(row_id)
+        bucket[key] = (sample, ids)
+        global_rows[key].append(row_id)
+
+    # recepty s nejvíc nerozpoznanými řádky první; strop na běh
+    ordered = sorted(per_recipe.items(), key=lambda kv: -len(kv[1]))
+    ordered = ordered[:CONTEXT_MAX_RECIPES_PER_RUN]
+    with _lock:
+        _state.update(ctx_total=len(ordered), ctx_done=0)
+
+    processed_keys: set[str] = set()
+    consecutive_errors = 0
+    for done_i, (rid, buckets) in enumerate(ordered, 1):
+        unresolved = [(k, v) for k, v in buckets.items() if k not in processed_keys]
+        if not unresolved:
+            with _lock:
+                _state.update(ctx_done=done_i)
+            continue
+        recipe = db.get(Recipe, rid)
+        if recipe is None:
+            continue
+
+        lines = []
+        for ri in recipe.ingredients:
+            mark = f" → {ri.ingredient.name_cs}" if ri.ingredient else "  (nerozpoznáno)"
+            lines.append(f"- {ri.raw_text}{mark}")
+        instructions = (recipe.instructions or "").strip()[:400]
+        numbered = "\n".join(f"{i}: {sample}" for i, (_k, (sample, _ids)) in enumerate(unresolved))
+        prompt = (
+            f"{_CTX_PROMPT_HEADER}\n"
+            f"Recept: {recipe.title}\n"
+            + (f"Postup (zkráceno): {instructions}\n" if instructions else "")
+            + "Seznam surovin receptu:\n" + "\n".join(lines)
+            + f"\n\nNerozpoznané řádky k posouzení (i: text):\n{numbered}\n"
+        )
+        resp = llmclient.structured_json(
+            prompt, schema=_CTX_SCHEMA,
+            timeout=max(30, settings.llm_match_timeout_s),
+            num_ctx=settings.llm_match_num_ctx,
+            ollama_model=settings.llm_match_model or settings.ollama_fast_model,
+        )
+        stats["ctx_recipes"] += 1
+        if resp is None:
+            stats["ctx_errors"] += 1
+            consecutive_errors += 1
+            with _lock:
+                _state.update(ctx_done=done_i, last_error=llmclient.last_error())
+            if consecutive_errors >= _CTX_MAX_CONSECUTIVE_ERRORS:
+                log.warning("kontextová fáze: %s chyb v řadě – zbytek příště", consecutive_errors)
+                break
+            continue
+        consecutive_errors = 0
+
+        by_i: dict[int, dict] = {}
+        for it in resp.get("items", []):
+            try:
+                by_i[int(it.get("i"))] = it
+            except (TypeError, ValueError):
+                continue
+
+        for idx, (key, (sample, row_ids)) in enumerate(unresolved):
+            d = decisions_map.get(key)
+            it = by_i.get(idx)
+            if d is None or it is None:
+                continue  # vynechané se zkusí příště
+            verdict = (it.get("verdict") or "unknown").lower()
+            try:
+                conf = float(it.get("confidence") or 0)
+            except (TypeError, ValueError):
+                conf = 0.0
+            name = (it.get("name_cs") or "").strip()
+            d.attempts = (d.attempts or 0) + 1  # kontextem prošlo – neopakovat
+            d.updated_at = datetime.utcnow()
+
+            if verdict == "ingredient" and conf >= min_conf and _plausible_new_name(name):
+                if settings.auto_ingredients:
+                    ing = get_or_create_ingredient(db, name)
+                    if ing.kcal_100g is None:
+                        created_sink.append(ing)
+                    _upsert_alias(db, sample, lookup_key=key, ingredient_id=ing.id,
+                                  kind="food", source="llm", confidence=conf)
+                    affected |= _apply_rows(db, global_rows[key], ing)
+                    d.status = "applied"
+                    d.category = "food"
+                    d.ingredient_id = ing.id
+                    d.suggested_name = name[:200]
+                    d.confidence = conf
+                    d.model = model_name
+                    stats["ctx_applied"] += 1
+                else:
+                    d.status = "suggested"
+                    d.category = "food"
+                    d.suggested_name = name[:200]
+                    d.confidence = conf
+                    d.model = model_name
+                    stats["ctx_suggested"] += 1
+                processed_keys.add(key)
+            elif verdict == "nonfood" and conf >= _CTX_MIN_CONF_ACTION:
+                _upsert_alias(db, sample, lookup_key=key, ingredient_id=None,
+                              kind="equipment", source="llm", confidence=conf)
+                d.status = "nonfood"
+                d.category = "equipment"
+                d.confidence = conf
+                d.model = model_name
+                stats["ctx_nonfood"] += 1
+                processed_keys.add(key)
+            elif verdict == "note" and conf >= _CTX_MIN_CONF_ACTION:
+                # poznámka/kus textu → smazat řádky TOHOHLE receptu
+                for row_id in row_ids:
+                    obj = db.get(RecipeIngredient, row_id)
+                    if obj is not None:
+                        db.delete(obj)
+                stats["ctx_removed"] += len(row_ids)
+                remaining = [r for r in global_rows[key] if r not in set(row_ids)]
+                global_rows[key] = remaining
+                if not remaining:
+                    d.status = "ignored"
+                    d.error = "poznámka/kus textu, ne surovina (kontextová kontrola)"
+                    d.model = model_name
+                    processed_keys.add(key)
+            else:
+                stats["ctx_unknown"] += 1
+
+        db.commit()
+        with _lock:
+            _state.update(
+                ctx_done=done_i,
+                ctx_applied=stats["ctx_applied"], ctx_removed=stats["ctx_removed"],
+            )
+    return stats, affected
+
+
 # ─── Přepočet dotčených receptů ──────────────────────────────────────────────
+
+def _fill_rows_kcal(db: Session, created: list[Ingredient]) -> None:
+    """Řádky napárované na nové suroviny dostaly kcal=None (výživa se
+    odhaduje až po napárování) – dopočítej je teď."""
+    for ing in created:
+        if ing.kcal_100g is None:
+            continue
+        rows = db.scalars(
+            select(RecipeIngredient).where(
+                RecipeIngredient.ingredient_id == ing.id,
+                RecipeIngredient.kcal.is_(None),
+            )
+        ).all()
+        for r in rows:
+            r.grams = grams_for(r.amount, r.unit, ing)
+            r.kcal = kcal_for(r.grams, ing)
+    db.commit()
+
 
 def _finalize_recipes(db: Session, recipe_ids: set[int]) -> int:
     """Po napárování řádků přepočítá kcal/porci, celkovou váhu a kcal/100 g."""
@@ -762,7 +997,9 @@ def _try_start() -> bool:
             running=True, phase="collecting", done=0, total=0,
             embed_done=0, embed_total=0,
             dict_applied=0, applied=0, suggested=0, no_match=0,
-            nonfood=0, errors=0, created=0, last_error=None, finished_at=None,
+            nonfood=0, errors=0, created=0, last_error=None,
+            ctx_done=0, ctx_total=0, ctx_applied=0, ctx_removed=0,
+            finished_at=None,
         )
         return True
 
@@ -825,8 +1062,26 @@ def _run(batch_size: int | None = None) -> dict:
         totals["skipped_decided"] = skipped_decided
 
         if not queue:
+            # Dávková fáze nemá co dělat, ale kontextové dořešení 'no_match'
+            # položek po receptech může stále běžet (typický stav po prvním
+            # projetí celé fronty).
+            with _lock:
+                _state.update(phase="context")
+            created_ingredients: list[Ingredient] = []
+            ctx_stats, ctx_affected = _context_pass(
+                db, min_conf, model_name, created_ingredients
+            )
+            totals.update(ctx_stats)
+            affected |= ctx_affected
+            if created_ingredients:
+                with _lock:
+                    _state.update(phase="nutrition")
+                totals["nutrition_filled"] = estimate_nutrition(db, created_ingredients)
+                _fill_rows_kcal(db, created_ingredients)
+            with _lock:
+                _state.update(phase="kcal")
             totals["reenriched"] = _finalize_recipes(db, affected)
-            log.info("LLM match: nic nového k dotazování (%s už rozhodnuto). %s", skipped_decided, totals)
+            log.info("LLM match: dávková fronta prázdná (%s už rozhodnuto). %s", skipped_decided, totals)
             return totals
 
         # Nejčastější texty první – položky s stovkami výskytů se vyřeší
@@ -927,27 +1182,23 @@ def _run(batch_size: int | None = None) -> dict:
                     # oddych jen pro lokální GPU; komerční API pauzy nepotřebuje
                     time.sleep(settings.llm_match_batch_pause_s)
 
+        # ─── Fáze 3: kontextové dořešení 'no_match' položek po receptech ─
+        # Jen když LLM reálně odpovídá (ne po circuit breakeru).
+        if "aborted" not in totals:
+            with _lock:
+                _state.update(phase="context")
+            ctx_stats, ctx_affected = _context_pass(
+                db, min_conf, model_name, created_ingredients
+            )
+            totals.update(ctx_stats)
+            affected |= ctx_affected
+
         # ─── Odhad výživy nově založených surovin (dávkově) ─────────────
         if created_ingredients:
             with _lock:
                 _state.update(phase="nutrition")
             totals["nutrition_filled"] = estimate_nutrition(db, created_ingredients)
-            # výživa se doplnila až teď → gramy/kcal řádků dotčených receptů
-            # dopočítá _finalize_recipes níž (kcal per řádek řeší _apply_rows,
-            # který u surovin bez kcal nechal None – přepočítej je)
-            for ing in created_ingredients:
-                if ing.kcal_100g is None:
-                    continue
-                rows = db.scalars(
-                    select(RecipeIngredient).where(
-                        RecipeIngredient.ingredient_id == ing.id,
-                        RecipeIngredient.kcal.is_(None),
-                    )
-                ).all()
-                for r in rows:
-                    r.grams = grams_for(r.amount, r.unit, ing)
-                    r.kcal = kcal_for(r.grams, ing)
-            db.commit()
+            _fill_rows_kcal(db, created_ingredients)
 
         # ─── Přepočet kalorií dotčených receptů ─────────────────────────
         with _lock:
