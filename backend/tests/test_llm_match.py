@@ -419,6 +419,39 @@ def run_tests() -> int:
     llm_match.process_batch()
     check("kontext: druhý běh se už neptá", fake.calls == 0, str(fake.calls))
 
+    # ─── Kontext: složený řádek se rozdělí na jednotlivé suroviny ────────
+    db.add(RecipeIngredient(recipe_id=ids["recipe"],
+                            raw_text="sůl a čerstvě namletý pepř"))
+    db.commit()
+    key_comp = make_lookup_key("sůl a čerstvě namletý pepř")
+    llm_match._upsert_decision(db, key_comp, "sůl a čerstvě namletý pepř",
+                               status="no_match", category="food", occurrences=1)
+    db.commit()
+    fake.responses = [
+        {"items": [{"i": 0, "verdict": "compound",
+                    "names_cs": ["sůl", "pepř"], "confidence": 0.95}]},
+    ]
+    fake.calls = 0
+    out_comp = llm_match.process_batch()
+    check("compound: běh dořešil složený řádek", out_comp.get("ctx_applied", 0) >= 1,
+          f"calls={fake.calls} out={out_comp}")
+    db.expire_all()
+    orig = db.query(RecipeIngredient).filter_by(
+        raw_text="sůl a čerstvě namletý pepř").one_or_none()
+    check("compound: původní složený řádek je smazán", orig is None)
+    sul_rows = db.query(RecipeIngredient).filter_by(
+        recipe_id=ids["recipe"], raw_text="sůl").all()
+    pepr_rows = db.query(RecipeIngredient).filter_by(
+        recipe_id=ids["recipe"], raw_text="pepř").all()
+    check("compound: vznikly napárované řádky sůl + pepř",
+          len(sul_rows) == 1 and sul_rows[0].ingredient_id is not None
+          and len(pepr_rows) == 1 and pepr_rows[0].ingredient_id is not None,
+          f"sul={len(sul_rows)} pepr={len(pepr_rows)}")
+    d_comp = db.query(MatchDecision).filter_by(lookup_key=key_comp).one()
+    check("compound: rozhodnutí nese vysvětlení rozdělení",
+          d_comp.status == "applied" and "rozdělen" in (d_comp.error or ""),
+          f"{d_comp.status}/{d_comp.error}")
+
     # ─── Retry ne-suroviny smaže i neověřený LLM alias ───────────────────
     d_forma = db.query(MatchDecision).filter_by(
         lookup_key=make_lookup_key("silikonová forma na pečení")).one()

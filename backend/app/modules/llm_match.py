@@ -719,9 +719,10 @@ _CTX_SCHEMA = {
                     "i": {"type": "integer"},
                     "verdict": {
                         "type": "string",
-                        "enum": ["ingredient", "note", "nonfood", "unknown"],
+                        "enum": ["ingredient", "compound", "note", "nonfood", "unknown"],
                     },
                     "name_cs": {"type": "string"},
+                    "names_cs": {"type": "array", "items": {"type": "string"}},
                     "confidence": {"type": "number"},
                 },
                 "required": ["i", "verdict", "confidence"],
@@ -732,12 +733,51 @@ _CTX_SCHEMA = {
 }
 
 _CTX_PROMPT_HEADER = """Jsi expert na české recepty. Dostaneš JEDEN recept a několik řádků z jeho seznamu surovin, které se nepodařilo rozpoznat. Podle kontextu celého receptu urči pro KAŽDÝ očíslovaný řádek:
-- verdict "ingredient": řádek JE surovina → vyplň name_cs (kanonický český název, 1. pád jednotného čísla, bez množství)
+- verdict "ingredient": řádek JE jedna surovina → vyplň name_cs (kanonický český název, 1. pád jednotného čísla, bez množství)
+- verdict "compound": řádek obsahuje VÍCE surovin najednou (např. "sůl a čerstvě namletý pepř") → vyplň names_cs = seznam kanonických názvů (["sůl", "pepř"])
 - verdict "note": NENÍ surovina – poznámka, útržek postupu nebo textu stránky, reklama, odkaz (např. "dle chuti dosolíme", "recept pochází z webu…")
 - verdict "nonfood": kuchyňská pomůcka nebo obal (forma, alobal, pečicí papír)
 - verdict "unknown": nelze určit
-confidence: 0–1. Odpověz POUZE JSON {"items":[{"i":<index>,"verdict":"...","name_cs":"...","confidence":0.9}]} s právě jedním objektem pro každý index.
+confidence: 0–1. Odpověz POUZE JSON {"items":[{"i":<index>,"verdict":"...","name_cs":"...","names_cs":[],"confidence":0.9}]} s právě jedním objektem pro každý index.
 """
+
+
+def _split_compound_rows(
+    db: Session,
+    key: str,
+    row_ids: list[int],
+    names: list[str],
+    conf: float,
+    created_sink: list[Ingredient],
+) -> set[int]:
+    """Rozdělí složené řádky ("sůl a pepř") na samostatné suroviny: každý
+    původní řádek nahradí N novými řádky napárovanými na jednotlivé suroviny
+    (množství neznáme – zůstává prázdné) a původní smaže. Vrátí dotčené recepty."""
+    affected: set[int] = set()
+    uniq: list[Ingredient] = []
+    seen_ids: set[int] = set()
+    for name in names:
+        ing = get_or_create_ingredient(db, name)
+        if ing.id in seen_ids:
+            continue
+        seen_ids.add(ing.id)
+        uniq.append(ing)
+        if ing.kcal_100g is None and ing not in created_sink:
+            created_sink.append(ing)
+
+    for row_id in row_ids:
+        row = db.get(RecipeIngredient, row_id)
+        if row is None or row.ingredient_id is not None:
+            continue
+        for ing in uniq:
+            db.add(RecipeIngredient(
+                recipe_id=row.recipe_id,
+                raw_text=ing.name_cs,
+                ingredient_id=ing.id,
+            ))
+        affected.add(row.recipe_id)
+        db.delete(row)
+    return affected
 
 
 def _context_pass(
@@ -879,6 +919,24 @@ def _context_pass(
                     d.model = model_name
                     stats["ctx_suggested"] += 1
                 processed_keys.add(key)
+            elif verdict == "compound" and conf >= _CTX_MIN_CONF_ACTION:
+                names = [n.strip() for n in (it.get("names_cs") or [])
+                         if _plausible_new_name((n or "").strip())]
+                if len(names) >= 2:
+                    # rozděl VŠECHNY řádky s tímhle klíčem (napříč recepty)
+                    affected |= _split_compound_rows(
+                        db, key, global_rows[key], names, conf, created_sink)
+                    global_rows[key] = []
+                    d.status = "applied"
+                    d.category = "food"
+                    d.suggested_name = (" + ".join(names))[:200]
+                    d.confidence = conf
+                    d.model = model_name
+                    d.error = f"složený řádek rozdělen na: {', '.join(names)}"
+                    stats["ctx_applied"] += 1
+                    processed_keys.add(key)
+                else:
+                    stats["ctx_unknown"] += 1
             elif verdict == "nonfood" and conf >= _CTX_MIN_CONF_ACTION:
                 _upsert_alias(db, sample, lookup_key=key, ingredient_id=None,
                               kind="equipment", source="llm", confidence=conf)
