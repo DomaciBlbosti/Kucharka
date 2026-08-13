@@ -335,7 +335,19 @@ def resolve_decision(decision_id: int, req: DecisionResolve, db: Session = Depen
         raise HTTPException(404, "Rozhodnutí nenalezeno.")
 
     if req.action == "retry":
-        # smazání záznamu = příští běh LLM se položky zeptá znovu
+        # smazání záznamu = příští běh LLM se položky zeptá znovu. Musí se
+        # smazat i případný NEOVĚŘENÝ alias z LLM se stejným klíčem – jinak
+        # by slovníkový sweep položku okamžitě zase "rozhodl" postaru a
+        # k žádnému novému dotazu by nedošlo (týkalo se hlavně ne-surovin).
+        stale_alias = db.scalar(
+            select(IngredientAlias).where(
+                IngredientAlias.lookup_key == d.lookup_key,
+                IngredientAlias.verified.is_(False),
+                IngredientAlias.source == "llm",
+            )
+        )
+        if stale_alias is not None:
+            db.delete(stale_alias)
         db.delete(d)
         db.commit()
         return {"ok": True, "action": "retry"}

@@ -751,11 +751,14 @@ def _context_pass(
              "ctx_removed": 0, "ctx_nonfood": 0, "ctx_unknown": 0, "ctx_errors": 0}
     affected: set[int] = set()
 
-    # kandidáti: 'no_match' rozhodnutí, která kontextem ještě neprošla
+    # kandidáti: 'no_match' (dávková fáze neuměla rozhodnout) i 'error'
+    # (včetně těch na stropu pokusů – kontext je jejich druhá šance),
+    # každý projde kontextem nejvýš jednou (ctx_tried)
     decisions_map = {
         d.lookup_key: d for d in db.scalars(
             select(MatchDecision).where(
-                MatchDecision.status == "no_match", MatchDecision.attempts == 0
+                MatchDecision.status.in_(("no_match", "error")),
+                MatchDecision.ctx_tried.is_(False),
             )
         ).all()
     }
@@ -850,7 +853,7 @@ def _context_pass(
             except (TypeError, ValueError):
                 conf = 0.0
             name = (it.get("name_cs") or "").strip()
-            d.attempts = (d.attempts or 0) + 1  # kontextem prošlo – neopakovat
+            d.ctx_tried = True  # kontextem prošlo – neopakovat
             d.updated_at = datetime.utcnow()
 
             if verdict == "ingredient" and conf >= min_conf and _plausible_new_name(name):

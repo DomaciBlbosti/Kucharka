@@ -77,6 +77,9 @@ _COLUMNS: tuple[ColumnAdd, ...] = (
     ColumnAdd("recipe", "total_weight_g",      "FLOAT NULL"),
     # MatchDecision – návrh nové suroviny od LLM (tabulka vznikla dřív bez něj)
     ColumnAdd("match_decision", "suggested_name", "VARCHAR(200) NULL"),
+    # MatchDecision – příznak "prošlo kontextovou fází" (default 0 → existující
+    # no_match/error položky projdou kontextem při nejbližším běhu)
+    ColumnAdd("match_decision", "ctx_tried", "TINYINT(1) NOT NULL DEFAULT 0"),
 )
 
 # Změny existujících sloupců (pouze nezbytné).
