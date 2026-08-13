@@ -72,6 +72,7 @@ def status() -> dict:
         ) or 0
     finally:
         db.close()
+    s["last_error"] = llmclient.last_error()
     return s
 
 
@@ -91,7 +92,9 @@ def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
     out = llmclient.structured_json(
         prompt,
         schema=_SCHEMA,
-        timeout=max(settings.http_timeout, 120),
+        # stejný timeout jako dávkové párování – lokální model s plnou GPU
+        # frontou 120s nestíhal a padaly VŠECHNY dávky
+        timeout=max(settings.http_timeout, settings.llm_match_timeout_s),
         num_ctx=8192,
     )
     if out is None:
@@ -144,12 +147,22 @@ def categorize_all(only_missing: bool = True) -> None:
         db.close()
     _set(total=len(rows))
     batches = [rows[i : i + _BATCH] for i in range(0, len(rows), _BATCH)]
-    workers = max(1, settings.bg_workers)
+    workers = _effective_workers()
     try:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             list(ex.map(_categorize_batch, batches))
     finally:
         _set(running=False, finished_at=time.time())
+
+
+def _effective_workers() -> int:
+    """Lokální Ollama zpracovává požadavky frontou – víc souběžných dávek si
+    jen navzájem vyžírá timeout (8 workerů × pomalá GPU = padá všechno).
+    Komerční API paralelismus zvládá, tam se bg_workers využije naplno."""
+    workers = max(1, settings.bg_workers)
+    if not settings.llm_api_enabled:
+        workers = min(workers, 2)
+    return workers
 
 
 def categorize_async(only_missing: bool = True) -> bool:
