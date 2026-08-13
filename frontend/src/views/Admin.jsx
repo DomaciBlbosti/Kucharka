@@ -1048,11 +1048,11 @@ function MatchPanel() {
         <div className="flex flex-wrap items-center gap-3">
           <div className="nums text-sm">
             <b className="text-miss">{st.rows_unmatched}</b>
-            <span className="text-ink/55"> nenapárovaných řádků v </span>
+            <span className="text-ink/55"> řádků čeká na vyřešení v </span>
             <b>{st.recipes_unmatched}</b>
             <span className="text-ink/55"> receptech</span>
-            {st.nonfood_rows > 0 && (
-              <span className="text-ink/45"> (z toho {st.nonfood_rows} rozhodnutých ne-surovin – bez kalorií záměrně)</span>
+            {st.rows_nonfood > 0 && (
+              <span className="text-ink/45"> · {st.rows_nonfood} ne-surovin je vyřešených (bez kalorií záměrně)</span>
             )}
           </div>
           {st.rows_unmatched > 0 ? (

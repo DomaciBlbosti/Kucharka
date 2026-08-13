@@ -163,6 +163,7 @@ def unmatched(
         )
         .where(
             RecipeIngredient.ingredient_id.is_(None),
+            RecipeIngredient.nonfood.is_(False),
             RecipeIngredient.raw_text.is_not(None),
         )
         .group_by(RecipeIngredient.raw_text)
@@ -364,6 +365,20 @@ def resolve_decision(decision_id: int, req: DecisionResolve, db: Session = Depen
         )
         if stale_alias is not None:
             db.delete(stale_alias)
+        if d.status == "nonfood":
+            # řádky označené jako ne-surovina vrať mezi čekající, jinak by
+            # je párování dál přeskakovalo a "zeptat se znovu" by nic nedělalo
+            from ..modules.lookup import make_lookup_key as _mlk
+
+            flagged = db.scalars(
+                select(RecipeIngredient).where(
+                    RecipeIngredient.ingredient_id.is_(None),
+                    RecipeIngredient.nonfood.is_(True),
+                )
+            ).all()
+            for ri in flagged:
+                if _mlk(ri.raw_text or "") == d.lookup_key:
+                    ri.nonfood = False
         db.delete(d)
         db.commit()
         return {"ok": True, "action": "retry"}

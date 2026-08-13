@@ -35,7 +35,7 @@ import time
 from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update as sa_update
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -70,7 +70,10 @@ def status() -> dict:
     try:
         s["unmatched"] = db.scalar(
             select(func.count(RecipeIngredient.id))
-            .where(RecipeIngredient.ingredient_id.is_(None))
+            .where(
+                RecipeIngredient.ingredient_id.is_(None),
+                RecipeIngredient.nonfood.is_(False),
+            )
         ) or 0
         # zpětná kompatibilita pro starší UI: zamítnuto = návrhy + bez shody
         s["rejected"] = (s.get("suggested") or 0) + (s.get("no_match") or 0)
@@ -121,6 +124,7 @@ def _collect_groups(db: Session) -> dict[str, _Group]:
         select(RecipeIngredient.id, RecipeIngredient.raw_text, RecipeIngredient.recipe_id)
         .where(
             RecipeIngredient.ingredient_id.is_(None),
+            RecipeIngredient.nonfood.is_(False),
             RecipeIngredient.raw_text.is_not(None),
         )
     ).all()
@@ -156,6 +160,7 @@ def _apply_rows(db: Session, row_ids: list[int], ing: Ingredient) -> set[int]:
         if r.amount is None and r.unit is None:
             r.amount, r.unit = _parse_amount_unit(r.raw_text or "")
         r.ingredient_id = ing.id
+        r.nonfood = False  # kdyby byl dřív omylem označen jako ne-surovina
         r.grams = grams_for(r.amount, r.unit, ing)
         r.kcal = kcal_for(r.grams, ing)
         touched.add(r.recipe_id)
@@ -195,10 +200,25 @@ def _apply_dictionary(db: Session, groups: dict[str, _Group]) -> tuple[dict, set
                 db.commit()
                 pending_commit = 0
         else:
-            # non-food: řádky zůstávají bez suroviny záměrně
+            # non-food: řádky zůstávají bez suroviny záměrně – označ je,
+            # ať se přestanou počítat mezi čekající a příště se ani nenačítají
+            _mark_rows_nonfood(db, g.row_ids)
             stats["dict_nonfood"] += len(g.row_ids)
+            pending_commit += len(g.row_ids)
+            if pending_commit >= 1000:
+                db.commit()
+                pending_commit = 0
     db.commit()
     return stats, affected
+
+
+def _mark_rows_nonfood(db: Session, row_ids: list[int], flag: bool = True) -> None:
+    for start in range(0, len(row_ids), 500):
+        db.execute(
+            sa_update(RecipeIngredient)
+            .where(RecipeIngredient.id.in_(row_ids[start:start + 500]))
+            .values(nonfood=flag)
+        )
 
 
 # ─── Katalog rozhodnutí ──────────────────────────────────────────────────────
@@ -571,6 +591,7 @@ def _process_response(
         if category != "food":
             _upsert_alias(db, g.sample, lookup_key=g.key, ingredient_id=None,
                           kind=category, source="llm", confidence=confidence)
+            _mark_rows_nonfood(db, g.row_ids)
             _upsert_decision(db, g.key, g.sample, status="nonfood", category=category,
                              confidence=confidence, model=model_name, occurrences=occurrences)
             stats["nonfood"] += 1
@@ -810,6 +831,7 @@ def _context_pass(
         select(RecipeIngredient.id, RecipeIngredient.raw_text, RecipeIngredient.recipe_id)
         .where(
             RecipeIngredient.ingredient_id.is_(None),
+            RecipeIngredient.nonfood.is_(False),
             RecipeIngredient.raw_text.is_not(None),
         )
     ).all()
@@ -940,6 +962,7 @@ def _context_pass(
             elif verdict == "nonfood" and conf >= _CTX_MIN_CONF_ACTION:
                 _upsert_alias(db, sample, lookup_key=key, ingredient_id=None,
                               kind="equipment", source="llm", confidence=conf)
+                _mark_rows_nonfood(db, global_rows[key])
                 d.status = "nonfood"
                 d.category = "equipment"
                 d.confidence = conf

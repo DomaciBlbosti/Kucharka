@@ -92,10 +92,11 @@ def run_tests() -> int:
 
         # ─── Backfill: purge nadpisů + fuzzy match + alias s lookup_key ──
         out = backfill.backfill()
-        # zbývá "alobal" (legacy) a "pečící papír" (builtin non-food) –
-        # oba záměrně bez suroviny
-        check("backfill napároval fuzzy řádek", out.get("rows_unmatched") == 2,
-              str({k: out.get(k) for k in ('rows_unmatched', 'error')}))
+        # "alobal" (legacy) i "pečící papír" (builtin non-food) dostaly
+        # příznak nonfood → nepočítají se mezi čekající; čekající = 0
+        check("backfill: čekajících 0, ne-suroviny označené",
+              out.get("rows_unmatched") == 0 and out.get("rows_nonfood") == 2,
+              str({k: out.get(k) for k in ('rows_unmatched', 'rows_nonfood', 'error')}))
         db.expire_all()
         header = db.query(RecipeIngredient).filter_by(
             raw_text="Na vymazání a vysypání formy:").one_or_none()
@@ -127,10 +128,8 @@ def run_tests() -> int:
         # ─── /unmatched neukazuje už rozhodnuté ne-suroviny ──────────────
         r = c.get("/api/maintenance/unmatched")
         texts = [it["raw_text"] for it in r.json()["items"]]
-        check("/unmatched neobsahuje builtin ne-surovinu 'pečící papír'",
-              "pečící papír" not in texts, str(texts))
-        check("/unmatched obsahuje nerozhodnutý 'alobal' (legacy alias)",
-              "alobal" in texts, str(texts))
+        check("/unmatched neobsahuje označené ne-suroviny (pečící papír, alobal)",
+              "pečící papír" not in texts and "alobal" not in texts, str(texts))
 
         # ─── Cookie přihlašování ─────────────────────────────────────────
         r = c.put("/api/admin/password", json={"password": "tajneheslo"})

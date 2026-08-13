@@ -80,6 +80,9 @@ _COLUMNS: tuple[ColumnAdd, ...] = (
     # MatchDecision – příznak "prošlo kontextovou fází" (default 0 → existující
     # no_match/error položky projdou kontextem při nejbližším běhu)
     ColumnAdd("match_decision", "ctx_tried", "TINYINT(1) NOT NULL DEFAULT 0"),
+    # RecipeIngredient – rozhodnutá ne-surovina (záměrně bez ingredient_id);
+    # existující řádky označí slovníkový sweep při nejbližším párování
+    ColumnAdd("recipe_ingredient", "nonfood", "TINYINT(1) NOT NULL DEFAULT 0"),
 )
 
 # Změny existujících sloupců (pouze nezbytné).
