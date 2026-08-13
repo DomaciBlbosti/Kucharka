@@ -74,15 +74,24 @@ def stats() -> dict:
     try:
         return {
             "rows_total": db.scalar(select(func.count(RecipeIngredient.id))) or 0,
+            # "nenapárované" = skutečně čekající; rozhodnuté ne-suroviny
+            # (nonfood=1) se nepočítají – jsou vyřešené, jen záměrně bez kalorií
             "rows_unmatched": db.scalar(
                 select(func.count(RecipeIngredient.id)).where(
-                    RecipeIngredient.ingredient_id.is_(None)
+                    RecipeIngredient.ingredient_id.is_(None),
+                    RecipeIngredient.nonfood.is_(False),
+                )
+            ) or 0,
+            "rows_nonfood": db.scalar(
+                select(func.count(RecipeIngredient.id)).where(
+                    RecipeIngredient.nonfood.is_(True)
                 )
             ) or 0,
             "recipes_total": db.scalar(select(func.count(Recipe.id))) or 0,
             "recipes_unmatched": db.scalar(
                 select(func.count(func.distinct(RecipeIngredient.recipe_id))).where(
-                    RecipeIngredient.ingredient_id.is_(None)
+                    RecipeIngredient.ingredient_id.is_(None),
+                    RecipeIngredient.nonfood.is_(False),
                 )
             ) or 0,
             "ingredients_total": db.scalar(select(func.count(Ingredient.id))) or 0,
@@ -174,6 +183,7 @@ def purge_headers(db: Session) -> int:
             select(RecipeIngredient.id, RecipeIngredient.raw_text)
             .where(
                 RecipeIngredient.ingredient_id.is_(None),
+                RecipeIngredient.nonfood.is_(False),
                 RecipeIngredient.id > last_id,
             )
             .order_by(RecipeIngredient.id)
@@ -224,7 +234,8 @@ def backfill(create_missing: bool = False, chunk: int = CHUNK) -> dict:
         purge_headers(db)
         total = db.scalar(
             select(func.count(RecipeIngredient.id)).where(
-                RecipeIngredient.ingredient_id.is_(None)
+                RecipeIngredient.ingredient_id.is_(None),
+                RecipeIngredient.nonfood.is_(False),
             )
         ) or 0
         _set(phase="fuzzy", done=0, total=total,
@@ -239,6 +250,7 @@ def backfill(create_missing: bool = False, chunk: int = CHUNK) -> dict:
                 select(RecipeIngredient)
                 .where(
                     RecipeIngredient.ingredient_id.is_(None),
+                    RecipeIngredient.nonfood.is_(False),
                     RecipeIngredient.id > last_id,
                 )
                 .order_by(RecipeIngredient.id)
@@ -254,6 +266,7 @@ def backfill(create_missing: bool = False, chunk: int = CHUNK) -> dict:
                     continue
                 ing, nonfood = m.match(key)
                 if nonfood:
+                    row.nonfood = True  # vyřešeno: ne-surovina, bez kalorií záměrně
                     nonfood_rows += 1
                     continue
                 if ing is None:

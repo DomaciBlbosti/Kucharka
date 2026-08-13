@@ -127,10 +127,12 @@ def enrich_recipe(
                 ri.kcal = kcal_for(ri.grams, ing)
                 stats["hits_dict"] += 1
             else:
-                # non-food / equipment / packaging / unknown
+                # non-food / equipment / packaging / unknown – označit, ať se
+                # řádek nepočítá mezi čekající (vyřešeno, jen bez kalorií)
                 ri.ingredient_id = None
                 ri.grams = None
                 ri.kcal = None
+                ri.nonfood = True
                 stats["nonfood"] += 1
             continue
 

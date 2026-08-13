@@ -199,6 +199,11 @@ class RecipeIngredient(Base):
     grams: Mapped[float | None] = mapped_column(Float, nullable=True)
     kcal: Mapped[float | None] = mapped_column(Float, nullable=True)
     optional: Mapped[bool] = mapped_column(default=False)
+    # Řádek je rozhodnutá NE-surovina (alobal, "na ozdobu"…): ingredient_id
+    # zůstává NULL záměrně (bez kalorií), ale řádek se už NEpočítá mezi
+    # "nenapárované" a párování ho přeskakuje. Bez tohohle příznaku se
+    # vyřešené ne-suroviny míchaly do počtu čekajících donekonečna.
+    nonfood: Mapped[bool] = mapped_column(server_default="0")
 
     recipe: Mapped[Recipe] = relationship(back_populates="ingredients")
     ingredient: Mapped[Ingredient | None] = relationship()
