@@ -1988,6 +1988,26 @@ function DecisionsCard() {
           className="ml-auto w-40 rounded-lg border border-line bg-paper px-3 py-1.5 text-sm outline-none focus:border-basil"
         />
       </div>
+      {(sum.error || 0) > 0 && (
+        <div className="mb-3">
+          <Button variant="ghost" disabled={busy === "retry-errors"}
+            onClick={async () => {
+              setBusy("retry-errors");
+              setMsg(null);
+              try {
+                const r = await api.retryErrorDecisions();
+                setMsg(`${r.reset} chybových položek vráceno do fronty – spusť dávkové dopárování.`);
+                load();
+              } catch (e) {
+                setMsg(`chyba: ${e?.message || e}`);
+              } finally {
+                setBusy(null);
+              }
+            }}>
+            Zkusit všechny chybové znovu ({sum.error})
+          </Button>
+        </div>
+      )}
       {msg && <p className="mb-3 text-sm text-ink/70">{msg}</p>}
 
       {items === null ? (

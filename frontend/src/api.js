@@ -258,6 +258,8 @@ export const api = {
   runLlmMatch: () => afetch("/api/maintenance/llm-match", { method: "POST" }).then(J),
 
   decisions: (params = {}) => afetch(`/api/maintenance/decisions${qs(params)}`).then(J),
+  retryErrorDecisions: () =>
+    afetch("/api/maintenance/decisions/retry-errors", { method: "POST" }).then(J),
   resolveDecision: (id, body) =>
     afetch(`/api/maintenance/decisions/${id}/resolve`, {
       method: "POST",
