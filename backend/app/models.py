@@ -120,6 +120,9 @@ class MatchDecision(Base):
     # kolika řádků recipe_ingredient se položka týkala při posledním běhu
     occurrences: Mapped[int] = mapped_column(Integer, default=0)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # Prošlo kontextovou fází (posouzení v rámci celého receptu)? Každá
+    # položka jí projde nejvýš jednou; 'zeptat se znovu' příznak resetuje.
+    ctx_tried: Mapped[bool] = mapped_column(server_default="0")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

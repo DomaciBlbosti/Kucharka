@@ -147,8 +147,8 @@ def run_tests() -> int:
           and alias_kure.ingredient_id == ids["kure"])
 
     # označ no_match jako "kontextem už prošlé", ať další testy mají
-    # deterministické počty volání (kontextová fáze cílí na attempts==0)
-    db.query(MatchDecision).filter_by(status="no_match").update({"attempts": 1})
+    # deterministické počty volání (kontextová fáze cílí na ctx_tried=False)
+    db.query(MatchDecision).filter_by(status="no_match").update({"ctx_tried": True})
     db.commit()
 
     # ─── Běh 2: nic nového → žádné LLM volání ────────────────────────────
@@ -184,7 +184,9 @@ def run_tests() -> int:
           d_err is not None and d_err.status == "error"
           and d_err.attempts == llm_match.MAX_ATTEMPTS,
           f"{d_err.status if d_err else None}/{d_err.attempts if d_err else None}")
-    check("po dosažení stropu se už LLM nevolá", fake.calls == 0, str(fake.calls))
+    # dávková fáze už položku nezkouší; kontextová fáze ji ale ještě zkusí
+    # (druhá šance přes celý recept) – proto 1 volání, ne 0
+    check("po stropu zbývá jen kontextový pokus", fake.calls == 1, str(fake.calls))
 
     # ─── Ruční dořešení návrhu (accept) ──────────────────────────────────
     from app.routers.maintenance import DecisionResolve, resolve_decision
@@ -210,7 +212,8 @@ def run_tests() -> int:
     fake.responses = [{"items": []}]  # model vrátí prázdno → error záznam
     fake.calls = 0
     llm_match.process_batch()
-    check("retry: položka se znovu poslala do LLM", fake.calls == 1, str(fake.calls))
+    # 1 dávkové volání + 1 kontextový pokus o čerstvé error záznamy
+    check("retry: položka se znovu poslala do LLM", fake.calls == 2, str(fake.calls))
 
     # ─── Nonfood + ignore akce ───────────────────────────────────────────
     d_err = db.query(MatchDecision).filter_by(
@@ -409,12 +412,27 @@ def run_tests() -> int:
           f"{d_note.status}/{d_note.error}")
     d_mata = db.query(MatchDecision).filter_by(lookup_key=key_mata).one()
     check("kontext: rozhodnutí máty je applied a neopakuje se",
-          d_mata.status == "applied" and d_mata.attempts >= 1)
+          d_mata.status == "applied" and d_mata.ctx_tried is True)
     # druhý běh: nic dalšího k dotazování → žádné LLM volání
     fake.responses = []
     fake.calls = 0
     llm_match.process_batch()
     check("kontext: druhý běh se už neptá", fake.calls == 0, str(fake.calls))
+
+    # ─── Retry ne-suroviny smaže i neověřený LLM alias ───────────────────
+    d_forma = db.query(MatchDecision).filter_by(
+        lookup_key=make_lookup_key("silikonová forma na pečení")).one()
+    check("prekondice: forma je nonfood s llm aliasem",
+          d_forma.status == "nonfood" and db.query(IngredientAlias).filter_by(
+              lookup_key=d_forma.lookup_key).one().source == "llm")
+    resolve_decision(d_forma.id, DecisionResolve(action="retry"), db)
+    alias_after = db.query(IngredientAlias).filter_by(
+        lookup_key=make_lookup_key("silikonová forma na pečení")).one_or_none()
+    check("retry ne-suroviny smaže rozhodnutí i neověřený alias",
+          alias_after is None
+          and db.query(MatchDecision).filter_by(
+              lookup_key=make_lookup_key("silikonová forma na pečení")).one_or_none() is None)
+    # → příští běh se na formu zeptá znovu (sweep ji už předem nerozhodne)
 
     # ─── Přehled endpointu decisions ─────────────────────────────────────
     from app.routers.maintenance import list_decisions
