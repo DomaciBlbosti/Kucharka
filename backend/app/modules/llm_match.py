@@ -1090,6 +1090,30 @@ def _run(batch_size: int | None = None) -> dict:
     try:
         groups = _collect_groups(db)
         totals: dict = {"unique_keys": len(groups)}
+
+        # ─── Úklid mrtvých rozhodnutí ───────────────────────────────────
+        # Nevyřízená rozhodnutí (chyba/bez shody/návrh), jejichž řádky už
+        # neexistují – mezitím je smazal purge (nadpisy, poznámky) nebo je
+        # napároval fuzzy/slovník, který rozhodnutí neaktualizuje. V katalogu
+        # z nich zbývá jen matoucí nepořádek (v produkci ~2000 "chyb" bez
+        # jediného živého řádku). Finální stavy (applied/nonfood/ignored)
+        # zůstávají jako audit.
+        live_keys = set(groups.keys())
+        stale = [
+            d for d in db.scalars(
+                select(MatchDecision).where(
+                    MatchDecision.status.in_(("no_match", "error", "suggested"))
+                )
+            ).all()
+            if d.lookup_key not in live_keys
+        ]
+        for d in stale:
+            db.delete(d)
+        if stale:
+            db.commit()
+            totals["stale_cleaned"] = len(stale)
+            log.info("úklid katalogu: smazáno %s rozhodnutí bez živých řádků", len(stale))
+
         if not groups:
             return totals
 

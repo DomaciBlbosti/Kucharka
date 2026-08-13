@@ -452,6 +452,46 @@ def run_tests() -> int:
           d_comp.status == "applied" and "rozdělen" in (d_comp.error or ""),
           f"{d_comp.status}/{d_comp.error}")
 
+    # ─── Úklid mrtvých rozhodnutí + hromadný retry chybových ─────────────
+    llm_match._upsert_decision(db, "mrtvy-klic", "mrtvý text bez řádků",
+                               status="error", occurrences=2, bump_attempts=True)
+    db.add(RecipeIngredient(recipe_id=ids["recipe"], raw_text="záhadný extrakt z yuzu"))
+    db.commit()
+    key_yuzu = make_lookup_key("záhadný extrakt z yuzu")
+    d_yuzu = llm_match._upsert_decision(db, key_yuzu, "záhadný extrakt z yuzu",
+                                        status="error", occurrences=1)
+    d_yuzu.attempts = llm_match.MAX_ATTEMPTS
+    d_yuzu.ctx_tried = True
+    db.commit()
+    fake.responses = []
+    fake.calls = 0
+    out_cln = llm_match.process_batch()
+    check("úklid: mrtvé chybové rozhodnutí smazáno",
+          db.query(MatchDecision).filter_by(lookup_key="mrtvy-klic").one_or_none() is None
+          and out_cln.get("stale_cleaned", 0) >= 1, str(out_cln))
+    check("úklid: chybové rozhodnutí se živými řádky zůstává",
+          db.query(MatchDecision).filter_by(lookup_key=key_yuzu).one_or_none() is not None)
+    check("na stropu + po kontextu → žádné volání", fake.calls == 0, str(fake.calls))
+
+    from app.routers.maintenance import retry_error_decisions
+    r_res = retry_error_decisions(db)
+    check("hromadný retry vynuloval chybové", r_res["reset"] >= 1, str(r_res))
+    db.expire_all()
+    d_yuzu = db.query(MatchDecision).filter_by(lookup_key=key_yuzu).one()
+    check("retry: attempts=0 a ctx_tried=False",
+          d_yuzu.attempts == 0 and d_yuzu.ctx_tried is False,
+          f"{d_yuzu.attempts}/{d_yuzu.ctx_tried}")
+    settings.auto_ingredients = True
+    fake.responses = [
+        {"items": [{"i": 0, "ingredient_id": None, "name_cs": "yuzu extrakt",
+                    "category": "food", "confidence": 0.9}]},
+        {"items": []},  # odhad výživy (prázdný – nevadí)
+    ]
+    fake.calls = 0
+    out_retry = llm_match.process_batch()
+    check("po hromadném retry se položka dořešila",
+          out_retry.get("applied") == 1, str(out_retry))
+
     # ─── Retry ne-suroviny smaže i neověřený LLM alias ───────────────────
     d_forma = db.query(MatchDecision).filter_by(
         lookup_key=make_lookup_key("silikonová forma na pečení")).one()

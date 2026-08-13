@@ -320,6 +320,22 @@ def list_decisions(
     }
 
 
+@router.post("/decisions/retry-errors")
+def retry_error_decisions(db: Session = Depends(get_db)):
+    """Hromadně vrátí VŠECHNY chybové položky do hry: vynuluje pokusy dávkové
+    fáze i příznak kontextové fáze. Příští běh dopárování je vezme znovu –
+    užitečné poté, co se vyřešila příčina chyb (timeouty, spadlá Ollama)."""
+    rows = db.scalars(
+        select(MatchDecision).where(MatchDecision.status == "error")
+    ).all()
+    for d in rows:
+        d.attempts = 0
+        d.ctx_tried = False
+        d.updated_at = datetime.utcnow()
+    db.commit()
+    return {"reset": len(rows)}
+
+
 class DecisionResolve(BaseModel):
     action: str  # accept | assign | nonfood | ignore | retry
     ingredient_id: int | None = None
