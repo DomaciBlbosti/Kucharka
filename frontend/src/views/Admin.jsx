@@ -1874,7 +1874,7 @@ function DecisionRow({ d, busy, onResolve }) {
               {busy ? "…" : `Přijmout „${d.ingredient_name}"`}
             </Button>
           )}
-          {d.status === "suggested" && !d.ingredient_id && d.suggested_name && (
+          {(d.status === "suggested" || d.status === "no_match") && !d.ingredient_id && d.suggested_name && (
             <Button onClick={() => onResolve({ action: "accept" })} disabled={busy}>
               {busy ? "…" : `Vytvořit „${d.suggested_name}"`}
             </Button>
