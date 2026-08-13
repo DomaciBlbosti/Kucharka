@@ -2094,7 +2094,10 @@ function CategorizeCard() {
             )}
           </div>
           {st?.errors > 0 && !st.running && (
-            <p className="text-xs text-miss">Poslední běh: {st.errors} dávek selhalo (zkusí se příště znovu).</p>
+            <p className="text-xs text-miss">
+              Poslední běh: {st.errors} dávek selhalo (zkusí se příště znovu).
+              {st.last_error && <> Příčina: <span className="font-mono">{st.last_error}</span></>}
+            </p>
           )}
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
@@ -2156,7 +2159,10 @@ function TagCard() {
             )}
           </div>
           {st?.errors > 0 && !st.running && (
-            <p className="text-xs text-miss">Poslední běh: {st.errors} dávek selhalo (zkusí se příště znovu).</p>
+            <p className="text-xs text-miss">
+              Poslední běh: {st.errors} dávek selhalo (zkusí se příště znovu).
+              {st.last_error && <> Příčina: <span className="font-mono">{st.last_error}</span></>}
+            </p>
           )}
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>

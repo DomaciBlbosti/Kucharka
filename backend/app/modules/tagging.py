@@ -67,6 +67,7 @@ def status() -> dict:
         ) or 0
     finally:
         db.close()
+    s["last_error"] = llmclient.last_error()
     return s
 
 
@@ -115,7 +116,8 @@ def _tag_batch(recipe_ids: list[int]) -> None:
         out = llmclient.structured_json(
             prompt,
             schema=_SCHEMA,
-            timeout=max(settings.http_timeout, 120),
+            # stejný timeout jako dávkové párování (viz categorize.py)
+            timeout=max(settings.http_timeout, settings.llm_match_timeout_s),
             num_ctx=8192,
         )
         if out is None:
@@ -166,7 +168,9 @@ def tag_all(only_missing: bool = True) -> None:
         db.close()
     _set(total=len(ids))
     batches = [ids[i : i + _BATCH] for i in range(0, len(ids), _BATCH)]
-    workers = max(1, settings.bg_workers)
+    from .categorize import _effective_workers
+
+    workers = _effective_workers()
     try:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             list(ex.map(_tag_batch, batches))
