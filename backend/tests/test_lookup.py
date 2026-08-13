@@ -13,11 +13,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.modules.lookup import make_lookup_key
 
 
-def _check(raw: str, expected: str) -> tuple[bool, str]:
+def _check(raw: str, expected) -> tuple[bool, str]:
+    """`expected` může být string, nebo tuple přípustných variant – kvalita
+    lemmatizace se mezi verzemi simplemmy liší (2.0 zvládá tvary, které 1.x
+    neuměla) a klíč musí být jen KONZISTENTNÍ v rámci jedné instalace."""
     make_lookup_key.cache_clear()
     actual = make_lookup_key(raw)
-    ok = actual == expected
-    return ok, f"{raw!r:40} → {actual!r:30} (exp {expected!r})"
+    allowed = expected if isinstance(expected, tuple) else (expected,)
+    ok = actual in allowed
+    return ok, f"{raw!r:40} → {actual!r:30} (exp {' | '.join(map(repr, allowed))})"
 
 
 def _check_equal(*raws: str) -> tuple[bool, str]:
@@ -35,12 +39,10 @@ def _check_equal(*raws: str) -> tuple[bool, str]:
 EXACT_CASES = [
     # quantity + unit stripping
     ("150 g cukru",                  "cukr"),
-    # POZN: simplemma nezvládá "mouky → mouka", vrací "mouky". Slovník
-    # to dorovná: první výskyt přes LLM uloží alias s lookup_key="mouky",
-    # další "mouky" tedy zasáhne přímo. Nezprostředkovaně to znamená, že
-    # slovník bude trochu větší (víc lookup_key pro stejnou surovinu),
-    # ale fungování to nezničí.
-    ("2 lžíce mouky",                "mouky"),
+    # POZN: simplemma 1.x nezvládala "mouky → mouka" (vracela "mouky"),
+    # 2.0 už to umí. Obě varianty jsou v pořádku – slovník dorovná zbytek,
+    # podstatná je konzistence klíče v rámci jedné instalace.
+    ("2 lžíce mouky",                ("mouka", "mouky")),
     ("3 ks vajec",                   "vejce"),
     # "mléka" naopak simplemma zvládne ("mléka → mléko")
     ("½ hrnku mléka",                "mleko"),
