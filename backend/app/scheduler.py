@@ -51,9 +51,15 @@ def _reschedule(job_id: str, enabled: bool, minutes: int, func) -> None:
 
 
 def _run_crawler():
+    """Stáhne přírůstek receptů a ROVNOU ho protáhne celým zpracováním
+    (párování → kategorie → tagy) – jeden cyklus = kompletně hotové recepty,
+    žádné čekání na další tik zpracovací úlohy. Zpracování má vlastní
+    is_running pojistky, dvojí běh nehrozí (plánovač je stejně jednovláknový)."""
     from .modules import crawler
 
-    crawler.crawl_sites(max_recipes=settings.crawler_max_per_run)
+    result = crawler.crawl_sites(max_recipes=settings.crawler_max_per_run)
+    if (result or {}).get("added"):
+        _run_match()
 
 
 def _run_translate():
