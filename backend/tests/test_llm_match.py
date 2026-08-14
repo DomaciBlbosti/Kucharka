@@ -492,6 +492,28 @@ def run_tests() -> int:
     check("po hromadném retry se položka dořešila",
           out_retry.get("applied") == 1, str(out_retry))
 
+    # ─── Ignorované řádky se nepočítají mezi čekající ────────────────────
+    db.add(RecipeIngredient(recipe_id=ids["recipe"], raw_text="dekorační třpytky jedlé"))
+    db.commit()
+    key_dek = make_lookup_key("dekorační třpytky jedlé")
+    llm_match._upsert_decision(db, key_dek, "dekorační třpytky jedlé",
+                               status="ignored", occurrences=1)
+    db.commit()
+    before = llm_match.status()["unmatched"]
+    fake.responses = []
+    fake.calls = 0
+    out_ign = llm_match.process_batch()
+    check("historicky ignorované řádky se doflagují (settled_flagged)",
+          out_ign.get("settled_flagged", 0) >= 1, str(out_ign))
+    after = llm_match.status()["unmatched"]
+    check("ignorovaný řádek zmizel z čekajících", after == before - 1,
+          f"{before} -> {after}")
+    d_dek = db.query(MatchDecision).filter_by(lookup_key=key_dek).one()
+    resolve_decision(d_dek.id, DecisionResolve(action="retry"), db)
+    check("retry ignorované vrátí řádek mezi čekající",
+          llm_match.status()["unmatched"] == before,
+          str(llm_match.status()["unmatched"]))
+
     # ─── Retry ne-suroviny smaže i neověřený LLM alias ───────────────────
     d_forma = db.query(MatchDecision).filter_by(
         lookup_key=make_lookup_key("silikonová forma na pečení")).one()

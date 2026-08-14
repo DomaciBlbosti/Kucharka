@@ -221,6 +221,24 @@ def _mark_rows_nonfood(db: Session, row_ids: list[int], flag: bool = True) -> No
         )
 
 
+def mark_key_rows(db: Session, lookup_key: str, flag: bool) -> int:
+    """Označ/odznač VŠECHNY nenapárované řádky s daným lookup_key jako
+    vyřešené-bez-suroviny. Používá ruční 'ignorovat' (flag=True) a 'zeptat
+    se znovu' (flag=False) v katalogu rozhodnutí."""
+    rows = db.scalars(
+        select(RecipeIngredient).where(
+            RecipeIngredient.ingredient_id.is_(None),
+            RecipeIngredient.nonfood.is_(not flag),
+        )
+    ).all()
+    n = 0
+    for ri in rows:
+        if make_lookup_key(ri.raw_text or "") == lookup_key:
+            ri.nonfood = flag
+            n += 1
+    return n
+
+
 # ─── Katalog rozhodnutí ──────────────────────────────────────────────────────
 
 def _upsert_decision(
@@ -1156,6 +1174,7 @@ def _run(batch_size: int | None = None) -> dict:
         }
         queue: list[_Group] = []
         skipped_decided = 0
+        settled_flagged = 0
         for key, g in groups.items():
             d = decisions.get(key)
             if d is None:
@@ -1166,7 +1185,16 @@ def _run(batch_size: int | None = None) -> dict:
                 skipped_decided += 1
                 if d.occurrences != len(g.row_ids):
                     d.occurrences = len(g.row_ids)
+                # Finálně rozhodnuté "nechat bez suroviny" (ignorováno /
+                # ne-surovina bez aliasu) → označ i řádky, ať se nepočítají
+                # mezi čekající. Dorovnává historická rozhodnutí z dob před
+                # zavedením příznaku.
+                if d.status in ("ignored", "nonfood"):
+                    _mark_rows_nonfood(db, g.row_ids)
+                    settled_flagged += len(g.row_ids)
         db.commit()
+        if settled_flagged:
+            totals["settled_flagged"] = settled_flagged
         totals["skipped_decided"] = skipped_decided
 
         if not queue:
