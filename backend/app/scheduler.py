@@ -65,16 +65,26 @@ def _run_translate():
 
 
 def _run_match():
-    """Automatické párování: nejdřív rychlá slovník+fuzzy fáze (backfill),
-    pak – je-li povolené – dávkové LLM dopárování přes katalog rozhodnutí.
-    Obojí synchronně v jednom workeru, ať se úlohy nepřekrývají."""
-    from .modules import backfill, llm_match
+    """Automatické zpracování surovin a tagů – kompletní kolečko pro nově
+    stažené recepty, ať se nic nekupí na ruční spouštění:
+      1. slovník + fuzzy (backfill),
+      2. dávkové LLM dopárování + kontext receptu (llm_match),
+      3. kategorizace nových surovin (jen nezařazené),
+      4. otagování nových receptů (jen neotagované).
+    Kroky 3–4 jsou při prázdné frontě no-op. Vše synchronně v jednom
+    workeru, ať se úlohy nepřekrývají a nervou si GPU."""
+    from .modules import backfill, categorize, llm_match, llmclient, tagging
 
     if backfill.is_running():
         return
     backfill.backfill()
     if settings.llm_match_enabled and not llm_match.is_running():
         llm_match.process_batch()
+    if llmclient.is_available():
+        if not categorize.is_running():
+            categorize.categorize_all(only_missing=True)
+        if not tagging.is_running():
+            tagging.tag_all(only_missing=True)
 
 
 def _run_lidl_sync():
@@ -135,15 +145,18 @@ def _translate_running() -> bool:
 
 
 def _match_running() -> bool:
-    from .modules import backfill, llm_match
+    from .modules import backfill, categorize, llm_match, tagging
 
-    return backfill.is_running() or llm_match.is_running()
+    return (
+        backfill.is_running() or llm_match.is_running()
+        or categorize.is_running() or tagging.is_running()
+    )
 
 
 _JOB_META = {
     "crawler": ("Objevování receptů (crawler)", _crawler_running),
     "translate": ("Automatický překlad", _translate_running),
-    "match": ("Párování surovin", _match_running),
+    "match": ("Zpracování surovin (párování + kategorie + tagy)", _match_running),
     "lidl_sync": ("Synchronizace Lidl účtenek", None),
 }
 
