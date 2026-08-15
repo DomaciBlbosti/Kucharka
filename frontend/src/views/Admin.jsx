@@ -1703,7 +1703,7 @@ function ServicesCard() {
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" className="accent-basil" checked={!!s.auto_match_enabled}
               onChange={(e) => set("auto_match_enabled", e.target.checked)} />
-            Automatické párování surovin
+            Automatické zpracování surovin (párování + kategorie + tagy)
           </label>
           <label className="flex items-center gap-1.5 text-sm text-ink/60">
             každých

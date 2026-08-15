@@ -53,13 +53,18 @@ def _translate_fields(title: str, ingredients: list[str], instructions: str) -> 
         f"Recept: {json.dumps(payload, ensure_ascii=False)}"
     )
     try:
-        out = chat_json(
-            settings.ollama_url,
-            settings.ollama_fast_model,
-            prompt,
-            keep_alive=settings.ollama_keep_alive,
-            timeout=max(settings.http_timeout, 120),
-        )
+        # sdílený zámek dávkových úloh – překlad se nesmí potkat na GPU
+        # s párováním/kategorizací spuštěnými odjinud
+        from .llmclient import ollama_gate
+
+        with ollama_gate():
+            out = chat_json(
+                settings.ollama_url,
+                settings.ollama_fast_model,
+                prompt,
+                keep_alive=settings.ollama_keep_alive,
+                timeout=max(settings.http_timeout, 120),
+            )
         if out is None:
             return None
     except Exception as exc:  # noqa: BLE001

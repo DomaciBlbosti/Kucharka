@@ -13,6 +13,8 @@ při dávkách po ~40 surovinách stojí zpracování celé fronty řádově dol
 from __future__ import annotations
 
 import logging
+import threading
+from contextlib import contextmanager
 
 import httpx
 
@@ -21,6 +23,22 @@ from .llmjson import parse_json_response
 from .ollamachat import chat_json_raw
 
 log = logging.getLogger("kucharka.llmclient")
+
+# Globální zámek na Ollamu pro DÁVKOVÉ úlohy (párování, kategorie, tagy,
+# hromadný překlad). Plánovač sice úlohy serializuje sám (jeden worker), ale
+# ruční tlačítko v administraci spuštěné během běžícího automatu by poslalo
+# na GPU druhý proud požadavků a oba by se vyhladověly do timeoutu. Se
+# zámkem jde na lokální GPU vždy jen jedno dávkové volání po druhém, ať se
+# úlohy spustí odkudkoli. Interaktivní cesty (generování receptu, OCR) se
+# záměrně negatují – krátké jednotlivé dotazy nemají čekat za dávkou.
+_ollama_gate = threading.Lock()
+
+
+@contextmanager
+def ollama_gate():
+    """Použij kolem Ollama volání dávkové úlohy (komerční API zámek nepotřebuje)."""
+    with _ollama_gate:
+        yield
 
 # Poslední chyba LLM volání – volající (llm_match) ji ukládá k rozhodnutím
 # a do stavu běhu, ať je v UI vidět SKUTEČNÁ příčina ("timeout", "connection
@@ -82,16 +100,17 @@ def structured_json(
     if not settings.ollama_enabled:
         _set_error("Ollama není nakonfigurovaná (OLLAMA_URL).")
         return None
-    parsed, raw = chat_json_raw(
-        settings.ollama_url,
-        ollama_model or settings.ollama_fast_model,
-        prompt,
-        keep_alive=settings.ollama_keep_alive,
-        timeout=timeout,
-        temperature=temperature,
-        format_schema=schema,
-        num_ctx=num_ctx,
-    )
+    with _ollama_gate:
+        parsed, raw = chat_json_raw(
+            settings.ollama_url,
+            ollama_model or settings.ollama_fast_model,
+            prompt,
+            keep_alive=settings.ollama_keep_alive,
+            timeout=timeout,
+            temperature=temperature,
+            format_schema=schema,
+            num_ctx=num_ctx,
+        )
     if parsed is None:
         # raw je buď "<chyba volání: …>" (síť/HTTP), nebo neparsovatelná odpověď
         _set_error(raw or "prázdná odpověď modelu")
