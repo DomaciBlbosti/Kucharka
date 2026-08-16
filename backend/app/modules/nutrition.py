@@ -185,7 +185,12 @@ def kcal_for(grams: float | None, ingredient: Ingredient | None) -> float | None
 
 
 def recompute_recipe_kcal(recipe: Recipe) -> None:
-    """Přepočítej kcal/porce z navázaných ingrediencí (in-place)."""
+    """Přepočítej kcal/porce z navázaných ingrediencí (in-place).
+
+    Zároveň udržuje denormalizovaný `ing_total` (počet napárovaných řádků)
+    pro rychlý výpis – tahle funkce se volá přesně tam, kde se řádky surovin
+    mění (ingest, enrichment, backfill, llm_match, překlad)."""
+    recipe.ing_total = sum(1 for ri in recipe.ingredients if ri.ingredient_id is not None)
     total = 0.0
     have_any = False
     for ri in recipe.ingredients:

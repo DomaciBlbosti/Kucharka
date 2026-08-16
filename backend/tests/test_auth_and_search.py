@@ -62,7 +62,7 @@ def _seed(db) -> dict:
         RecipeIngredient(recipe_id=r.id, raw_text="pečící papír"),
     ])
     db.commit()
-    return {"recipe": r.id, "kure": kure.id}
+    return {"recipe": r.id, "kure": kure.id, "tajna": tajna.id}
 
 
 def run_tests() -> int:
@@ -124,6 +124,35 @@ def run_tests() -> int:
             lookup_key=make_lookup_key("2 ks kuřecích prs")).one_or_none()
         check("fuzzy alias má lookup_key (kompatibilní s llm_match)",
               alias is not None and alias.source == "import")
+
+        # ─── Dostupnost vůči spíži (denormalizovaný ing_total) ───────────
+        # backfill dopočítal ing_total (recompute + pojistný UPDATE);
+        # výpis z něj žije místo agregace celé recipe_ingredient.
+        db.expire_all()
+        rec = db.get(Recipe, ids["recipe"])
+        check("ing_total odpovídá napárovaným řádkům",
+              rec.ing_total == 3, str(rec.ing_total))
+
+        from app.models import PantryItem
+        db.add_all([
+            PantryItem(ingredient_id=ids["kure"]),
+            PantryItem(ingredient_id=ids["tajna"]),
+        ])
+        db.commit()
+        r = c.get("/api/recipes", params={"q": "segedínský"})
+        it = next(x for x in r.json()["items"] if x["id"] == ids["recipe"])
+        # 3 napárované řádky: kure (ve spíži), tajna (ve spíži) a fuzzy řádek
+        # na seedované "kuřecí prsa" (jiné id, ve spíži není)
+        check("karta: total=3, have=2, missing=1",
+              it["total"] == 3 and it["have"] == 2 and it["missing_count"] == 1,
+              str({k: it[k] for k in ("total", "have", "missing_count")}))
+        r = c.get("/api/recipes", params={"q": "segedínský", "only_have": True})
+        check("only_have recept s chybějící surovinou vyřadí",
+              all(x["id"] != ids["recipe"] for x in r.json()["items"]))
+        r = c.get("/api/recipes", params={"q": "segedínský", "max_missing": 1})
+        check("max_missing=1 recept pustí (a count sedí)",
+              any(x["id"] == ids["recipe"] for x in r.json()["items"])
+              and r.json()["total"] >= 1, str(r.json()["total"]))
 
         # ─── /unmatched neukazuje už rozhodnuté ne-suroviny ──────────────
         r = c.get("/api/maintenance/unmatched")

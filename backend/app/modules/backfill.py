@@ -286,6 +286,21 @@ def backfill(create_missing: bool = False, chunk: int = CHUNK) -> dict:
             if i % 200 == 0:
                 db.commit()
         db.commit()
+
+        # --- pojistný přepočet denormalizovaného ing_total ---
+        # Řádky mění i cesty, které recompute_recipe_kcal nevolají (ruční
+        # resolve v katalogu apod.). Jeden UPDATE na konci každého backfillu
+        # drží počty srovnané, ať výpis receptů (který z ing_total žije)
+        # nikdy neujíždí. S indexem (recipe_id, ingredient_id) pár sekund.
+        from sqlalchemy import text as _text
+
+        db.execute(_text(
+            "UPDATE recipe SET ing_total = ("
+            " SELECT COUNT(*) FROM recipe_ingredient"
+            " WHERE recipe_ingredient.recipe_id = recipe.id"
+            "   AND recipe_ingredient.ingredient_id IS NOT NULL)"
+        ))
+        db.commit()
         log.info("backfill hotovo: napárováno %s řádků v %s receptech",
                  matched, len(affected))
     except Exception as exc:  # noqa: BLE001

@@ -172,6 +172,12 @@ class Recipe(Base):
     local_thumb_path: Mapped[str | None] = mapped_column(String(400), nullable=True)
     kcal_per_100g: Mapped[float | None] = mapped_column(Float, nullable=True)
     total_weight_g: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Denormalizovaný počet NAPÁROVANÝCH surovin (ingredient_id IS NOT NULL).
+    # Udržuje recompute_recipe_kcal + pojistný přepočet na konci backfillu;
+    # historii doplňuje jednorázová migrace. Díky němu výpis receptů nemusí
+    # agregovat celou recipe_ingredient (u 150k receptů přes milion řádků)
+    # při každém požadavku – to dělalo z hlavní stránky minutovou operaci.
+    ing_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     ingredients: Mapped[list["RecipeIngredient"]] = relationship(
         back_populates="recipe", cascade="all, delete-orphan"

@@ -44,6 +44,9 @@ class IndexAdd:
     cols: tuple[str, ...]
     unique: bool = False
     fulltext: bool = False  # jen MariaDB/MySQL; na SQLite se přeskočí
+    # Stavět na POZADÍ (velké tabulky, ALTER v řádu desítek sekund by
+    # blokoval start). Na SQLite (testy, malá data) se staví synchronně.
+    background: bool = False
 
 
 # Sloupce, které musí existovat na již vytvořených tabulkách.
@@ -83,6 +86,9 @@ _COLUMNS: tuple[ColumnAdd, ...] = (
     # RecipeIngredient – rozhodnutá ne-surovina (záměrně bez ingredient_id);
     # existující řádky označí slovníkový sweep při nejbližším párování
     ColumnAdd("recipe_ingredient", "nonfood", "TINYINT(1) NOT NULL DEFAULT 0"),
+    # Recipe – denormalizovaný počet napárovaných surovin pro rychlý výpis
+    # (viz models.py); historii plní jednorázová migrace na pozadí
+    ColumnAdd("recipe", "ing_total", "INT NULL"),
 )
 
 # Změny existujících sloupců (pouze nezbytné).
@@ -103,6 +109,11 @@ _INDEXES: tuple[IndexAdd, ...] = (
     # tenhle dotaz sahají při KAŽDÉM načtení, u 150k+ receptů to bez indexu
     # znatelně brzdilo.
     IndexAdd("recipe_ingredient", "ix_ri_recipe_ingredient", ("recipe_id", "ingredient_id")),
+    # Obrácený směr: dostupnost vůči spíži agreguje jen řádky se surovinami
+    # ze spíže (WHERE ingredient_id IN …) – bez tohoto indexu je to full scan
+    # celé recipe_ingredient při každém načtení hlavní stránky.
+    IndexAdd("recipe_ingredient", "ix_ri_ingredient_recipe", ("ingredient_id", "recipe_id"),
+             background=True),
     # Fulltext pro hledání receptů (název + postup). ILIKE '%q%' na 100k+
     # řádcích skenuje celou tabulku; MATCH..AGAINST je řádově rychlejší a
     # umí i hledání v postupu.
@@ -167,6 +178,31 @@ def run_all(engine: Engine) -> None:
                 name="migrations-reparse-units",
             ).start()
 
+    # Výkonnostní migrace výpisu receptů: velký index + naplnění ing_total.
+    # Jen MariaDB (na SQLite se index staví synchronně výš a ing_total plní
+    # backfill/recompute za běhu testů).
+    if (
+        engine.dialect.name != "sqlite"
+        and "recipe_ingredient" in existing_tables
+        and "app_setting" in existing_tables
+    ):
+        pending_idx = [
+            spec for spec in _INDEXES
+            if spec.background and not spec.fulltext and spec.table in existing_tables
+            and spec.name not in {ix["name"] for ix in insp.get_indexes(spec.table)}
+        ]
+        with engine.begin() as conn:
+            ing_total_done = conn.execute(text(
+                "SELECT value FROM app_setting WHERE `key` = 'mig_ing_total_v1'"
+            )).first() is not None
+        if pending_idx or not ing_total_done:
+            import threading
+
+            threading.Thread(
+                target=_perf_bg, args=(engine, pending_idx, ing_total_done),
+                daemon=True, name="migrations-perf",
+            ).start()
+
 
 def _missing_fulltext(engine: Engine, insp, existing_tables: set[str]) -> list[IndexAdd]:
     if engine.dialect.name == "sqlite":
@@ -202,6 +238,47 @@ def _add_fulltext_bg(engine: Engine, specs: list[IndexAdd]) -> None:
         except Exception as exc:  # noqa: BLE001
             log.warning("Migrace FULLTEXT %s selhala (hledání zůstává na LIKE): %s",
                         spec.name, exc)
+
+
+def _perf_bg(engine: Engine, specs: list[IndexAdd], ing_total_done: bool) -> None:
+    """Výkonnostní migrace na pozadí, v pořadí: (1) velké indexy (ALTER na
+    milionové tabulce = desítky sekund, nesmí blokovat start), (2) jednorázové
+    naplnění recipe.ing_total (jeden korelovaný UPDATE, index z kroku 1 mu
+    pomáhá). Výpis receptů do té doby ukazuje dostupnost 0/0 – srovná se sám."""
+    for spec in specs:
+        cols = ", ".join(spec.cols)
+        try:
+            insp = inspect(engine)
+            if spec.name in {ix["name"] for ix in insp.get_indexes(spec.table)}:
+                continue
+            log.info("Migrace: stavím index %s na %s(%s) NA POZADÍ…",
+                     spec.name, spec.table, cols)
+            with engine.begin() as conn:
+                conn.execute(text(
+                    f"CREATE INDEX {spec.name} ON {spec.table} ({cols})"
+                ))
+            log.info("Migrace: index %s hotový.", spec.name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Migrace INDEX %s (pozadí) selhala: %s", spec.name, exc)
+
+    if not ing_total_done:
+        try:
+            log.info("Migrace: plním recipe.ing_total NA POZADÍ…")
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "UPDATE recipe SET ing_total = ("
+                    " SELECT COUNT(*) FROM recipe_ingredient"
+                    " WHERE recipe_ingredient.recipe_id = recipe.id"
+                    "   AND recipe_ingredient.ingredient_id IS NOT NULL)"
+                ))
+                conn.execute(text(
+                    "INSERT INTO app_setting (`key`, value) VALUES ('mig_ing_total_v1', '1')"
+                ))
+            log.info("Migrace: recipe.ing_total naplněno.")
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "Migrace ing_total selhala (zopakuje se při dalším startu): %s", exc
+            )
 
 
 def _reparse_units_bg(engine: Engine) -> None:
@@ -329,6 +406,8 @@ def _add_indexes(engine: Engine, insp, existing_tables: set[str], *, fulltext: b
             continue
         if spec.fulltext and (not fulltext or engine.dialect.name == "sqlite"):
             continue  # fulltext staví _add_fulltext_bg; SQLite syntaxi nezná
+        if spec.background and engine.dialect.name != "sqlite":
+            continue  # velké indexy staví _perf_bg; na SQLite je stavba levná
         existing = {ix["name"] for ix in insp.get_indexes(spec.table)}
         # UNIQUE constrainty hlásí get_unique_constraints jinde:
         if spec.unique:
