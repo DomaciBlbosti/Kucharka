@@ -63,9 +63,9 @@ def _run_crawler():
 
 
 def _run_translate():
-    from .modules import translate
+    from .modules import llmclient, translate
 
-    if translate.status().get("running"):
+    if not llmclient.is_available() or translate.is_running():
         return
     translate.retranslate_all()
 

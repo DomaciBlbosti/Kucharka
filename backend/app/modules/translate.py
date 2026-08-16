@@ -1,8 +1,10 @@
-"""Překlad zahraničních receptů do češtiny přes Ollamu.
+"""Překlad zahraničních receptů do češtiny přes LLM (Ollama, nebo komerční API).
 
 České recepty (doména .cz nebo text s českou diakritikou) se nepřekládají.
 U cizích se přeloží titul, ingredience a postup jedním dotazem; pokud se
 nezachová počet ingrediencí, ponecháme originál (kvůli párování surovin).
+Volání jde přes llmclient – při zapnutém komerčním API tedy překládá API
+(výrazně lepší čeština), jinak lokální rychlý model.
 
 Kromě překladu při importu umí modul i ZPĚTNĚ přeložit už uložené recepty
 (retranslate_*), což využívá údržba v administraci — typicky pro recepty
@@ -22,11 +24,32 @@ from sqlalchemy.orm import selectinload
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Recipe
-from .ollamachat import chat_json
 
 log = logging.getLogger("kucharka.translate")
 
 _CZ_CHARS = set("ěščřžůňďť")
+
+_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "ingredients": {"type": "array", "items": {"type": "string"}},
+        "instructions": {"type": "string"},
+    },
+    "required": ["title", "ingredients", "instructions"],
+}
+
+# Malé lokální modely při překladu vymýšlejí novotvary („květička", „sóva
+# semínka", „čirný pepřík"). Slovníček nejčastěji komolených termínů přímo
+# v promptu je spolehlivě srovná; velkým API modelům nevadí.
+_GLOSSARY = (
+    "cauliflower=květák, florets=růžičky, broccoli=brokolice, "
+    "sesame seeds=sezamová semínka, black pepper=černý pepř, "
+    "garlic granules=granulovaný česnek, chickpeas=cizrna, "
+    "baking tray/sheet=plech, parchment/baking paper=pečicí papír, "
+    "tbsp=lžíce, tsp=lžička, cup=hrnek, zest=kůra, stock/broth=vývar, "
+    "heavy/double cream=smetana ke šlehání, ground=mletý, simmer=mírně vařit"
+)
 
 
 def looks_czech(domain: str | None, text: str) -> bool:
@@ -37,8 +60,11 @@ def looks_czech(domain: str | None, text: str) -> bool:
 
 
 def _translate_fields(title: str, ingredients: list[str], instructions: str) -> dict | None:
-    """Zavolá Ollamu a vrátí přeložená pole, nebo None (chyba / nesedí počet)."""
-    if not settings.ollama_enabled:
+    """Zavolá LLM (přes llmclient) a vrátí přeložená pole, nebo None
+    (nedostupný provider / chyba / nesedí počet ingrediencí)."""
+    from . import llmclient
+
+    if not llmclient.is_available():
         return None
     payload = {
         "title": title or "",
@@ -46,25 +72,27 @@ def _translate_fields(title: str, ingredients: list[str], instructions: str) -> 
         "instructions": instructions or "",
     }
     prompt = (
-        "Přelož tento recept do češtiny. Zachovej přesně počet a pořadí "
-        "ingrediencí. Jednotky a množství ponech, jen přelož názvy. Odpověz "
-        "POUZE JSON objektem "
+        "Jsi překladatel kuchařských receptů do češtiny. Přelož recept níže.\n"
+        "Pravidla:\n"
+        "- Používej výhradně zavedené české kuchyňské názvosloví; žádné "
+        "novotvary ani doslovné kalky.\n"
+        f"- Slovníček: {_GLOSSARY}.\n"
+        "- Množství a čísla zachovej, jednotky přelož (tbsp→lžíce, tsp→lžička).\n"
+        "- Zachovej PŘESNĚ počet a pořadí ingrediencí (řádek za řádek).\n"
+        "- Postup piš přirozenou plynulou češtinou, vykej (smíchejte, pečte).\n"
+        "Odpověz POUZE JSON objektem "
         '{"title": string, "ingredients": [string], "instructions": string}.\n'
         f"Recept: {json.dumps(payload, ensure_ascii=False)}"
     )
     try:
-        # sdílený zámek dávkových úloh – překlad se nesmí potkat na GPU
-        # s párováním/kategorizací spuštěnými odjinud
-        from .llmclient import ollama_gate
-
-        with ollama_gate():
-            out = chat_json(
-                settings.ollama_url,
-                settings.ollama_fast_model,
-                prompt,
-                keep_alive=settings.ollama_keep_alive,
-                timeout=max(settings.http_timeout, 120),
-            )
+        # llmclient drží globální Ollama zámek sám – překlad se na GPU
+        # nepotká s párováním/kategorizací spuštěnými odjinud
+        out = llmclient.structured_json(
+            prompt,
+            schema=_SCHEMA,
+            timeout=max(settings.http_timeout, settings.llm_match_timeout_s),
+            num_ctx=8192,
+        )
         if out is None:
             return None
     except Exception as exc:  # noqa: BLE001
@@ -89,7 +117,9 @@ def translate_recipe(data: dict) -> dict:
     mohla později zobrazit / na něj přepnout – recept se v UI ukáže česky,
     s možností podívat se na předlohu.
     """
-    if not settings.translate_to_cs or not settings.ollama_enabled:
+    from . import llmclient
+
+    if not settings.translate_to_cs or not llmclient.is_available():
         return data
     probe = f"{data.get('title', '')} {data.get('instructions') or ''}"
     if looks_czech(data.get("source_domain"), probe):
@@ -164,8 +194,11 @@ def is_running() -> bool:
 
 
 def status() -> dict:
+    from . import llmclient
+
     with _lock:
         s = dict(_state)
+    s["last_error"] = llmclient.last_error()
     db = SessionLocal()
     try:
         s["recipes_total"] = db.scalar(select(func.count(Recipe.id))) or 0

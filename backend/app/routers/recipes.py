@@ -429,8 +429,11 @@ def retranslate_one(recipe_id: int, db: Session = Depends(get_db)):
         raise HTTPException(
             400, "Tento recept nemá externí zdroj – originál se nedá znovu stáhnout."
         )
-    if not settings.ollama_enabled:
-        raise HTTPException(400, "Ollama není dostupná.")
+    from ..modules import llmclient
+
+    err = llmclient.availability_error()
+    if err:
+        raise HTTPException(400, err)
     fresh = ingest.ingest_url(db, r.source_url)
     if fresh is None:
         raise HTTPException(502, "Stažení nebo zpracování zdrojové stránky selhalo.")
