@@ -3,8 +3,16 @@
 Převod jednotek na gramy: objemové jednotky → ml → gramy přes hustotu suroviny
 (default 1.0 = jako voda). Pro kusové/lžícové jednotky používáme hrubé odhady,
 které jdou kdykoli zpřesnit per-surovina.
+
+Rozpoznávání jednotek v textu je tady taky (canonical_unit / find_unit), ať
+oba regex parsery (normalizer, enrichment) sdílejí jedno chování: skloňované
+tvary („3 lžic"), přívlastky („1 čajová lžička") i anglické jednotky (tbsp).
+Bez toho parser jednotku nepoznal, spadl na default „číslo × 60 g" a lžíce
+oleje pak měla přes 500 kcal.
 """
 from __future__ import annotations
+
+import unicodedata
 
 from ..models import Ingredient, Recipe
 
@@ -18,12 +26,16 @@ UNIT_TO_ML: dict[str, float] = {
     "lžičky": 5.0,
     "lzicky": 5.0,
     "čl": 5.0,
+    "tsp": 5.0,
     "lžíce": 15.0,
     "lzice": 15.0,
     "pl": 15.0,
+    "tbsp": 15.0,
     "hrnek": 250.0,
     "hrnky": 250.0,
     "hrnků": 250.0,
+    "cup": 240.0,
+    "cups": 240.0,
     "sklenice": 250.0,
     "šálek": 200.0,
     "salek": 200.0,
@@ -37,6 +49,9 @@ UNIT_TO_G: dict[str, float] = {
     "dkg": 10.0,
     "deka": 10.0,
     "kg": 1000.0,
+    "oz": 28.35,
+    "lb": 453.6,
+    "lbs": 453.6,
 }
 
 # Hrubé hmotnosti kusových jednotek (g), když nemáme nic lepšího
@@ -67,6 +82,74 @@ PIECE_GRAMS: dict[str, float] = {
 }
 
 
+# ─── Rozpoznání jednotky v textu ─────────────────────────────────────────────
+
+def _strip_acc(s: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c)
+    )
+
+
+# Skloňované tvary → kanonická jednotka (klíče bez diakritiky, lowercase).
+# Kanonická hodnota MUSÍ být klíčem některé tabulky výš.
+_INFLECTED_UNITS: dict[str, str] = {
+    # lžíce (15 ml)
+    "lzic": "lžíce", "lzici": "lžíce", "lzicemi": "lžíce", "lzicich": "lžíce",
+    # lžička (5 ml)
+    "lzicek": "lžička", "lzicce": "lžička", "lzicku": "lžička", "lzickou": "lžička",
+    "lzickami": "lžička",
+    # hrnek / šálek / sklenice
+    "hrnku": "hrnek", "hrncich": "hrnek",
+    "salku": "šálek", "salky": "šálek",
+    "sklenici": "sklenice", "sklenic": "sklenice",
+    # kusové
+    "kusy": "ks", "kousek": "ks", "kousky": "ks",
+    "strouzku": "stroužek", "platku": "plátek",
+    "spetky": "špetka", "spetku": "špetka",
+    "snitek": "snítka", "snitku": "snítka",
+    "konzerv": "konzerva", "konzervu": "konzerva",
+    "balicek": "balení", "balicku": "balení",
+}
+
+_UNIT_LOOKUP: dict[str, str] = {}
+for _k in (*UNIT_TO_G, *UNIT_TO_ML, *PIECE_GRAMS):
+    _UNIT_LOOKUP.setdefault(_strip_acc(_k), _k)
+for _infl, _canon in _INFLECTED_UNITS.items():
+    _UNIT_LOOKUP.setdefault(_infl, _canon)
+
+# Přívlastky před jednotkou („1 ČAJOVÁ lžička", „2 POLÉVKOVÉ lžíce") – samy
+# o sobě jednotka nejsou, velikost nese podstatné jméno za nimi.
+UNIT_QUALIFIERS = frozenset({
+    "cajova", "cajove", "cajovou", "kavova", "kavove", "kavovou",
+    "polevkova", "polevkove", "polevkovou", "dezertni",
+    "vrchovata", "vrchovate", "vrchovatou", "zarovnana", "zarovnane", "zarovnanou",
+    "velka", "velke", "velkou", "mala", "male", "malou",
+    "heaping", "heaped", "level",
+})
+
+
+def canonical_unit(token: str) -> str | None:
+    """Kanonická jednotka pro token („lžic" → „lžíce"), nebo None."""
+    return _UNIT_LOOKUP.get(_strip_acc((token or "").lower().strip(",.;")))
+
+
+def find_unit(tokens: list[str], max_skip: int = 2) -> tuple[str | None, int]:
+    """Najdi jednotku na začátku tokenů (hned za číslem). Přeskočí až
+    `max_skip` přívlastků („čajová lžička"). Vrací (kanonická jednotka,
+    počet spotřebovaných tokenů) – přívlastky se počítají jen při nálezu."""
+    idx = 0
+    while (
+        idx < len(tokens) and idx < max_skip
+        and _strip_acc(tokens[idx].lower()) in UNIT_QUALIFIERS
+    ):
+        idx += 1
+    if idx < len(tokens):
+        u = canonical_unit(tokens[idx])
+        if u:
+            return u, idx + 1
+    return None, 0
+
+
 def grams_for(
     amount: float | None, unit: str | None, ingredient: Ingredient | None
 ) -> float | None:
@@ -74,6 +157,9 @@ def grams_for(
     if amount is None:
         return None
     u = (unit or "").strip().lower()
+    if u and u not in UNIT_TO_G and u not in UNIT_TO_ML and u not in PIECE_GRAMS:
+        # historicky uložené skloňované tvary („lžic") – zkus kanonizaci
+        u = canonical_unit(u) or u
 
     if u in UNIT_TO_G:
         return amount * UNIT_TO_G[u]

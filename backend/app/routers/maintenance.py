@@ -63,16 +63,21 @@ def _fast_model_error() -> str | None:
 
 @router.get("/translate-status")
 def translate_status():
+    from ..modules import llmclient
+
     s = translate.status()
-    s["ollama"] = settings.ollama_enabled
+    s["ollama"] = llmclient.is_available()
     return s
 
 
 @router.post("/translate")
 def run_translate():
-    if not settings.ollama_enabled:
-        return {"started": False, "status": translate.status(), "error": "Ollama není dostupná."}
-    err = _fast_model_error()
+    from ..modules import llmclient
+
+    err = llmclient.availability_error()
+    # kontrola staženého modelu dává smysl jen pro lokální Ollamu
+    if not err and not settings.llm_api_enabled:
+        err = _fast_model_error()
     if err:
         return {"started": False, "status": translate.status(), "error": err}
     started = translate.retranslate_async()
@@ -453,15 +458,20 @@ def run_tagging():
 
 @router.get("/retranslate-status")
 def retranslate_reset_status():
+    from ..modules import llmclient
+
     s = translate.reset_status()
-    s["ollama"] = settings.ollama_enabled
+    s["ollama"] = llmclient.is_available()
     return s
 
 
 @router.post("/retranslate-reset")
 def run_retranslate_reset():
     """Hromadně: znovu stáhni originál a přelož recepty, co vypadají jako starý strojový překlad."""
-    if not settings.ollama_enabled:
-        return {"started": False, "status": translate.reset_status(), "error": "Ollama není dostupná."}
+    from ..modules import llmclient
+
+    err = llmclient.availability_error()
+    if err:
+        return {"started": False, "status": translate.reset_status(), "error": err}
     started = translate.reset_translations_async()
     return {"started": started, "status": translate.reset_status(), "error": None}

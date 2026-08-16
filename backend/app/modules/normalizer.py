@@ -21,12 +21,11 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..models import Ingredient, IngredientAlias
-from .nutrition import PIECE_GRAMS, UNIT_TO_G, UNIT_TO_ML
+from .nutrition import PIECE_GRAMS, UNIT_TO_G, UNIT_TO_ML, find_unit
 from .ollamachat import chat_json
 
 log = logging.getLogger("kucharka.normalizer")
 
-_KNOWN_UNITS = set(UNIT_TO_G) | set(UNIT_TO_ML) | set(PIECE_GRAMS)
 
 # Slova, která chceme z názvu vyhodit, aby se líp párovalo
 _STOP = {
@@ -90,10 +89,12 @@ def parse_line_regex(text: str) -> tuple[float | None, str | None, str]:
 
     tokens = t.split()
     if tokens:
-        first = _norm(tokens[0])
-        if first in _KNOWN_UNITS:
-            unit = tokens[0]
-            tokens = tokens[1:]
+        # sdílené rozpoznání (skloňované tvary, „čajová lžička", tbsp…);
+        # z názvu se ukousne i přívlastek jednotky
+        u, consumed = find_unit(tokens)
+        if u:
+            unit = u
+            tokens = tokens[consumed:]
 
     name = " ".join(tokens).strip(" ,.-")
     return amount, unit, name

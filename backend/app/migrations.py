@@ -147,6 +147,26 @@ def run_all(engine: Engine) -> None:
             name="migrations-fulltext",
         ).start()
 
+    # Jednorázový přepočet jednotek/gramáže/kcal (viz _reparse_units_bg).
+    # Jen MariaDB: na SQLite běží testy a vlákno na pozadí by jim závodilo
+    # se zápisy; produkce SQLite nepoužívá.
+    if (
+        engine.dialect.name != "sqlite"
+        and "recipe_ingredient" in existing_tables
+        and "app_setting" in existing_tables
+    ):
+        with engine.begin() as conn:
+            marker = conn.execute(text(
+                "SELECT value FROM app_setting WHERE `key` = 'mig_reparse_units_v1'"
+            )).first()
+        if marker is None:
+            import threading
+
+            threading.Thread(
+                target=_reparse_units_bg, args=(engine,), daemon=True,
+                name="migrations-reparse-units",
+            ).start()
+
 
 def _missing_fulltext(engine: Engine, insp, existing_tables: set[str]) -> list[IndexAdd]:
     if engine.dialect.name == "sqlite":
@@ -182,6 +202,82 @@ def _add_fulltext_bg(engine: Engine, specs: list[IndexAdd]) -> None:
         except Exception as exc:  # noqa: BLE001
             log.warning("Migrace FULLTEXT %s selhala (hledání zůstává na LIKE): %s",
                         spec.name, exc)
+
+
+def _reparse_units_bg(engine: Engine) -> None:
+    """JEDNORÁZOVĚ přeparsuj množství/jednotku všech řádků surovin a přepočítej
+    gramáž + kcal. Regex parsery dřív nepoznaly skloňované tvary („3 lžic")
+    ani přívlastky („1 čajová lžička") → jednotka None → default „číslo × 60 g"
+    → nesmysly typu 3 lžíce oleje = 1591 kcal. Historická data je potřeba
+    srovnat podle opravených parserů; nové řádky už jedou správně.
+
+    Běží na pozadí (100k+ řádků), po dávkách; marker se zapisuje až po
+    úspěšném doběhu – při restartu uprostřed se prostě pustí znovu
+    (idempotentní přepis stejných hodnot)."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload, sessionmaker
+
+    from .models import Recipe, RecipeIngredient
+    from .modules.enrichment import _parse_amount_unit
+    from .modules.nutrition import grams_for, kcal_for, recompute_recipe_kcal
+
+    log.info("Migrace: přepočet jednotek a kcal všech surovin NA POZADÍ…")
+    Session = sessionmaker(bind=engine)
+    changed_rows = 0
+    try:
+        db = Session()
+        try:
+            ids = [r for r in db.scalars(select(Recipe.id)).all()]
+        finally:
+            db.close()
+
+        CHUNK = 300
+        for i in range(0, len(ids), CHUNK):
+            db = Session()
+            try:
+                recipes = db.scalars(
+                    select(Recipe)
+                    .where(Recipe.id.in_(ids[i : i + CHUNK]))
+                    .options(
+                        selectinload(Recipe.ingredients)
+                        .selectinload(RecipeIngredient.ingredient)
+                    )
+                ).all()
+                for r in recipes:
+                    touched = False
+                    for ri in r.ingredients:
+                        if not ri.raw_text:
+                            continue
+                        amount, unit = _parse_amount_unit(ri.raw_text)
+                        ing = ri.ingredient if ri.ingredient_id else None
+                        grams = grams_for(amount, unit, ing)
+                        kcal = kcal_for(grams, ing)
+                        if (
+                            amount != ri.amount or unit != ri.unit
+                            or grams != ri.grams or kcal != ri.kcal
+                        ):
+                            ri.amount, ri.unit, ri.grams, ri.kcal = amount, unit, grams, kcal
+                            touched = True
+                            changed_rows += 1
+                    if touched:
+                        recompute_recipe_kcal(r)
+                db.commit()
+            finally:
+                db.close()
+
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO app_setting (`key`, value) VALUES ('mig_reparse_units_v1', '1')"
+            ))
+        log.info(
+            "Migrace: přepočet jednotek hotový – upraveno %s řádků surovin.",
+            changed_rows,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "Migrace přepočtu jednotek selhala (zopakuje se při dalším startu): %s",
+            exc,
+        )
 
 
 def _add_columns(engine: Engine, insp, existing_tables: set[str]) -> None:
