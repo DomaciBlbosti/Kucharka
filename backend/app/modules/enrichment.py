@@ -38,6 +38,7 @@ from .nutrition import (
     PIECE_GRAMS,
     UNIT_TO_G,
     UNIT_TO_ML,
+    find_unit,
     grams_for,
     kcal_for,
     recompute_recipe_kcal,
@@ -49,7 +50,6 @@ log = logging.getLogger("kucharka.enrichment")
 # by byly horší než ručně doplnit alias.
 DEFAULT_FUZZY_THRESHOLD = 90
 
-_KNOWN_UNITS = set(UNIT_TO_G) | set(UNIT_TO_ML) | set(PIECE_GRAMS)
 _NUM_RE = re.compile(r"(\d+[.,]?\d*)")
 _FRACTION_VALUES = {"½": 0.5, "¼": 0.25, "¾": 0.75, "⅓": 1/3, "⅔": 2/3, "⅛": 0.125}
 
@@ -77,12 +77,9 @@ def _parse_amount_unit(raw: str) -> tuple[float | None, str | None]:
             except ValueError:
                 pass
 
-    unit: str | None = None
-    tokens = t.split()
-    if tokens:
-        first = tokens[0].lower().strip(",.;")
-        if first in _KNOWN_UNITS:
-            unit = first
+    # sdílené rozpoznání (skloňované tvary, „čajová lžička", tbsp…) vrací
+    # rovnou kanonickou jednotku, se kterou grams_for umí počítat
+    unit, _consumed = find_unit(t.split())
     return amount, unit
 
 

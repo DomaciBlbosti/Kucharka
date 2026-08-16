@@ -29,6 +29,7 @@ jobs:
           python -m tests.test_llm_match
           python -m tests.test_auth_and_search
           python -m tests.test_translate
+          python -m tests.test_units
 
   frontend-build:
     runs-on: ubuntu-latest
