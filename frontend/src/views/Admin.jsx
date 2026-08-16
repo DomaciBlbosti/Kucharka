@@ -62,7 +62,7 @@ function ToolsCard() {
       "rag_k", "rag_max_recipes", "ollama_keep_alive", "bg_workers",
       "llm_match_enabled", "llm_match_model", "llm_match_batch_size",
       "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
-      "llm_match_timeout_s",
+      "llm_match_timeout_s", "translate_model",
       "llm_provider", "llm_api_url", "llm_api_model"];
     const vals = Object.fromEntries(keys.map((k) => [k, s[k]]));
     if (apiKey.trim()) vals.llm_api_key = apiKey.trim();
@@ -93,6 +93,11 @@ function ToolsCard() {
         <Field label="Rychlý model (překlad/parsování/kategorie)" hint="prázdné = stejný jako hlavní">
           <input className={input} value={s.ollama_fast_model || ""}
             onChange={(e) => set("ollama_fast_model", e.target.value)} placeholder="qwen3:1.7b" />
+        </Field>
+        <Field label="Model jen pro překlad receptů"
+          hint="prázdné = rychlý model · zkus multilingvální (aya-expanse:8b, mistral-nemo) · při komerčním API se nepoužije">
+          <input className={input} value={s.translate_model || ""}
+            onChange={(e) => set("translate_model", e.target.value)} placeholder="aya-expanse:8b" />
         </Field>
         <Field label="Model pro embeddingy (RAG)">
           <input className={input} value={s.embed_model || ""}
@@ -1437,6 +1442,77 @@ function TranslateCard() {
   );
 }
 
+function RetranslateOriginalsCard() {
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState(null);
+  const [domain, setDomain] = useState("");
+  const timer = useRef(null);
+  const load = () => api.retranslateOriginalsStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    load();
+    return () => clearInterval(timer.current);
+  }, []);
+  useEffect(() => {
+    if (st?.running && !timer.current) {
+      timer.current = setInterval(load, 2000);
+    } else if (!st?.running && timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+    }
+  }, [st?.running]);
+
+  const run = async () => {
+    setErr(null);
+    const r = await api.runRetranslateOriginals(domain.trim());
+    setSt(r.status);
+    if (r.error) setErr(r.error);
+  };
+
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <h2 className="mb-1 text-lg font-bold">Znovu přeložit z originálů</h2>
+      <p className="mb-4 text-sm text-ink/60">
+        Přeloží znovu recepty, které mají <b>uložený originál</b> — aktuální
+        cestou (lepší prompt, případně jiný model / komerční API). Nic se
+        nestahuje z webu, jen se překládá. Hodí se na opravu starých mizerných
+        překladů; volitelně jen pro jednu doménu.
+      </p>
+      {st && (
+        <p className="mb-3 text-sm text-ink/70">
+          Receptů s uloženým originálem: <b>{st.candidates}</b>
+          {st.finished_at && !st.running && (
+            <> · naposledy přeloženo: <b>{st.translated}</b>
+              {st.domain ? <> (doména {st.domain})</> : null}</>
+          )}
+        </p>
+      )}
+      {st?.running ? (
+        <Spinner label={`Překládám z originálů… ${st.done}/${st.total} (hotovo ${st.translated})`} />
+      ) : (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <input className="w-64 rounded-lg border border-line px-3 py-2 text-sm"
+              value={domain} onChange={(e) => setDomain(e.target.value)}
+              placeholder="jen doména, např. bbcgoodfood.com (prázdné = vše)" />
+            <Button onClick={run} disabled={!st || st.candidates === 0}>
+              Znovu přeložit
+            </Button>
+            {st && st.candidates === 0 && (
+              <span className="text-sm text-ink/50">Žádné recepty s originálem.</span>
+            )}
+          </div>
+          <p className="text-xs text-ink/50">
+            Pozor: u velkého počtu receptů poběží dlouho (jeden LLM dotaz na
+            recept). Nenapárované suroviny s novým textem dorovná nejbližší
+            kolečko zpracování.
+          </p>
+          {err && <p className="text-sm text-miss">{err}</p>}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ResetTranslateCard() {
   const [st, setSt] = useState(null);
   const [err, setErr] = useState(null);
@@ -1647,6 +1723,7 @@ export default function Admin() {
       <LlmMatchCard />
       <DecisionsCard />
       <TranslateCard />
+      <RetranslateOriginalsCard />
       <ResetTranslateCard />
       <CategorizeCard />
       <TagCard />

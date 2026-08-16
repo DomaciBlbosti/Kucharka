@@ -72,6 +72,38 @@ def test_translate_fields(monkeypatch_calls):
     out = translate._translate_fields("T", ["a"], "i")
     check("None z LLM → None", out is None)
 
+    # 5) samostatný model pro překlad se propaguje do volání
+    from app.config import settings
+
+    def fake_capture(prompt, **kw):
+        calls.append({"prompt": prompt, "kw": kw})
+        return {"title": "T", "ingredients": ["a"], "instructions": ""}
+
+    llmclient.structured_json = fake_capture
+    old = settings.translate_model
+    try:
+        settings.translate_model = "aya-expanse:8b"
+        translate._translate_fields("T", ["a"], "i")
+        check(
+            "translate_model → ollama_model ve volání",
+            calls[-1]["kw"].get("ollama_model") == "aya-expanse:8b",
+        )
+        settings.translate_model = ""
+        translate._translate_fields("T", ["a"], "i")
+        check(
+            "prázdný translate_model → ollama_model None (rychlý model)",
+            calls[-1]["kw"].get("ollama_model") is None,
+        )
+    finally:
+        settings.translate_model = old
+
+    # 6) admin klíč translate_model funguje přes set_admin/as_admin
+    settings.set_admin("translate_model", "  mistral-nemo:12b ")
+    check("set_admin translate_model", settings.translate_model == "mistral-nemo:12b")
+    check("as_admin obsahuje translate_model",
+          settings.as_admin().get("translate_model") == "mistral-nemo:12b")
+    settings.set_admin("translate_model", "")
+
 
 def main():
     orig_avail = llmclient.is_available

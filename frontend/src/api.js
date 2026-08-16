@@ -304,6 +304,13 @@ export const api = {
     afetch("/api/maintenance/translate", { method: "POST" }).then(J),
   retranslateOne: (id) =>
     afetch(`/api/recipes/${id}/retranslate`, { method: "POST" }).then(J),
+  retranslateOriginalsStatus: () =>
+    afetch("/api/maintenance/retranslate-originals-status").then(J),
+  runRetranslateOriginals: (domain) =>
+    afetch(
+      `/api/maintenance/retranslate-originals${domain ? `?domain=${encodeURIComponent(domain)}` : ""}`,
+      { method: "POST" },
+    ).then(J),
   retranslateResetStatus: () => afetch("/api/maintenance/retranslate-status").then(J),
   runRetranslateReset: () =>
     afetch("/api/maintenance/retranslate-reset", { method: "POST" }).then(J),

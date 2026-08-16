@@ -456,6 +456,25 @@ def run_tagging():
     return {"started": started, "status": tagging.status(), "error": None}
 
 
+@router.get("/retranslate-originals-status")
+def retranslate_originals_status():
+    return translate.originals_status()
+
+
+@router.post("/retranslate-originals")
+def run_retranslate_originals(domain: str | None = None):
+    """Hromadně přelož znovu recepty z ULOŽENÝCH originálů (bez stahování
+    z webu) – oprava starých mizerných překladů novou cestou. Volitelně jen
+    jedna doména (?domain=bbcgoodfood.com)."""
+    from ..modules import llmclient
+
+    err = llmclient.availability_error()
+    if err:
+        return {"started": False, "status": translate.originals_status(), "error": err}
+    started = translate.retranslate_originals_async(domain)
+    return {"started": started, "status": translate.originals_status(), "error": None}
+
+
 @router.get("/retranslate-status")
 def retranslate_reset_status():
     from ..modules import llmclient

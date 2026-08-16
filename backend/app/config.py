@@ -68,6 +68,11 @@ class Settings:
         self.llm_match_batch_size: int = int(_env("LLM_MATCH_BATCH_SIZE", "40"))
         self.llm_match_min_confidence: float = float(_env("LLM_MATCH_MIN_CONFIDENCE", "0.7"))
         self.llm_match_model: str = _env("LLM_MATCH_MODEL", "")  # prázdné = ollama_fast_model
+        # Samostatný Ollama model jen pro překlad receptů (prázdné = rychlý
+        # model). Umožňuje experimentovat s multilingválními modely
+        # (aya-expanse, mistral-nemo…) bez dopadu na párování/tagy. Při
+        # zapnutém komerčním API se nepoužije (překládá API model).
+        self.translate_model: str = _env("TRANSLATE_MODEL", "")
         # Kontextové okno pro LLM matching volání (musí pokrýt katalog + dávku
         # vstupů + odpověď). Zvyš, pokud vidíš v logu ořezané/prázdné odpovědi.
         self.llm_match_num_ctx: int = int(_env("LLM_MATCH_NUM_CTX", "16384"))
@@ -215,7 +220,7 @@ class Settings:
         "lidl_sync_enabled", "lidl_sync_interval_min",
         "llm_match_enabled", "llm_match_model", "llm_match_batch_size",
         "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
-        "llm_match_timeout_s",
+        "llm_match_timeout_s", "translate_model",
         "llm_provider", "llm_api_url", "llm_api_key", "llm_api_model",
     )
 
@@ -260,6 +265,7 @@ class Settings:
             "llm_match_num_ctx": self.llm_match_num_ctx,
             "llm_match_temperature": self.llm_match_temperature,
             "llm_match_timeout_s": self.llm_match_timeout_s,
+            "translate_model": self.translate_model,
             "llm_provider": self.llm_provider,
             "llm_api_url": self.llm_api_url,
             # klíč se NIKDY nevrací ven, jen příznak, že je nastavený
@@ -275,7 +281,7 @@ class Settings:
         if key not in self.ADMIN_KEYS:
             return False
         if key in ("ollama_url", "ollama_model", "embed_model", "searxng_url", "ocr_model", "hmi_token",
-                   "llm_match_model", "llm_api_url", "llm_api_model"):
+                   "llm_match_model", "translate_model", "llm_api_url", "llm_api_model"):
             setattr(self, key, str(value or "").strip())
         elif key == "llm_provider":
             v = str(value or "").strip().lower()
