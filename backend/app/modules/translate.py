@@ -92,6 +92,9 @@ def _translate_fields(title: str, ingredients: list[str], instructions: str) -> 
             schema=_SCHEMA,
             timeout=max(settings.http_timeout, settings.llm_match_timeout_s),
             num_ctx=8192,
+            # samostatný model jen pro překlad (experimenty s multilingválními
+            # modely bez dopadu na párování); prázdné = rychlý model
+            ollama_model=settings.translate_model or None,
         )
         if out is None:
             return None
@@ -257,6 +260,122 @@ def retranslate_async() -> bool:
             return False
         _state["running"] = True
     threading.Thread(target=retranslate_all, daemon=True).start()
+    return True
+
+
+# ---- hromadné znovupřeložení z ULOŽENÝCH originálů ----
+#
+# Pro recepty přeložené starým (mizerným) promptem: originál je uložený
+# (original_title / original_raw_text), takže se nemusí nic stahovat z webu –
+# jen se originál přeloží znovu, aktuální cestou (lepší prompt / jiný model /
+# komerční API). Volitelný filtr na doménu, ať jde opravit třeba jen
+# bbcgoodfood.com. Vazby surovin se nechávají – nenapárované řádky s novým
+# textem si dorovná nejbližší kolečko zpracování.
+
+_orig_lock = threading.Lock()
+_orig_state: dict = {
+    "running": False, "done": 0, "total": 0, "translated": 0,
+    "domain": None, "finished_at": None,
+}
+
+
+def _orig_set(**kw):
+    with _orig_lock:
+        _orig_state.update(kw)
+
+
+def _orig_inc(key: str, by: int = 1):
+    with _orig_lock:
+        _orig_state[key] = _orig_state.get(key, 0) + by
+
+
+def originals_status() -> dict:
+    with _orig_lock:
+        s = dict(_orig_state)
+    db = SessionLocal()
+    try:
+        s["candidates"] = db.scalar(
+            select(func.count(Recipe.id)).where(Recipe.original_title.is_not(None))
+        ) or 0
+    finally:
+        db.close()
+    from . import llmclient
+
+    s["last_error"] = llmclient.last_error()
+    return s
+
+
+def _retranslate_original_one(recipe_id: int) -> bool:
+    """Přelož jeden recept znovu z uložených originálů. Vrací True při úspěchu."""
+    db = SessionLocal()
+    try:
+        r = db.scalar(
+            select(Recipe).where(Recipe.id == recipe_id).options(selectinload(Recipe.ingredients))
+        )
+        if r is None or not r.original_title:
+            return False
+        texts = [ri.original_raw_text or ri.raw_text for ri in r.ingredients]
+        res = _translate_fields(r.original_title, texts, r.original_instructions or "")
+        if not res:
+            return False
+        r.title = res["title"]
+        if res["instructions"]:
+            r.instructions = res["instructions"]
+        from .enrichment import _parse_amount_unit
+        from .nutrition import grams_for, kcal_for, recompute_recipe_kcal
+
+        for ri, new in zip(r.ingredients, res["ingredients"]):
+            ri.raw_text = new[:400]
+            ri.amount, ri.unit = _parse_amount_unit(ri.raw_text)
+            if ri.ingredient_id:
+                ri.grams = grams_for(ri.amount, ri.unit, ri.ingredient)
+                ri.kcal = kcal_for(ri.grams, ri.ingredient)
+        recompute_recipe_kcal(r)
+        db.commit()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("znovupřeklad z originálu (recept %s) selhal: %s", recipe_id, exc)
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+
+def retranslate_originals_all(domain: str | None = None) -> None:
+    _orig_set(
+        running=True, done=0, total=0, translated=0,
+        domain=domain or None, finished_at=None,
+    )
+    db = SessionLocal()
+    try:
+        stmt = select(Recipe.id).where(Recipe.original_title.is_not(None))
+        if domain:
+            stmt = stmt.where(Recipe.source_domain == domain.strip().lower())
+        ids = list(db.scalars(stmt).all())
+    finally:
+        db.close()
+    _orig_set(total=len(ids))
+    from .categorize import _effective_workers
+
+    workers = _effective_workers()
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for ok in ex.map(_retranslate_original_one, ids):
+                if ok:
+                    _orig_inc("translated")
+                _orig_inc("done")
+    finally:
+        _orig_set(running=False, finished_at=time.time())
+
+
+def retranslate_originals_async(domain: str | None = None) -> bool:
+    with _orig_lock:
+        if _orig_state["running"]:
+            return False
+        _orig_state["running"] = True
+    threading.Thread(
+        target=retranslate_originals_all, args=(domain,), daemon=True
+    ).start()
     return True
 
 
