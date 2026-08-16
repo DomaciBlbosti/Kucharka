@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import case, func, inspect as sa_inspect, literal, select, text
+from sqlalchemy import func, inspect as sa_inspect, literal, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import settings
@@ -23,32 +23,34 @@ router = APIRouter(prefix="/api/recipes", tags=["recipes"])
 
 
 def _availability_cols(have_ids: set[int]):
-    """Spočítej 'total'/'have' dostupnosti PŘÍMO V SQL (agregace přes
-    recipe_ingredient), místo abychom kvůli dvěma číslům tahali do Pythonu
-    kompletní seznam ingrediencí každého receptu v celé DB. U 150k+ receptů
-    byl tohle hlavní důvod, proč se hlavní stránka načítala pomalu.
+    """Dostupnost receptu vůči spíži přímo v SQL – ale LEVNĚ.
 
-    Vrací (subquery, total_col, have_col, missing_col) – total_col/have_col/
-    missing_col jsou SQL výrazy použitelné ve WHERE i ORDER BY, takže filtrování
-    ('jen co můžu uvařit', 'max chybí') i řazení ('smart') jde udělat v DB a
-    LIMIT/OFFSET pak opravdu stránkuje, ne až post-hoc v Pythonu.
+    `total` (počet napárovaných surovin) čteme z denormalizovaného
+    `recipe.ing_total` (udržuje recompute_recipe_kcal + pojistka v backfillu),
+    `have` agregujeme JEN přes řádky se surovinami ze spíže (index
+    ix_ri_ingredient_recipe). Dřívější verze dělala GROUP BY přes CELOU
+    recipe_ingredient (u 150k receptů přes milion řádků) při každém
+    požadavku – hlavní stránka se pak načítala i minutu.
+
+    Vrací (subquery|None, total_col, have_col, missing_col); subquery je None
+    při prázdné spíži (pak není co joinovat). Výrazy jdou použít ve WHERE i
+    ORDER BY, takže filtry a smart řazení běží v DB a LIMIT/OFFSET stránkuje.
     """
-    total_expr = func.sum(case((RecipeIngredient.ingredient_id.isnot(None), 1), else_=0))
-    have_expr = (
-        func.sum(case((RecipeIngredient.ingredient_id.in_(have_ids), 1), else_=0))
-        if have_ids else literal(0)
-    )
-    sub = (
-        select(
-            RecipeIngredient.recipe_id.label("recipe_id"),
-            total_expr.label("total"),
-            have_expr.label("have"),
+    total_col = func.coalesce(Recipe.ing_total, 0)
+    if have_ids:
+        sub = (
+            select(
+                RecipeIngredient.recipe_id.label("recipe_id"),
+                func.count().label("have"),
+            )
+            .where(RecipeIngredient.ingredient_id.in_(have_ids))
+            .group_by(RecipeIngredient.recipe_id)
+            .subquery()
         )
-        .group_by(RecipeIngredient.recipe_id)
-        .subquery()
-    )
-    total_col = func.coalesce(sub.c.total, 0)
-    have_col = func.coalesce(sub.c.have, 0)
+        have_col = func.coalesce(sub.c.have, 0)
+    else:
+        sub = None
+        have_col = literal(0)
     missing_col = total_col - have_col
     return sub, total_col, have_col, missing_col
 
@@ -132,24 +134,24 @@ def list_recipes(
     have = pantry_ingredient_ids(db)
     _sub, total_col, have_col, missing_col = _availability_cols(have)
 
-    base = select(Recipe, total_col.label("total"), have_col.label("have"), missing_col.label("missing_count")).outerjoin(
-        _sub, _sub.c.recipe_id == Recipe.id
-    )
+    # Obyčejné filtry (bez dostupnosti) – aplikují se na hlavní dotaz i na
+    # levný COUNT, který díky tomu nemusí joinovat agregaci spíže.
+    conds = []
     if q:
-        base = base.where(_search_clause(db, q))
+        conds.append(_search_clause(db, q))
     if max_kcal is not None:
-        base = base.where(Recipe.kcal_per_serving <= max_kcal)
+        conds.append(Recipe.kcal_per_serving <= max_kcal)
     if max_time is not None:
-        base = base.where(Recipe.total_time <= max_time)
+        conds.append(Recipe.total_time <= max_time)
     if min_rating is not None:
-        base = base.where(Recipe.rating >= min_rating)
+        conds.append(Recipe.rating >= min_rating)
     if category:
         sub = (
             select(RecipeIngredient.recipe_id)
             .join(Ingredient, RecipeIngredient.ingredient_id == Ingredient.id)
             .where(Ingredient.category_path.ilike(f"{category}%"))
         )
-        base = base.where(Recipe.id.in_(sub))
+        conds.append(Recipe.id.in_(sub))
     if tags:
         by_ns: dict[str, list[str]] = {}
         for t in tags:
@@ -163,14 +165,32 @@ def list_recipes(
                 .join(Tag, RecipeTag.tag_id == Tag.id)
                 .where(Tag.namespace == ns, Tag.slug.in_(slugs))
             )
-            base = base.where(Recipe.id.in_(sub))
+            conds.append(Recipe.id.in_(sub))
+
+    avail_conds = []
     if only_have:
-        base = base.where(missing_col == 0)
+        avail_conds.append(missing_col == 0)
     if max_missing is not None:
-        base = base.where(missing_col <= max_missing)
+        avail_conds.append(missing_col <= max_missing)
+
+    base = select(
+        Recipe, total_col.label("total"), have_col.label("have"),
+        missing_col.label("missing_count"),
+    )
+    if _sub is not None:
+        base = base.outerjoin(_sub, _sub.c.recipe_id == Recipe.id)
+    base = base.where(*conds).where(*avail_conds)
 
     # Celkový počet (stejné filtry, bez řazení/limitu) – pro "Načíst další" v UI.
-    total_count = db.scalar(select(func.count()).select_from(base.order_by(None).subquery())) or 0
+    # Bez filtru na dostupnost stačí COUNT přímo přes recipe (žádný join).
+    if avail_conds:
+        total_count = db.scalar(
+            select(func.count()).select_from(base.order_by(None).subquery())
+        ) or 0
+    else:
+        total_count = db.scalar(
+            select(func.count()).select_from(Recipe).where(*conds)
+        ) or 0
 
     if sort == "rating":
         base = base.order_by(func.coalesce(Recipe.rating, 0).desc())
