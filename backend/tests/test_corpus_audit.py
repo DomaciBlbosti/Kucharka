@@ -132,6 +132,24 @@ def main():
     check("'nasekáme' kmen 'sek' spustí",
           "sek" in corpus_audit.matched_stems(corpus_audit.norm("nasekáme cibuli"))
           or corpus_audit.matched_stems(corpus_audit.norm("sekáme cibuli")) == ["sek"])
+    # předponové tvary z produkčního vzorku – dřív falešně "0 sloves"
+    ms = corpus_audit.matched_stems
+    nm = corpus_audit.norm
+    for phrase, stem in [
+        ("uvedené ingredience smíchejte dohromady", "smich"),
+        ("v mixéru rozmixujte džus a cukr", "rozmix"),
+        ("žloutky s cukrem vyšlehejte", "vysleh"),
+        ("romanesco krátce orestujeme na másle", "orest"),
+        ("nastrouháme brambory nahrubo", "nastrouh"),
+        ("svařte cukr s vodou", "svar"),
+        ("krátce provaříme", "provar"),
+        ("mouku prosejeme", "prosej"),
+        ("přelijeme do vychlazené sklenice", "prelij"),
+        ("necháme rozpustit máslo", "rozpust"),
+    ]:
+        check(f"předponový tvar: {stem}", stem in ms(nm(phrase)), str(ms(nm(phrase))))
+    check("'speciální koření' nespustí nic (žádná generická předpona)",
+          ms(nm("přidáme speciální koření")) == [])
 
     # ── determinismus ──
     out2 = corpus_audit.run(seed=42)
