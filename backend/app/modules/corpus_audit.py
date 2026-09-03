@@ -59,16 +59,30 @@ def norm(s: str) -> str:
     return "".join(c for c in s if not unicodedata.combining(c))
 
 
-# Startovní sada kmenů vařicích sloves (po normalizaci). Je to ODHAD – vzorek
-# proto nese matched_stems, ať se false positives odhalí očima. Jediná úprava
-# proti zadání: "sek" dostal (?!und), protože "30 sekund" je v postupech
-# všudypřítomné a spolehlivě by kmen zfalšovalo.
+# Kmeny vařicích sloves (po normalizaci). Vzorek nese matched_stems, ať se
+# false positives odhalí očima. Úpravy proti startovní sadě ze zadání:
+#   - "sek" dostal (?!und) – "30 sekund" je v postupech všudypřítomné,
+#   - doplněné PŘEDPONOVÉ tvary: match na hranici slova nechytal "smícháme",
+#     "vyšleháme", "orestujeme", "nastrouháme", "rozmixujte", "svařte"… a
+#     koktejly/saláty/nepečené dezerty pak falešně vycházely jako "0 sloves"
+#     (ověřeno nad produkčním vzorkem – vrstva no_cook_verbs byla z většiny
+#     falešný poplach). Generická volitelná předpona (s|o|roz|…) by byla
+#     kratší, ale chytala by "SPECiální" (s+pec) nebo "OVAR" (o+var), proto
+#     se tvary vyjmenovávají explicitně, stejně jako v původní sadě.
+# Známé zbytkové false positives (ponechané kvůli recall, viz vzorek):
+# "var"→"varianta/varná", "pec"→"pečivo", "mix"→"mixér" (nástroj ≈ vaření).
 COOK_STEMS = [
-    "var", "uvar", "pec", "pek", "smaz", "osmaz", "dus", "restu",
-    "mich", "vmich", "zamich", "sleh", "kraj", "nakraj", "sek",
-    "strouh", "hnet", "zadel", "marin", "gril", "zapec", "blansir",
-    "ced", "scedit", "opec", "roztop", "rozehr", "ochut", "osol",
-    "opepr", "obal", "propec", "zapras", "nalij", "podlij", "zalij",
+    "var", "uvar", "svar", "povar", "provar", "prevar",
+    "pec", "pek", "zapec", "opec", "propec",
+    "smaz", "osmaz", "dus", "restu", "orest",
+    "mich", "vmich", "zamich", "smich", "promich", "rozmich", "umich",
+    "sleh", "vysleh", "usleh", "mix", "rozmix",
+    "kraj", "nakraj", "rozkraj", "sek", "strouh", "nastrouh",
+    "oloup", "rozmack", "vymack", "vymaz", "vysyp", "nasyp",
+    "hnet", "zadel", "marin", "gril", "blansir",
+    "ced", "scedit", "roztop", "rozehr", "rozpust", "ochut", "osol",
+    "opepr", "obal", "zapras", "prosej",
+    "nalij", "podlij", "zalij", "prelij", "dolij",
 ]
 
 # Jedna kompilovaná alternace: delší kmeny první (ať "zapec" nespolkne "pec"
