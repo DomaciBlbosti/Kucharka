@@ -12,8 +12,10 @@ při dávkách po ~40 surovinách stojí zpracování celé fronty řádově dol
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
+import time
 from contextlib import contextmanager
 
 import httpx
@@ -23,6 +25,17 @@ from .llmjson import parse_json_response
 from .ollamachat import chat_json_raw
 
 log = logging.getLogger("kucharka.llmclient")
+
+# Trasování dotazů a odpovědí LLM do logu (Admin → Služby na pozadí → chip
+# „LLM"). Náhledy se ořezávají na jeden řádek, ať je vidět CO odchází a CO
+# se vrací – bez toho se nedá poznat, jestli fronta neubývá kvůli chybám,
+# zahazovaným odpovědím, nebo jen pomalému tempu.
+_trace = logging.getLogger("kucharka.llm")
+
+
+def _one_line(s, limit: int = 220) -> str:
+    out = " ".join(str(s or "").split())
+    return out[:limit] + ("…" if len(out) > limit else "")
 
 # Globální zámek na Ollamu pro DÁVKOVÉ úlohy (párování, kategorie, tagy,
 # hromadný překlad). Plánovač sice úlohy serializuje sám (jeden worker), ale
@@ -93,10 +106,23 @@ def structured_json(
     `num_ctx` a `ollama_model` se týkají jen Ollamy – komerční API má kontext
     dost velký a model globálně nastavený (`settings.llm_api_model`).
     """
+    model = active_model(ollama_model)
+    _trace.info("→ %s | %s zn | %s", model, len(prompt), _one_line(prompt))
+    t0 = time.monotonic()
+
     if settings.llm_api_enabled:
-        return _api_chat_json(
+        out = _api_chat_json(
             prompt, schema=schema, timeout=timeout, temperature=temperature
         )
+        dt = time.monotonic() - t0
+        if out is None:
+            _trace.warning("← %s | %.1f s | SELHALO: %s", model, dt,
+                           _one_line(last_error() or "bez detailu"))
+        else:
+            _trace.info("← %s | %.1f s | %s", model, dt,
+                        _one_line(json.dumps(out, ensure_ascii=False)))
+        return out
+
     if not settings.ollama_enabled:
         _set_error("Ollama není nakonfigurovaná (OLLAMA_URL).")
         return None
@@ -111,11 +137,16 @@ def structured_json(
             format_schema=schema,
             num_ctx=num_ctx,
         )
+    dt = time.monotonic() - t0
     if parsed is None:
         # raw je buď "<chyba volání: …>" (síť/HTTP), nebo neparsovatelná odpověď
         _set_error(raw or "prázdná odpověď modelu")
+        _trace.warning("← %s | %.1f s | SELHALO: %s", model, dt,
+                       _one_line(raw or "prázdná odpověď modelu"))
     else:
         _set_error(None)
+        _trace.info("← %s | %.1f s | %s", model, dt,
+                    _one_line(json.dumps(parsed, ensure_ascii=False)))
     return parsed
 
 
