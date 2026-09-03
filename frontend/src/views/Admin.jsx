@@ -1287,6 +1287,83 @@ function SystemPanel() {
   );
 }
 
+function CorpusAuditCard() {
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState(null);
+  const timer = useRef(null);
+  const load = () => api.corpusAuditStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    load();
+    return () => clearInterval(timer.current);
+  }, []);
+  useEffect(() => {
+    if (st?.running && !timer.current) {
+      timer.current = setInterval(load, 2000);
+    } else if (!st?.running && timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+    }
+  }, [st?.running]);
+
+  const run = async () => {
+    setErr(null);
+    try {
+      const r = await api.corpusAuditRun();
+      setSt(r.status);
+      if (!r.started) setErr("Audit už běží.");
+    } catch (e) {
+      setErr(e?.message || String(e));
+    }
+  };
+
+  const fmtWhen = (iso) => (iso ? new Date(iso).toLocaleString("cs-CZ") : null);
+  const fmtKb = (b) => `${Math.max(1, Math.round((b || 0) / 1024))} kB`;
+
+  return (
+    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+      <h2 className="mb-1 text-lg font-bold">Audit korpusu</h2>
+      <p className="mb-4 text-sm text-ink/60">
+        Spočítá profil celé databáze receptů (histogramy, rozpad po doménách,
+        duplicitní názvy) a vytáhne stratifikovaný vzorek ~600 receptů
+        k ručnímu posouzení kvality. Nic v databázi nemění.
+      </p>
+      {st?.running ? (
+        <Spinner label={`Počítám… ${st.done}/${st.total} (${st.phase || ""})`} />
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button onClick={run}>Spustit audit</Button>
+            {st?.profile_mtime && (
+              <span className="text-sm text-ink/60">
+                Poslední běh: {fmtWhen(st.profile_mtime)}
+                {st.duration_s ? ` (${st.duration_s} s)` : ""}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <a href={st?.profile_exists ? withToken("/api/admin/corpus-audit/profile") : undefined}
+              className={`rounded-full border px-4 py-2 text-sm font-semibold ${
+                st?.profile_exists
+                  ? "border-brand text-brand hover:bg-brand/5"
+                  : "pointer-events-none border-line text-ink/30"}`}>
+              Profil (JSON){st?.profile_exists ? ` · ${fmtKb(st.profile_bytes)}` : ""}
+            </a>
+            <a href={st?.sample_exists ? withToken("/api/admin/corpus-audit/sample") : undefined}
+              className={`rounded-full border px-4 py-2 text-sm font-semibold ${
+                st?.sample_exists
+                  ? "border-brand text-brand hover:bg-brand/5"
+                  : "pointer-events-none border-line text-ink/30"}`}>
+              Vzorek (JSONL){st?.sample_exists ? ` · ${fmtKb(st.sample_bytes)}` : ""}
+            </a>
+          </div>
+          {st?.error && <p className="text-sm text-miss">Poslední běh selhal: {st.error}</p>}
+          {err && <p className="text-sm text-miss">{err}</p>}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function HmiCard() {
   const [s, setS] = useState(null);
   const [token, setToken] = useState("");
@@ -1719,6 +1796,7 @@ export default function Admin() {
       <CrawlerCard />
       <CrawlerPanel />
       <CrawlQueueCard />
+      <CorpusAuditCard />
       <MatchPanel />
       <LlmMatchCard />
       <DecisionsCard />

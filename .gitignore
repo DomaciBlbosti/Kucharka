@@ -11,3 +11,6 @@ backend/app/static/
 
 # Env
 .env
+
+# Analytické výstupy (audit korpusu)
+analysis/

@@ -11,8 +11,8 @@ import threading
 import time
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import Date, DateTime, delete, select
 from sqlalchemy.orm import Session
@@ -250,6 +250,48 @@ def _row_to_dict(obj, model) -> dict:
             val = val.isoformat()
         d[col.name] = val
     return d
+
+
+# ─── Audit korpusu (read-only profil + stratifikovaný vzorek) ────────────────
+
+@router.post("/corpus-audit/run")
+def corpus_audit_run(seed: int = 42):
+    """Spustí audit NA POZADÍ (nad 171k řádky by HTTP request vypršel)."""
+    from ..modules import corpus_audit
+
+    started = corpus_audit.run_async(seed=seed)
+    return {"started": started, "status": corpus_audit.status()}
+
+
+@router.get("/corpus-audit/status")
+def corpus_audit_status():
+    from ..modules import corpus_audit
+
+    return corpus_audit.status()
+
+
+@router.get("/corpus-audit/profile")
+def corpus_audit_profile():
+    from ..modules import corpus_audit
+
+    if not corpus_audit.PROFILE_PATH.exists():
+        raise HTTPException(404, "Profil ještě není spočítaný – spusť audit.")
+    return FileResponse(
+        corpus_audit.PROFILE_PATH, media_type="application/json",
+        filename="corpus_profile.json",
+    )
+
+
+@router.get("/corpus-audit/sample")
+def corpus_audit_sample():
+    from ..modules import corpus_audit
+
+    if not corpus_audit.SAMPLE_PATH.exists():
+        raise HTTPException(404, "Vzorek ještě není spočítaný – spusť audit.")
+    return FileResponse(
+        corpus_audit.SAMPLE_PATH, media_type="application/jsonl",
+        filename="corpus_sample.jsonl",
+    )
 
 
 @router.get("/db/export")
