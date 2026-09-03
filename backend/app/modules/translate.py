@@ -29,14 +29,25 @@ log = logging.getLogger("kucharka.translate")
 
 _CZ_CHARS = set("ěščřžůňďť")
 
-_SCHEMA = {
+# Překlad běží ve DVOU malých voláních místo jednoho velkého: (1) titul +
+# ingredience, (2) postup. Jeden velký dotaz s num_ctx 8192 se u 12B modelu
+# nevešel do 12 GB VRAM → CPU offload → generování přes 300 s → timeout a
+# ZAHOZENÝ celý recept (v produkci padal každý druhý). Dvě malá volání se
+# vejdou na GPU celá; a když vyhoří jen postup, titul a ingredience (na
+# kterých stojí párování surovin) se aspoň uloží – postup zůstane v
+# originálu a spraví ho „Přeložit znovu".
+_META_SCHEMA = {
     "type": "object",
     "properties": {
         "title": {"type": "string"},
         "ingredients": {"type": "array", "items": {"type": "string"}},
-        "instructions": {"type": "string"},
     },
-    "required": ["title", "ingredients", "instructions"],
+    "required": ["title", "ingredients"],
+}
+_INSTR_SCHEMA = {
+    "type": "object",
+    "properties": {"instructions": {"type": "string"}},
+    "required": ["instructions"],
 }
 
 # Malé lokální modely při překladu vymýšlejí novotvary („květička", „sóva
@@ -59,57 +70,83 @@ def looks_czech(domain: str | None, text: str) -> bool:
     return any(c in _CZ_CHARS for c in sample)
 
 
-def _translate_fields(title: str, ingredients: list[str], instructions: str) -> dict | None:
-    """Zavolá LLM (přes llmclient) a vrátí přeložená pole, nebo None
-    (nedostupný provider / chyba / nesedí počet ingrediencí)."""
+_RULES = (
+    "Pravidla:\n"
+    "- Používej výhradně zavedené české kuchyňské názvosloví; žádné "
+    "novotvary ani doslovné kalky.\n"
+    f"- Slovníček: {_GLOSSARY}.\n"
+    "- Množství a čísla zachovej, jednotky přelož (tbsp→lžíce, tsp→lžička).\n"
+)
+
+
+def _call(prompt: str, schema: dict, num_ctx: int) -> dict | None:
+    """Jedno strukturované volání přes llmclient (drží Ollama zámek sám)."""
     from . import llmclient
 
-    if not llmclient.is_available():
-        return None
-    payload = {
-        "title": title or "",
-        "ingredients": list(ingredients),
-        "instructions": instructions or "",
-    }
-    prompt = (
-        "Jsi překladatel kuchařských receptů do češtiny. Přelož recept níže.\n"
-        "Pravidla:\n"
-        "- Používej výhradně zavedené české kuchyňské názvosloví; žádné "
-        "novotvary ani doslovné kalky.\n"
-        f"- Slovníček: {_GLOSSARY}.\n"
-        "- Množství a čísla zachovej, jednotky přelož (tbsp→lžíce, tsp→lžička).\n"
-        "- Zachovej PŘESNĚ počet a pořadí ingrediencí (řádek za řádek).\n"
-        "- Postup piš přirozenou plynulou češtinou, vykej (smíchejte, pečte).\n"
-        "Odpověz POUZE JSON objektem "
-        '{"title": string, "ingredients": [string], "instructions": string}.\n'
-        f"Recept: {json.dumps(payload, ensure_ascii=False)}"
-    )
     try:
-        # llmclient drží globální Ollama zámek sám – překlad se na GPU
-        # nepotká s párováním/kategorizací spuštěnými odjinud
-        out = llmclient.structured_json(
+        return llmclient.structured_json(
             prompt,
-            schema=_SCHEMA,
+            schema=schema,
             timeout=max(settings.http_timeout, settings.llm_match_timeout_s),
-            num_ctx=8192,
+            num_ctx=num_ctx,
             # samostatný model jen pro překlad (experimenty s multilingválními
             # modely bez dopadu na párování); prázdné = rychlý model
             ollama_model=settings.translate_model or None,
         )
-        if out is None:
-            return None
     except Exception as exc:  # noqa: BLE001
         log.warning("překlad selhal: %s", exc)
         return None
 
-    new_ing = out.get("ingredients")
+
+def _translate_fields(title: str, ingredients: list[str], instructions: str) -> dict | None:
+    """Přelož recept dvěma malými voláními. Vrací dict, nebo None.
+
+    None = selhal překlad titulu/ingrediencí (nedostupný provider, chyba,
+    nesedí počet) → recept se nechá být. Když selže JEN postup, vrací se
+    přeložený titul + ingredience a instructions="" (volající ponechají
+    originální postup) – párování surovin tak běží i při vyhořelém postupu.
+    """
+    from . import llmclient
+
+    if not llmclient.is_available():
+        return None
+
+    meta = _call(
+        "Jsi překladatel kuchařských receptů do češtiny. Přelož název "
+        "receptu a seznam ingrediencí.\n" + _RULES +
+        "- Zachovej PŘESNĚ počet a pořadí ingrediencí (řádek za řádek).\n"
+        'Odpověz POUZE JSON objektem {"title": string, "ingredients": [string]}.\n'
+        f"Vstup: {json.dumps({'title': title or '', 'ingredients': list(ingredients)}, ensure_ascii=False)}",
+        _META_SCHEMA, num_ctx=3072,
+    )
+    if meta is None:
+        return None
+    new_ing = meta.get("ingredients")
     if not isinstance(new_ing, list) or len(new_ing) != len(ingredients):
         log.info("překlad zahozen (nesedí počet ingrediencí)")
         return None
+
+    new_instr = ""
+    if (instructions or "").strip():
+        out = _call(
+            "Jsi překladatel kuchařských receptů do češtiny. Přelož postup "
+            "přípravy.\n" + _RULES +
+            "- Piš přirozenou plynulou češtinou, vykej (smíchejte, pečte).\n"
+            'Odpověz POUZE JSON objektem {"instructions": string}.\n'
+            f"Postup: {json.dumps(instructions, ensure_ascii=False)}",
+            _INSTR_SCHEMA, num_ctx=4096,
+        )
+        if out is None:
+            # postup vyhořel → ponecháme originál (volající: `if instructions:`),
+            # titul a ingredience se uloží – „Přeložit znovu" postup doplní
+            log.info("překlad postupu selhal – ukládám jen titul a ingredience")
+        else:
+            new_instr = (out.get("instructions") or "").strip()
+
     return {
-        "title": (out.get("title") or title or "").strip(),
+        "title": (meta.get("title") or title or "").strip(),
         "ingredients": [str(x) for x in new_ing],
-        "instructions": out.get("instructions") or instructions or "",
+        "instructions": new_instr,
     }
 
 
