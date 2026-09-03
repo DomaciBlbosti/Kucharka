@@ -123,6 +123,41 @@ def test_translate_fields(monkeypatch_calls):
     finally:
         settings.translate_model = old
 
+    # 5b) trasování LLM: dotaz i odpověď se logují pod kucharka.llm
+    import logging
+
+    class _Cap(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.msgs = []
+
+        def emit(self, r):
+            self.msgs.append(r.getMessage())
+
+    cap = _Cap()
+    logging.getLogger("kucharka.llm").addHandler(cap)
+    logging.getLogger("kucharka.llm").setLevel(logging.INFO)
+    try:
+        # skutečné structured_json (bez monkeypatche) s vypnutými providery
+        # zaloguje aspoň odchozí dotaz
+        import importlib
+        importlib.reload(llmclient)
+        from app.config import settings as _s
+        old_provider = _s.llm_provider
+        _s.llm_provider = "ollama"
+        try:
+            llmclient.structured_json("testovací prompt pro trasování", timeout=1)
+        finally:
+            _s.llm_provider = old_provider
+        check("trasování loguje odchozí dotaz (→)",
+              any(m.startswith("→") and "testovací prompt" in m for m in cap.msgs))
+        check("_one_line ořezává a slepuje řádky",
+              llmclient._one_line("a\nb  c" + "x" * 500).startswith("a b c")
+              and len(llmclient._one_line("x" * 500)) <= 221)
+    finally:
+        logging.getLogger("kucharka.llm").removeHandler(cap)
+        llmclient.is_available = lambda: True
+
     # 6) admin klíč translate_model funguje přes set_admin/as_admin
     settings.set_admin("translate_model", "  mistral-nemo:12b ")
     check("set_admin translate_model", settings.translate_model == "mistral-nemo:12b")

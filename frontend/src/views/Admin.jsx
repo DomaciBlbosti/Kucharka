@@ -16,6 +16,24 @@ function Field({ label, children, hint }) {
 const input =
   "w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm outline-none focus:border-basil";
 
+// Sbalení dlouhých seznamů: ukáže prvních `initial` položek + tlačítko
+// „Zobrazit dalších N". Drží stránku administrace čitelnou na mobilu.
+function useCollapse(count, initial = 10) {
+  const [open, setOpen] = useState(false);
+  const shown = open ? count : Math.min(initial, count);
+  return { shown, hidden: count - shown, open, toggle: () => setOpen((o) => !o) };
+}
+
+function CollapseToggle({ col, noun = "položek" }) {
+  if (col.hidden <= 0 && !col.open) return null;
+  return (
+    <button onClick={col.toggle}
+      className="rounded-full border border-line px-3 py-1 text-xs text-ink/60 hover:border-basil hover:text-basil-dark">
+      {col.open ? "Sbalit ↑" : `Zobrazit dalších ${col.hidden} ${noun} ↓`}
+    </button>
+  );
+}
+
 function ToolsCard() {
   const [s, setS] = useState(null);
   const [saved, setSaved] = useState(false);
@@ -470,6 +488,7 @@ function ServicesStatusCard() {
     ["kucharka.crawler", "crawler"],
     ["kucharka.ingest", "zpracování"],
     ["kucharka.translate", "překlad"],
+    ["kucharka.llm", "LLM"],
     ["kucharka.lidl", "lidl"],
   ];
 
@@ -687,6 +706,8 @@ function CrawlQueueCard() {
   const [pruning, setPruning] = useState(false);
   const [pruneStale, setPruneStale] = useState(null); // počet URL k smazání po dry-runu (čeká na potvrzení)
   const LIMIT = 50;
+  const domCol = useCollapse((stats?.domains || []).length, 10);
+  const rowCol = useCollapse((data?.items || []).length, 10);
 
   const loadStats = () => api.crawlQueueStats().then(setStats).catch(() => {});
   const loadItems = () =>
@@ -902,7 +923,7 @@ function CrawlQueueCard() {
           >
             všechny domény
           </button>
-          {stats.domains.map((d) => (
+          {stats.domains.slice(0, domCol.shown).map((d) => (
             <button
               key={d.domain}
               onClick={() => setDomain(d.domain)}
@@ -912,6 +933,7 @@ function CrawlQueueCard() {
               {d.domain} ({d.queued})
             </button>
           ))}
+          <CollapseToggle col={domCol} noun="domén" />
         </div>
       )}
 
@@ -932,7 +954,7 @@ function CrawlQueueCard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {items.map((it) => (
+                {items.slice(0, rowCol.shown).map((it) => (
                   <tr key={it.id}>
                     <td className="py-1.5 pr-3 align-top">
                       <span className={`rounded-full px-2 py-0.5 text-xs ${badge[it.status] || ""}`}>{it.status}</span>
@@ -957,6 +979,9 @@ function CrawlQueueCard() {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="mt-2">
+            <CollapseToggle col={rowCol} noun="řádků" />
           </div>
 
           <div className="mt-3 flex items-center justify-between text-sm text-ink/50">
@@ -2078,6 +2103,7 @@ function DecisionsCard() {
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState(null);
   const LIMIT = 30;
+  const rowCol = useCollapse((data?.items || []).length, 8);
 
   const load = () =>
     api.decisions({ status, q, limit: LIMIT, offset }).then(setData).catch(() => {});
@@ -2176,11 +2202,14 @@ function DecisionsCard() {
       ) : (
         <>
           <ul className="space-y-2">
-            {items.map((d) => (
+            {items.slice(0, rowCol.shown).map((d) => (
               <DecisionRow key={d.id} d={d} busy={busy === d.id}
                 onResolve={(body) => resolve(d.id, body)} />
             ))}
           </ul>
+          <div className="mt-2">
+            <CollapseToggle col={rowCol} noun="položek" />
+          </div>
           <div className="mt-3 flex items-center justify-between text-sm text-ink/50">
             <span className="nums">{offset + 1}–{Math.min(offset + LIMIT, total)} z {total}</span>
             <div className="flex items-center gap-2">
