@@ -91,11 +91,14 @@ def _remove_case(w: str) -> str:
 
 
 def _remove_possessive(w: str) -> str:
+    # Přivlastňovací -in (matčin, Janin) se ZÁMĚRNĚ neodřezává: v receptech
+    # je vzácné, zato ukusuje konce běžných slov. „těstovinové" se přes
+    # pádovou koncovku zkrátí na „těstovin" a tohle pravidlo z toho udělalo
+    # „těstov" – jiný kmen než „těstovinový", takže se varianty názvu
+    # nesloučily do jedné kategorie.
     n = len(w)
     if n > 5 and w.endswith(("ov", "ův")):
         return w[:-2]
-    if n > 6 and w.endswith("in"):
-        return _palatalise(w[:-1])
     return w
 
 
@@ -281,6 +284,20 @@ def search_text_for(title: str | None, instructions: str | None,
     return normalize(" ".join(parts))
 
 
+def title_key(title: str | None) -> str:
+    """Klíč pro seskupení receptů se stejným názvem do jedné „kategorie".
+
+    Stemuje, zahazuje stopslova a slova SEŘADÍ – „těstovinový salát",
+    „Salát těstovinový" i „těstovinové saláty" tak dají stejný klíč.
+    Recepty s názvem navíc („těstovinový salát s kuřecím masem") zůstávají
+    zvlášť: podmnožina se schválně neslučuje, jinak by se do jedné kategorie
+    slily i evidentně jiné recepty.
+
+    Prázdný řetězec = recept nemá seskupitelný název (nezařadí se nikam).
+    """
+    return " ".join(sorted(set(tokens(title))))
+
+
 def refresh_search_text(recipe) -> None:
     """Přepočítej `recipe.search_text` z aktuálních polí receptu.
 
@@ -292,3 +309,4 @@ def refresh_search_text(recipe) -> None:
         recipe.instructions,
         [ri.raw_text or "" for ri in recipe.ingredients],
     )
+    recipe.title_key = title_key(recipe.title)[:200]

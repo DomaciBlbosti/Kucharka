@@ -41,7 +41,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Ingredient, IngredientAlias, MatchDecision, Recipe, RecipeIngredient
-from . import ingredient_embed, llmclient
+from . import ingredient_embed, ingredient_resolve, llmclient
 from .lookup import make_lookup_key
 from .nutrition import grams_for, kcal_for, recompute_recipe_kcal
 
@@ -305,6 +305,15 @@ def _build_ingredient_catalog(db: Session, limit: int = DEFAULT_INGREDIENT_LIST_
     return [(r.id, r.name_cs) for r in rows if r.name_cs]
 
 
+def _nutridb_ids(db: Session) -> set[int]:
+    """ID referenčních surovin z NutriDatabáze – v promptu se označují `*`."""
+    return set(db.scalars(
+        select(Ingredient.id).where(
+            Ingredient.source == ingredient_resolve.NUTRIDB_SOURCE
+        )
+    ).all())
+
+
 # JSON schéma odpovědi. Párování podle indexu `i` (pořadí v dávce), ne podle
 # echa vstupního textu — modely echo běžně mění a match pak selhával.
 _RESPONSE_SCHEMA = {
@@ -341,6 +350,8 @@ Pravidla:
 - Text končící dvojtečkou ("Na těsto:", "Dále:") je nadpis skupiny, ne surovina → category="unknown".
 - confidence: 0.9+ = jistá shoda; 0.7-0.9 = pravděpodobná; pod 0.7 = nejistá.
 - Cizojazyčné názvy přelož: "chicken breast" → kuřecí prsa; "soy sauce" → sójová omáčka; "cilantro" → koriandr.
+- Záznamy označené hvězdičkou (*) jsou REFERENČNÍ z NutriDatabáze (ověřená výživa). Když se hodí referenční i neoznačený záznam, vyber VŽDY ten referenční.
+- Nový záznam navrhuj (ingredient_id=null) až tehdy, když v databázi opravdu nic neodpovídá. Drobný rozdíl ve skloňování nebo pořadí slov není důvod – „kuřecí prso" a „kuřecí prsa" je jedna surovina.
 - Při nejistotě dej nižší confidence, nehádej.
 
 Příklady chování:
@@ -349,7 +360,7 @@ Příklady chování:
 - "silikonová forma na muffiny" → category="equipment", ingredient_id=null, confidence=0.9
 - "trochu lásky :)" → category="unknown", ingredient_id=null, confidence=0.0
 
-Databáze surovin (id: name):
+Databáze surovin (id: name, * = referenční z NutriDatabáze):
 """
 
 # Návrh nového názvu suroviny musí vypadat jako název, ne věta/poznámka.
@@ -371,11 +382,19 @@ def _make_prompt(
     catalog: list[tuple[int, str]],
     inputs: list[str],
     contexts: list[str | None] | None = None,
+    nutridb_ids: set[int] | None = None,
 ) -> str:
     """`contexts` = název receptu k jednotlivým položkám – levná náhrada za
     posílání celého receptu: pár tokenů navíc a model ví, v jakém jídle se
-    surovina objevila ("bazalka" u "Cannelloni s boloňskou omáčkou")."""
-    catalog_str = "\n".join(f"{cid}: {name}" for cid, name in catalog)
+    surovina objevila ("bazalka" u "Cannelloni s boloňskou omáčkou").
+
+    `nutridb_ids` označí v katalogu referenční záznamy hvězdičkou. Slovník
+    plevelí hlavně to, že model založí nový záznam vedle existujícího –
+    tohle mu dá vědět, který kandidát je ten pořádný."""
+    nut = nutridb_ids or set()
+    catalog_str = "\n".join(
+        f"{cid}: {name}{' *' if cid in nut else ''}" for cid, name in catalog
+    )
     lines = []
     for i, t in enumerate(inputs):
         ctx = contexts[i] if contexts and i < len(contexts) else None
@@ -406,19 +425,16 @@ def _call_llm(prompt: str) -> dict | None:
 # ─── Tvorba nových surovin ───────────────────────────────────────────────────
 
 def get_or_create_ingredient(db: Session, name: str) -> Ingredient:
-    """Najdi surovinu podle názvu (case-insensitive), nebo ji založ.
+    """Najdi surovinu podle názvu, nebo ji založ.
+
+    Hledání dělá `ingredient_resolve` (přesná shoda → normalizovaný klíč →
+    fuzzy, s preferencí NutriDatabáze). Dřív se tu porovnávala jen přesná
+    shoda `lower(name_cs)`, takže „kuřecí prso" založilo druhou surovinu
+    vedle „kuřecí prsa".
 
     Nové suroviny mají source='ollama' → v UI se počítají do "odhadované
     výživy" a NutriDatabáze je při importu zpřesní/sloučí."""
-    name = name.strip()
-    ing = db.scalar(
-        select(Ingredient).where(func.lower(Ingredient.name_cs) == name.lower())
-    )
-    if ing is None:
-        ing = Ingredient(name_cs=name, source="ollama")
-        db.add(ing)
-        db.flush()
-    return ing
+    return ingredient_resolve.get_or_create(db, name, source="ollama")
 
 
 _NUTRITION_SCHEMA = {
@@ -695,6 +711,7 @@ def _attempt_batch(
     min_conf: float,
     model_name: str,
     depth: int = 0,
+    nutridb_ids: set[int] | None = None,
 ) -> tuple[dict, set[int], list[Ingredient], bool, int]:
     """Zpracuje dávku; při timeoutu ji rozdělí na poloviny a zkusí znovu
     (max 2 úrovně: 40 → 20 → 10). Lokální model, který se s velkým promptem
@@ -705,6 +722,7 @@ def _attempt_batch(
     prompt = _make_prompt(
         catalog, [g.sample for g in chunk],
         contexts=[g.context_title for g in chunk],
+        nutridb_ids=nutridb_ids,
     )
     resp = _call_llm(prompt)
     if resp is not None:
@@ -722,9 +740,11 @@ def _attempt_batch(
             len(chunk), err[:80], mid, len(chunk) - mid,
         )
         s1, a1, c1, f1, n1 = _attempt_batch(
-            db, chunk[:mid], catalog, valid_ids, min_conf, model_name, depth + 1)
+            db, chunk[:mid], catalog, valid_ids, min_conf, model_name, depth + 1,
+            nutridb_ids)
         s2, a2, c2, f2, n2 = _attempt_batch(
-            db, chunk[mid:], catalog, valid_ids, min_conf, model_name, depth + 1)
+            db, chunk[mid:], catalog, valid_ids, min_conf, model_name, depth + 1,
+            nutridb_ids)
         merged = {k: s1.get(k, 0) + s2.get(k, 0) for k in
                   ("applied", "suggested", "no_match", "nonfood", "errors", "created")}
         return merged, a1 | a2, c1 + c2, f1 and f2, 1 + n1 + n2
@@ -1246,6 +1266,9 @@ def _run(batch_size: int | None = None) -> dict:
 
         static_catalog = _build_ingredient_catalog(db)
         valid_ids = set(db.scalars(select(Ingredient.id)).all())
+        # Referenční suroviny z NutriDatabáze – v promptu dostanou `*`, ať
+        # model sahá po ověřeném záznamu místo zakládání dalšího odhadu.
+        nutridb_ids = _nutridb_ids(db)
 
         chunks = [queue[i:i + bs] for i in range(0, len(queue), bs)]
         with _lock:
@@ -1278,7 +1301,8 @@ def _run(batch_size: int | None = None) -> dict:
         for idx, chunk in enumerate(chunks):
             catalog = catalogs[idx] or static_catalog
             stats, batch_affected, batch_created, failed_all, calls = _attempt_batch(
-                db, chunk, catalog, valid_ids, min_conf, model_name
+                db, chunk, catalog, valid_ids, min_conf, model_name,
+                nutridb_ids=nutridb_ids,
             )
             err_detail = llmclient.last_error() if failed_all else None
             run_stats["batches"] += calls

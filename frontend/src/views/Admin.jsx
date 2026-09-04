@@ -1699,6 +1699,78 @@ function CorpusAuditCard() {
   );
 }
 
+function IngredientAuditCard() {
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState(null);
+  const timer = useRef(null);
+  const load = () => api.ingredientAuditStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    load();
+    return () => clearInterval(timer.current);
+  }, []);
+  useEffect(() => {
+    if (st?.running && !timer.current) {
+      timer.current = setInterval(load, 2000);
+    } else if (!st?.running && timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+      load();
+    }
+  }, [st?.running]);
+
+  const run = async () => {
+    setErr(null);
+    try {
+      const r = await api.ingredientAuditRun();
+      setSt(r.status);
+      if (!r.started) setErr("Audit už běží.");
+    } catch (e) {
+      setErr(e?.message || String(e));
+    }
+  };
+
+  const fmtWhen = (iso) => (iso ? new Date(iso).toLocaleString("cs-CZ") : null);
+  const fmtKb = (b) => `${Math.max(1, Math.round((b || 0) / 1024))} kB`;
+
+  return (
+    <Section title="Audit slovníku surovin">
+      <p className="mb-4 text-sm text-ink/60">
+        Hledá duplicity mezi surovinami – shodné názvy, shodné názvy po
+        normalizaci (&bdquo;paprika mletá sladká&ldquo; vs &bdquo;mletá sladká
+        paprika&ldquo;) a podobné názvy. U každého shluku ukáže zdroj, výživu a
+        kolik receptů na něm visí, a navrhne, který záznam nechat &ndash;
+        přednost má referenční z NutriDatabáze. Nic nemaže ani neslučuje.
+      </p>
+      {st?.running ? (
+        <Spinner label={`Počítám… ${st.done}/${st.total} (${st.phase || ""})`} />
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button onClick={run}>Spustit audit</Button>
+            {st?.report_mtime && (
+              <span className="text-sm text-ink/60">
+                Poslední běh: {fmtWhen(st.report_mtime)}
+                {st.duration_s ? ` (${st.duration_s} s)` : ""}
+              </span>
+            )}
+          </div>
+          <div>
+            <a href={st?.report_exists ? withToken("/api/admin/ingredient-audit/report") : undefined}
+              className={`rounded-full border px-4 py-2 text-sm font-semibold ${
+                st?.report_exists
+                  ? "border-brand text-brand hover:bg-brand/5"
+                  : "pointer-events-none border-line text-ink/30"}`}>
+              Report (JSON){st?.report_exists ? ` · ${fmtKb(st.report_bytes)}` : ""}
+            </a>
+          </div>
+          {st?.error && <p className="text-sm text-miss">Poslední běh selhal: {st.error}</p>}
+          {err && <p className="text-sm text-miss">{err}</p>}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 function ReparseInstructionsCard() {
   const [st, setSt] = useState(null);
   const [err, setErr] = useState(null);
@@ -2224,6 +2296,7 @@ export default function Admin() {
         <LlmStatsCard />
       </Section>
       <CorpusAuditCard />
+      <IngredientAuditCard />
       <ReparseInstructionsCard />
       <MatchPanel />
       <LlmMatchCard />

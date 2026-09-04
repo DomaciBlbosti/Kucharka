@@ -302,6 +302,35 @@ def corpus_audit_sample():
     )
 
 
+# ─── Audit slovníku surovin (read-only hledání duplicit) ────────────────────
+
+@router.post("/ingredient-audit/run")
+def ingredient_audit_run():
+    from ..modules import ingredient_audit
+
+    started = ingredient_audit.run_async()
+    return {"started": started, "status": ingredient_audit.status()}
+
+
+@router.get("/ingredient-audit/status")
+def ingredient_audit_status():
+    from ..modules import ingredient_audit
+
+    return ingredient_audit.status()
+
+
+@router.get("/ingredient-audit/report")
+def ingredient_audit_report():
+    from ..modules import ingredient_audit
+
+    if not ingredient_audit.REPORT_PATH.exists():
+        raise HTTPException(404, "Report ještě není spočítaný – spusť audit.")
+    return FileResponse(
+        ingredient_audit.REPORT_PATH, media_type="application/json",
+        filename="ingredient_audit.json",
+    )
+
+
 # ─── Přeparsování postupů podle doménových pravidel ─────────────────────────
 
 @router.post("/reparse-instructions/run")

@@ -6,7 +6,9 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import and_, func, inspect as sa_inspect, literal, or_, select, text
+from sqlalchemy import (
+    String, and_, case, cast, func, inspect as sa_inspect, literal, or_, select, text,
+)
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import settings
@@ -158,6 +160,7 @@ def list_recipes(
     category: str | None = Query(None, description="recepty se surovinou z kategorie"),
     tags: list[str] = Query(default=[], description="filtr 'namespace:slug' – víc namespace = AND, víc tagů v jednom = OR"),
     sort: str = Query("smart", pattern="^(smart|rating|time|kcal|newest)$"),
+    group: bool = Query(False, description="sloučit varianty téhož jídla do kategorie"),
     limit: int = Query(30, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
@@ -211,6 +214,12 @@ def list_recipes(
         base = base.outerjoin(_sub, _sub.c.recipe_id == Recipe.id)
     base = base.where(*conds).where(*avail_conds)
 
+    if group:
+        return _grouped_page(
+            db, conds, avail_conds, _sub, base,
+            missing_col=missing_col, sort=sort, limit=limit, offset=offset,
+        )
+
     # Celkový počet (stejné filtry, bez řazení/limitu) – pro "Načíst další" v UI.
     # Bez filtru na dostupnost stačí COUNT přímo přes recipe (žádný join).
     if avail_conds:
@@ -234,30 +243,139 @@ def list_recipes(
         base = base.order_by(missing_col.asc(), func.coalesce(Recipe.rating, 0).desc())
 
     rows = db.execute(base.limit(limit).offset(offset)).all()
-    recipe_ids = [r.Recipe.id for r in rows]
-    tags_map = _tags_by_recipe(db, recipe_ids)
+    tags_map = _tags_by_recipe(db, [r.Recipe.id for r in rows])
+    items = [_card(r, tags_map) for r in rows]
+    return RecipeListOut(items=items, total=total_count, limit=limit, offset=offset)
 
-    items = []
-    for r in rows:
-        recipe = r.Recipe
-        items.append(
-            RecipeCard(
-                id=recipe.id,
-                title=recipe.title,
-                source_domain=recipe.source_domain,
-                image_url=recipe.image_url,
-                servings=recipe.servings,
-                total_time=recipe.total_time,
-                rating=recipe.rating,
-                rating_count=recipe.rating_count,
-                kcal_per_serving=recipe.kcal_per_serving,
-                tags=tags_map.get(recipe.id, []),
-                have=r.have,
-                total=r.total,
-                missing_count=r.missing_count,
-                ratio=round(r.have / r.total, 3) if r.total else 0.0,
-            )
+
+def _card(row, tags_map: dict[int, list[Tag]], *,
+          group_key: str | None = None, variants: int = 1) -> RecipeCard:
+    """Řádek dotazu (Recipe + dopočtená dostupnost) → karta pro výpis."""
+    recipe = row.Recipe
+    return RecipeCard(
+        id=recipe.id,
+        title=recipe.title,
+        source_domain=recipe.source_domain,
+        image_url=recipe.image_url,
+        servings=recipe.servings,
+        total_time=recipe.total_time,
+        rating=recipe.rating,
+        rating_count=recipe.rating_count,
+        kcal_per_serving=recipe.kcal_per_serving,
+        tags=tags_map.get(recipe.id, []),
+        have=row.have,
+        total=row.total,
+        missing_count=row.missing_count,
+        ratio=round(row.have / row.total, 3) if row.total else 0.0,
+        group_key=group_key,
+        variants=variants,
+    )
+
+
+def _grouped_page(db: Session, conds, avail_conds, avail_sub, base, *,
+                  missing_col, sort: str, limit: int, offset: int) -> RecipeListOut:
+    """Výpis po kategoriích: jedna karta na `title_key`, s počtem variant.
+
+    Dvoukrokově, ať to jde stránkovat a přitom zůstane u dvou dotazů:
+      1. GROUP BY title_key → klíče na této stránce (+ počet variant),
+      2. dotažení receptů těchto klíčů a výběr reprezentanta v Pythonu.
+    Krok 2 je levný: shluky mají jednotky členů (nejvíc 15 v korpusu).
+
+    Recepty bez klíče (název bez slov, nedopočítaná migrace) dostanou vlastní
+    umělý klíč "#id", takže jdou do výpisu samostatně. Bez toho by NULL/''
+    byla jedna obří kategorie, nebo by z výpisu vypadly úplně.
+    """
+    key_col = case(
+        (or_(Recipe.title_key.is_(None), Recipe.title_key == ""),
+         literal("#") + cast(Recipe.id, String)),
+        else_=Recipe.title_key,
+    )
+
+    keys_q = select(key_col.label("k"), func.count().label("variants"))
+    if avail_sub is not None:
+        keys_q = keys_q.outerjoin(avail_sub, avail_sub.c.recipe_id == Recipe.id)
+    keys_q = keys_q.where(*conds).where(*avail_conds).group_by(key_col)
+
+    if sort == "rating":
+        keys_q = keys_q.order_by(func.max(func.coalesce(Recipe.rating, 0)).desc())
+    elif sort == "time":
+        keys_q = keys_q.order_by(func.min(func.coalesce(Recipe.total_time, 9999)).asc())
+    elif sort == "kcal":
+        keys_q = keys_q.order_by(
+            func.min(func.coalesce(Recipe.kcal_per_serving, 1_000_000_000)).asc())
+    elif sort == "newest":
+        keys_q = keys_q.order_by(func.max(Recipe.id).desc())
+    else:  # smart: kategorie, kde chybí nejmíň surovin, pak nejlíp hodnocené
+        keys_q = keys_q.order_by(
+            func.min(missing_col).asc(),
+            func.max(func.coalesce(Recipe.rating, 0)).desc(),
         )
+    keys_q = keys_q.order_by(key_col.asc())  # stabilní pořadí při shodě
+
+    total_count = db.scalar(
+        select(func.count()).select_from(keys_q.order_by(None).subquery())
+    ) or 0
+    page = db.execute(keys_q.limit(limit).offset(offset)).all()
+    keys = [p.k for p in page]
+    variants = {p.k: p.variants for p in page}
+    if not keys:
+        return RecipeListOut(items=[], total=total_count, limit=limit, offset=offset)
+
+    rows = db.execute(base.where(key_col.in_(keys))).all()
+    tags_map = _tags_by_recipe(db, [r.Recipe.id for r in rows])
+
+    # Reprezentant kategorie: nejmíň chybějících surovin, pak nejlepší
+    # hodnocení, pak nejstarší záznam – ať se karta mezi načteními nemění.
+    best: dict[str, object] = {}
+    for r in rows:
+        k = r.Recipe.title_key or f"#{r.Recipe.id}"
+        cur = best.get(k)
+        rank = (r.missing_count, -(r.Recipe.rating or 0), r.Recipe.id)
+        if cur is None or rank < cur[0]:
+            best[k] = (rank, r)
+
+    # Umělý klíč "#id" ven nepatří – navenek je to prostě samostatný recept.
+    items = [
+        _card(best[k][1], tags_map,
+              group_key=None if k.startswith("#") else k,
+              variants=variants[k])
+        for k in keys if k in best
+    ]
+    return RecipeListOut(items=items, total=total_count, limit=limit, offset=offset)
+
+
+@router.get("/groups/{key}", response_model=RecipeListOut)
+def list_group(
+    key: str,
+    db: Session = Depends(get_db),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """Varianty jedné kategorie – všechny recepty se stejným `title_key`.
+
+    Deklarováno PŘED `/{recipe_id}`: to bere int a "groups" by na něm
+    skončilo jako 422 místo tohohle endpointu.
+    """
+    have = pantry_ingredient_ids(db)
+    sub, total_col, have_col, missing_col = _availability_cols(have)
+    q = select(
+        Recipe, total_col.label("total"), have_col.label("have"),
+        missing_col.label("missing_count"),
+    )
+    if sub is not None:
+        q = q.outerjoin(sub, sub.c.recipe_id == Recipe.id)
+    q = q.where(Recipe.title_key == key)
+
+    total_count = db.scalar(
+        select(func.count()).select_from(Recipe).where(Recipe.title_key == key)
+    ) or 0
+    rows = db.execute(
+        q.order_by(missing_col.asc(), func.coalesce(Recipe.rating, 0).desc(),
+                   Recipe.id.asc())
+        .limit(limit).offset(offset)
+    ).all()
+    tags_map = _tags_by_recipe(db, [r.Recipe.id for r in rows])
+    items = [_card(r, tags_map, group_key=key, variants=total_count) for r in rows]
     return RecipeListOut(items=items, total=total_count, limit=limit, offset=offset)
 
 

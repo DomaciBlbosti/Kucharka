@@ -162,6 +162,9 @@ class Recipe(Base):
     # Fulltext index jede nad tímhle sloupcem, ne nad původním textem: jinak
     # by „péct" nenašlo „pečeme" a „kuře" nenašlo „kuřecí".
     search_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Klíč pro seskupení variant téhož jídla („těstovinový salát" ×15).
+    # Stemované a seřazené názvy, viz textnorm.title_key.
+    title_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     # Stavové sloupce – přidává je migrations.py (ALTER TABLE), zde jen

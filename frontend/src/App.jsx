@@ -3,6 +3,7 @@ import { NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { api, auth } from "./api";
 import Recipes from "./views/Recipes";
 import RecipeDetail from "./views/RecipeDetail";
+import RecipeGroup from "./views/RecipeGroup";
 import Pantry from "./views/Pantry";
 import Shopping from "./views/Shopping";
 import AddRecipe from "./views/AddRecipe";
@@ -201,6 +202,7 @@ export default function App() {
           <Route path="/" element={<Recipes />} />
           <Route path="/vymyslet" element={<Generate />} />
           <Route path="/recept/:id" element={<RecipeDetail />} />
+          <Route path="/varianty/:key" element={<RecipeGroup />} />
           <Route path="/spiz" element={<Pantry />} />
           <Route path="/plan" element={<MealPlan />} />
           <Route path="/sdilet" element={<ShareRecipe />} />
