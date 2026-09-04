@@ -251,6 +251,18 @@ def main():
     except ValueError:
         check("neznámý výběr skončí chybou", True)
 
+    # Strop na počet receptů. Naměřeno ~9 kB HTML a ~70 MB paměti na tisíc
+    # receptů, takže celý korpus (171 tisíc) = 1,6GB soubor a přes 10 GB RAM,
+    # tedy OOM. Strop musí platit i pro běh z CLI, ne jen pro API – proto se
+    # vynucuje uvnitř run(), a ne až ve validaci endpointu.
+    print("\nstrop:")
+    out = recipe_export.run(limit=999999, pick="random")
+    check("nesmyslně velký limit se srazí na strop, nespadne to",
+          out["count"] <= recipe_export.MAX_LIMIT, str(out["count"]))
+    out = recipe_export.run(limit=0, pick="random")
+    check("nula se bere jako jeden recept, ne jako prázdno",
+          out["count"] == 1, str(out["count"]))
+
     # ── řazení: nejhorší nahoru ──
     print("\nřazení:")
     recipe_export.run(limit=50, pick="random")

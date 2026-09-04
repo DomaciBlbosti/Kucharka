@@ -56,6 +56,14 @@ XML_PATH = ANALYSIS_DIR / "recipe_export.xml"
 # stovka receptů by z výstupu udělala soubor, který prohlížeč nepobere.
 _RAW_TRUNC = 4000
 
+# Strop počtu receptů v jednom exportu. NENÍ to opatrnost, je to nutnost:
+# naměřeno ~9 kB HTML a ~70 MB paměti na tisíc receptů, takže celý korpus
+# (171 tisíc) by znamenal 1,6GB soubor a přes 10 GB RAM – appka na NASu by
+# skončila na OOM. A i kdyby doběhla, takové HTML žádný prohlížeč neotevře.
+# Export je na ČTENÍ; na agregáty nad celým korpusem je corpus_audit.
+# Strop se vynucuje tady, ne až v API, aby ho neobešel běh z CLI.
+MAX_LIMIT = 2000
+
 # Výběrové režimy. Pointa je dostat na oči TY recepty, u kterých se dá čekat
 # problém, ne průřez průměrem.
 PICKS = {
@@ -69,12 +77,17 @@ PICKS = {
 
 # ─── Výběr receptů ───────────────────────────────────────────────────────────
 
-def _pick_ids(db, pick: str, limit: int, seed: int, domain: str | None) -> list[int]:
-    """Vrať id receptů k exportu.
+def pick_ids(db, pick: str, limit: int | None, seed: int,
+             domain: str | None) -> list[int]:
+    """Vrať id receptů k exportu, vzestupně podle id.
 
     Vybírá se v SQL (ne načtením korpusu do paměti). Náhodný vzorek jde přes
     seedovaný výběr nad seznamem id – `ORDER BY RAND()` by na 171 tisících
     řádcích tabulku třídil celou.
+
+    `limit=None` znamená „všechno, co výběru odpovídá" – tak to potřebuje
+    kontrola v appce (`modules/review`), která si stránkuje sama a nesmí
+    dostat jen výřez.
     """
     q = select(Recipe.id)
     if domain:
@@ -96,10 +109,11 @@ def _pick_ids(db, pick: str, limit: int, seed: int, domain: str | None) -> list[
         )
 
     if pick == "newest":
-        return list(db.scalars(q.order_by(Recipe.id.desc()).limit(limit)))
+        q = q.order_by(Recipe.id.desc())
+        return sorted(db.scalars(q if limit is None else q.limit(limit)))
 
     ids = list(db.scalars(q))
-    if len(ids) <= limit:
+    if limit is None or len(ids) <= limit:
         return sorted(ids)
     return sorted(random.Random(seed).sample(ids, limit))
 
@@ -107,8 +121,11 @@ def _pick_ids(db, pick: str, limit: int, seed: int, domain: str | None) -> list[
 # ─── Sestavení dat jednoho receptu ───────────────────────────────────────────
 
 def _ingredient_rows(rec: Recipe) -> list[dict]:
+    # Podle id, tedy v pořadí, v jakém řádky přišly z receptu. Vztah
+    # `Recipe.ingredients` žádné řazení nemá, takže bez tohohle je pořadí
+    # náhodné – při čtení vedle sebe s postupem je to k nepoužití.
     out = []
-    for ri in rec.ingredients:
+    for ri in sorted(rec.ingredients, key=lambda x: x.id or 0):
         out.append({
             "raw_text": ri.raw_text or "",
             "original_raw_text": ri.original_raw_text or "",
@@ -129,7 +146,7 @@ def _ingredient_rows(rec: Recipe) -> list[dict]:
     return out
 
 
-def _recipe_dict(rec: Recipe, include_raw: bool) -> dict:
+def recipe_payload(rec: Recipe, include_raw: bool = True) -> dict:
     ing_rows = _ingredient_rows(rec)
     metrics = corpus_audit.recipe_metrics(
         rec.title, rec.instructions, [r["raw_text"] for r in ing_rows]
@@ -401,10 +418,8 @@ def _write_html(recipes: list[dict], info: dict) -> None:
     n_translated = sum(1 for r in recipes if r["translated"])
     n_lowcov = sum(1 for r in recipes if r["metrics"]["ingr_coverage"] < 0.5)
     n_noinstr = sum(1 for r in recipes if r["metrics"]["has_empty_instr"])
-    cards = "\n".join(_recipe_html(r) for r in recipes) or (
-        '<p class="empty-state">Výběru neodpovídá žádný recept.</p>')
 
-    doc = f"""<!doctype html>
+    head = f"""<!doctype html>
 <html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Kuchařka – kontrola zpracování receptů</title>
@@ -430,10 +445,18 @@ def _write_html(recipes: list[dict], info: dict) -> None:
     <span class="meta">zobrazeno <strong id="cnt">0</strong></span>
   </div>
 </header>
-<main>{cards}</main>
-<script>{_JS}</script>
-</body></html>"""
-    HTML_PATH.write_text(doc, encoding="utf-8")
+<main>"""
+    # Karty se zapisují po jedné. Poskládat celý dokument do jednoho řetězce
+    # by znamenalo držet ho v paměti dvakrát (spojení + výsledek) – u dvou
+    # tisíc receptů je to skoro 40 MB navíc úplně zbytečně.
+    with HTML_PATH.open("w", encoding="utf-8") as fh:
+        fh.write(head)
+        if not recipes:
+            fh.write('<p class="empty-state">Výběru neodpovídá žádný recept.</p>')
+        for r in recipes:
+            fh.write(_recipe_html(r))
+            fh.write("\n")
+        fh.write(f"</main>\n<script>{_JS}</script>\n</body></html>")
 
 
 # ─── XML ─────────────────────────────────────────────────────────────────────
@@ -444,48 +467,53 @@ def _x(tag: str, value, indent: int = 4) -> str:
     return f'{" " * indent}<{tag}>{xml_escape(str(value))}</{tag}>'
 
 
+def _recipe_xml(r: dict) -> str:
+    parts = [f'  <recipe id="{r["id"]}" translated="{str(r["translated"]).lower()}">']
+    for tag in ("title", "original_title", "source_url", "source_domain",
+                "created_at", "category", "title_key", "enrichment_status",
+                "enrichment_error", "servings", "total_time", "rating",
+                "rating_count", "kcal_per_serving", "kcal_per_100g",
+                "total_weight_g", "feed_score", "ing_total",
+                "instructions", "original_instructions"):
+        parts.append(_x(tag, r[tag]))
+    parts.append('    <metrics>')
+    for k, v in r["metrics"].items():
+        parts.append(_x(k, ",".join(v) if isinstance(v, list) else v, 6))
+    parts.append('    </metrics>')
+    parts.append('    <tags>')
+    for t in r["tags"]:
+        parts.append(f'      <tag namespace="{xml_escape(t["namespace"])}" '
+                     f'slug="{xml_escape(t["slug"])}">{xml_escape(t["label"])}</tag>')
+    parts.append('    </tags>')
+    parts.append('    <ingredients>')
+    for i in r["ingredients"]:
+        attrs = (f'unmatched="{str(i["unmatched"]).lower()}" '
+                 f'nonfood="{str(i["nonfood"]).lower()}" '
+                 f'optional="{str(i["optional"]).lower()}"')
+        parts.append(f'      <ingredient {attrs}>')
+        for tag in ("raw_text", "original_raw_text", "matched",
+                    "matched_category", "amount", "unit", "grams", "kcal"):
+            parts.append(_x(tag, i[tag], 8))
+        parts.append('      </ingredient>')
+    parts.append('    </ingredients>')
+    if r["raw_json"]:
+        parts.append(_x("raw_json", r["raw_json"]))
+    parts.append('  </recipe>')
+    return "\n".join(parts)
+
+
 def _write_xml(recipes: list[dict], info: dict) -> None:
-    parts = ['<?xml version="1.0" encoding="UTF-8"?>',
-             f'<export pick="{xml_escape(info["pick"])}" seed="{info["seed"]}" '
-             f'count="{len(recipes)}" total_recipes="{info["total_recipes"]}" '
-             f'generated="{datetime.now(timezone.utc).isoformat()}">']
-    for r in recipes:
-        parts.append(f'  <recipe id="{r["id"]}" translated="{str(r["translated"]).lower()}">')
-        for tag in ("title", "original_title", "source_url", "source_domain",
-                    "created_at", "category", "title_key", "enrichment_status",
-                    "enrichment_error"):
-            parts.append(_x(tag, r[tag]))
-        for tag in ("servings", "total_time", "rating", "rating_count",
-                    "kcal_per_serving", "kcal_per_100g", "total_weight_g",
-                    "feed_score", "ing_total"):
-            parts.append(_x(tag, r[tag]))
-        parts.append(_x("instructions", r["instructions"]))
-        parts.append(_x("original_instructions", r["original_instructions"]))
-        parts.append('    <metrics>')
-        for k, v in r["metrics"].items():
-            parts.append(_x(k, ",".join(v) if isinstance(v, list) else v, 6))
-        parts.append('    </metrics>')
-        parts.append('    <tags>')
-        for t in r["tags"]:
-            parts.append(f'      <tag namespace="{xml_escape(t["namespace"])}" '
-                         f'slug="{xml_escape(t["slug"])}">{xml_escape(t["label"])}</tag>')
-        parts.append('    </tags>')
-        parts.append('    <ingredients>')
-        for i in r["ingredients"]:
-            attrs = (f'unmatched="{str(i["unmatched"]).lower()}" '
-                     f'nonfood="{str(i["nonfood"]).lower()}" '
-                     f'optional="{str(i["optional"]).lower()}"')
-            parts.append(f'      <ingredient {attrs}>')
-            for tag in ("raw_text", "original_raw_text", "matched",
-                        "matched_category", "amount", "unit", "grams", "kcal"):
-                parts.append(_x(tag, i[tag], 8))
-            parts.append('      </ingredient>')
-        parts.append('    </ingredients>')
-        if r["raw_json"]:
-            parts.append(_x("raw_json", r["raw_json"]))
-        parts.append('  </recipe>')
-    parts.append('</export>')
-    XML_PATH.write_text("\n".join(parts), encoding="utf-8")
+    # Zapisuje se po receptech ze stejného důvodu jako u HTML – ať dokument
+    # nemusí být celý v paměti.
+    with XML_PATH.open("w", encoding="utf-8") as fh:
+        fh.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+        fh.write(f'<export pick="{xml_escape(info["pick"])}" seed="{info["seed"]}" '
+                 f'count="{len(recipes)}" total_recipes="{info["total_recipes"]}" '
+                 f'generated="{datetime.now(timezone.utc).isoformat()}">\n')
+        for r in recipes:
+            fh.write(_recipe_xml(r))
+            fh.write("\n")
+        fh.write('</export>')
 
 
 # ─── Stav běhu (stejný vzor jako ostatní úlohy na pozadí) ────────────────────
@@ -528,12 +556,21 @@ def run(limit: int = 100, seed: int = 42, pick: str = "random",
     """Vyexportuj vzorek receptů do HTML + XML. Nic nezapisuje do databáze."""
     if pick not in PICKS:
         raise ValueError(f"neznámý výběr {pick!r}; možnosti: {', '.join(PICKS)}")
+    if limit > MAX_LIMIT:
+        log.warning(
+            "Export receptů: požadováno %s receptů, snižuji na %s. Víc se do "
+            "jednoho HTML nevejde (~9 kB a ~70 MB paměti na tisíc receptů) a "
+            "stejně se to nedá přečíst – na celý korpus je corpus_audit.",
+            limit, MAX_LIMIT,
+        )
+        limit = MAX_LIMIT
+    limit = max(1, limit)
     started = time.monotonic()
     ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
     db = SessionLocal()
     try:
         total_recipes = db.scalar(select(func.count(Recipe.id))) or 0
-        ids = _pick_ids(db, pick, limit, seed, domain)
+        ids = pick_ids(db, pick, limit, seed, domain)
         _set(total=len(ids), done=0, error=None, pick=pick, seed=seed)
 
         recipes: list[dict] = []
@@ -550,7 +587,7 @@ def run(limit: int = 100, seed: int = 42, pick: str = "random",
                 .order_by(Recipe.id)
             ).all()
             for rec in rows:
-                recipes.append(_recipe_dict(rec, include_raw))
+                recipes.append(recipe_payload(rec, include_raw))
             _set(done=len(recipes))
 
         # Nejhorší nahoru: kdo si export otevře, chce vidět problémy, ne
