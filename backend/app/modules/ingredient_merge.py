@@ -172,6 +172,11 @@ def merge_cluster(db: Session, keep_id: int, loser_ids: list[int]) -> dict:
             .values(ingredient_id=keep_id)
         )
 
+    # Session má autoflush=False (viz db.py), takže změny v ORM objektech výš
+    # (přepojené řádky receptů, smazané položky spíže) v tuhle chvíli ještě
+    # NEJSOU v databázi. Bez tohohle flushe by DELETE níž narazil na cizí klíč
+    # `recipe_ingredient_ibfk_2` – řádky by pořád ukazovaly na poražené id.
+    db.flush()
     db.execute(delete(Ingredient).where(Ingredient.id.in_(losers)))
     return {"moved_rows": len(rows), "removed": len(losers), "recipe_ids": recipe_ids}
 

@@ -39,6 +39,19 @@ engine = create_engine(
     **_pool_kw,
 )
 
+if settings.database_url.startswith("sqlite"):
+    # SQLite cizí klíče ve výchozím stavu NEHLÍDÁ, MariaDB ano. Bez tohohle
+    # se chyby v pořadí zápisů nedají odhalit testem: slučování surovin
+    # mazalo surovinu dřív, než se stihly přepojit řádky receptů, na SQLite
+    # to prošlo a v produkci to spadlo na `recipe_ingredient_ibfk_2`.
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_enforce_fk(dbapi_conn, _rec):  # pragma: no cover - triviální
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
