@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -116,6 +117,26 @@ def main():
     check("prune smazal jen záznam za retencí", removed == 1, str(removed))
     check("po prune zůstala čerstvá data",
           llm_stats.summary(days=60)["totals"]["tokens_in"] == 7000)
+
+    # MariaDB vrací ze SUM()/AVG() Decimal (SQLite int) – dřív to shodilo
+    # celý endpoint na „Decimal * float" (HTTP 500 v kartě Spotřeba LLM)
+    class MariaRow:
+        calls, failed = 3, Decimal("1")
+        tok_in, tok_out = Decimal("7000"), Decimal("800")
+        avg_ms, max_ms = Decimal("21333.3333"), Decimal("60000")
+        provider = "api"
+
+    try:
+        row = llm_stats._row(MariaRow())
+        ok_decimal = (
+            row["tokens_in"] == 7000 and row["avg_ms"] == 21333
+            and isinstance(row["cost_czk"], float) and row["cost_czk"] > 0
+        )
+        check("Decimal z MariaDB projde výpočtem ceny", ok_decimal, str(row))
+    except Exception as exc:  # noqa: BLE001
+        check("Decimal z MariaDB projde výpočtem ceny", False, repr(exc))
+    check("Decimal u lokálního modelu je nula",
+          llm_stats._cost("ollama", Decimal("5000"), Decimal("100")) == 0.0)
 
     # telemetrie nesmí shodit volání ani při rozbité DB
     orig = llm_stats.SessionLocal
