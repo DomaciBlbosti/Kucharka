@@ -35,6 +35,7 @@ jobs:
           python -m tests.test_groups
           python -m tests.test_feed
           python -m tests.test_system
+          python -m tests.test_migrations
           python -m tests.test_scraper_cleanup
           python -m tests.test_corpus_audit
           python -m tests.test_llm_stats

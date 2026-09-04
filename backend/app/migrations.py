@@ -616,9 +616,18 @@ def _add_columns(engine: Engine, insp, existing_tables: set[str]) -> None:
     přestavby a start appky stál přes deset minut (viz "Waiting for application
     startup" v logu). Sloučené do jednoho ALTERu je přestavba jen jedna.
 
-    Nejdřív se zkusí ALGORITHM=INSTANT: na tabulkách bez fulltextu je pak
-    přidání sloupce okamžité. Když ho engine pro danou změnu neumí, spadne to
-    na obyčejný ALTER.
+    Postup je žebřík od nejlevnějšího k nejdražšímu:
+
+      1. ALGORITHM=INSTANT – na tabulkách bez fulltextu je přidání okamžité.
+      2. Zahodit fulltext indexy (viz `_drop_fulltext_for`) a zkusit INSTANT
+         znovu, pak INPLACE.
+      3. Obyčejný ALTER, algoritmus si vybere server.
+
+    Krok 2 nekončí u INSTANT schválně: MariaDB ho na `recipe` odmítla i po
+    zahození obou fulltextů (`ERROR 1845: ALGORITHM=INSTANT is not supported
+    for this operation. Try ALGORITHM=INPLACE`) – po fulltextu zůstává skrytý
+    sloupec FTS_DOC_ID. Přestavba tedy nastane tak jako tak, ale bez fulltextu
+    se netokenizuje 171 tisíc receptů znovu, a to byl ten hodinový rozdíl.
     """
     by_table: dict[str, list[ColumnAdd]] = {}
     for spec in _COLUMNS:
@@ -636,28 +645,82 @@ def _add_columns(engine: Engine, insp, existing_tables: set[str]) -> None:
         for group in groups:
             adds = ", ".join(f"ADD COLUMN {s.name} {s.ddl}" for s in group)
             names = ", ".join(s.name for s in group)
-            log.info("Migrace: přidávám do %s sloupce %s – u velké tabulky "
-                     "s fulltextem to znamená přestavbu a může to trvat minuty.",
-                     table, names)
-            ok = False
-            if not single:
-                try:
-                    with engine.begin() as conn:
-                        conn.execute(text(
-                            f"ALTER TABLE {table} {adds}, ALGORITHM=INSTANT"
-                        ))
-                    ok = True
-                    log.info("Migrace: + sloupce %s.%s (okamžitě)", table, names)
-                except Exception:  # noqa: BLE001 – engine to pro tuhle změnu neumí
-                    pass
-            if ok:
+            log.info("Migrace: přidávám do %s sloupce %s.", table, names)
+            if single:
+                _try_add(engine, table, adds, names, algo="", loud=True)
                 continue
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text(f"ALTER TABLE {table} {adds}"))
-                log.info("Migrace: + sloupce %s.%s", table, names)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("Migrace ADD %s.%s selhala: %s", table, names, exc)
+            if _try_add(engine, table, adds, names, algo="INSTANT"):
+                continue
+            # Fulltext je to, co přestavbu prodražuje (znovu se tokenizuje celý
+            # korpus). Zahodit ho a zkusit znovu – i když pak přestavba nastane,
+            # je řádově kratší.
+            _drop_fulltext_for(engine, table)
+            for algo in ("INSTANT", "INPLACE", ""):
+                # Poslední pokus (bez ALGORITHM) si vybírá server sám, takže
+                # když padne i ten, je to skutečná chyba a musí být v logu.
+                if _try_add(engine, table, adds, names, algo=algo, loud=not algo):
+                    break
+
+
+def _try_add(engine: Engine, table: str, adds: str, names: str, *,
+             algo: str, loud: bool = False) -> bool:
+    """Zkus jeden ALTER s daným algoritmem. `algo=""` = nech vybrat server.
+
+    Vrací True při úspěchu; neúspěch je normální stav (server danou kombinaci
+    neumí) a mlčí se o něm, pokud `loud` neříká jinak.
+    """
+    suffix = f", ALGORITHM={algo}" if algo else ""
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} {adds}{suffix}"))
+        log.info("Migrace: + sloupce %s.%s%s", table, names,
+                 f" ({algo})" if algo else "")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        if loud:
+            log.warning("Migrace ADD %s.%s selhala: %s", table, names, exc)
+        return False
+
+
+def _drop_fulltext_for(engine: Engine, table: str) -> bool:
+    """Dočasně zahoď FULLTEXT indexy tabulky. Vrací True, když nějaký padl.
+
+    Proč: InnoDB neumí přidat sloupec do tabulky s FULLTEXT indexem jinak než
+    přestavbou celé tabulky, při které se oba indexy znovu tokenizují. Na
+    produkci to u 171 tisíc receptů trvalo přes hodinu a appka po celou dobu
+    visela na „Waiting for application startup" – a protože se rozdělaný ALTER
+    při restartu odrolluje, každý pokus začínal od nuly.
+
+    Samotné DROP INDEX je levné (fulltext se jen zahodí, tabulka se nepřestavuje
+    – na produkci 27 s a 1 s). Přestavba kvůli ADD COLUMN pak proběhne, ale bez
+    tokenizace celého korpusu, takže v řádu minut místo hodin.
+
+    Indexy se postaví znovu na pozadí (`_add_fulltext_bg`), takže appka mezitím
+    normálně běží; hledání do té doby automaticky spadne na LIKE (viz
+    routers/recipes._fulltext_index).
+    """
+    dropped = []
+    for spec in _INDEXES:
+        if not spec.fulltext or spec.table != table:
+            continue
+        try:
+            insp = inspect(engine)
+            if spec.name not in {ix["name"] for ix in insp.get_indexes(table)}:
+                continue
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} DROP INDEX {spec.name}"))
+            dropped.append(spec.name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Migrace: FULLTEXT %s se nepodařilo zahodit: %s",
+                        spec.name, exc)
+    if dropped:
+        log.warning(
+            "Migrace: dočasně zahozeny FULLTEXT indexy %s – jinak by přidání "
+            "sloupce znamenalo přestavbu celé tabulky (u velkého korpusu i "
+            "hodiny). Postaví se znovu NA POZADÍ, hledání do té doby jede "
+            "přes LIKE.", ", ".join(dropped),
+        )
+    return bool(dropped)
 
 
 def _modify_columns(engine: Engine, insp, existing_tables: set[str]) -> None:
