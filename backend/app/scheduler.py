@@ -76,10 +76,11 @@ def _run_match():
       1. slovník + fuzzy (backfill),
       2. dávkové LLM dopárování + kontext receptu (llm_match),
       3. kategorizace nových surovin (jen nezařazené),
-      4. otagování nových receptů (jen neotagované).
+      4. otagování nových receptů (jen neotagované),
+      5. přepočet skóre pro úvodní stránku.
     Kroky 3–4 jsou při prázdné frontě no-op. Vše synchronně v jednom
     workeru, ať se úlohy nepřekrývají a nervou si GPU."""
-    from .modules import backfill, categorize, llm_match, llmclient, tagging
+    from .modules import backfill, categorize, feed, llm_match, llmclient, tagging
 
     if backfill.is_running():
         return
@@ -91,6 +92,10 @@ def _run_match():
             categorize.categorize_all(only_missing=True)
         if not tagging.is_running():
             tagging.tag_all(only_missing=True)
+    # 5. přepočet pořadí na úvodní stránce. Až NAKONEC: skóre se opírá o
+    #    počet napárovaných surovin, který kroky 1–2 právě měnily.
+    if not feed.is_running():
+        feed.recompute_all()
 
 
 def _run_lidl_sync():

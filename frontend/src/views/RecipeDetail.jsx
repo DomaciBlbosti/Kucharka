@@ -217,10 +217,23 @@ export default function RecipeDetail() {
             </section>
           </div>
 
-          <div className="mt-8 border-t border-line pt-4">
+          <div className="mt-8 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+            {/* Skrytí místo mazání: smazaný recept by crawler při dalším
+                průchodu stáhl znovu jako nový. */}
+            <Button
+              variant="ghost"
+              onClick={async () => setR(await api.setRecipeHidden(r.id, !r.hidden))}
+            >
+              {r.hidden ? "Vrátit mezi recepty" : "Skrýt z výpisů"}
+            </Button>
             <Button variant="danger" onClick={async () => { await api.deleteRecipe(r.id); nav("/"); }}>
               Smazat recept
             </Button>
+            {r.hidden && (
+              <span className="text-sm text-ink/55">
+                Skryto — ve výpisech ani v návrzích se neukazuje.
+              </span>
+            )}
           </div>
         </div>
       </div>

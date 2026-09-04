@@ -34,8 +34,10 @@ export function CookMeter({ have, total, size = "md" }) {
   );
 }
 
-export function ReadyStamp({ missing }) {
-  if (missing > 0) return null;
+export function ReadyStamp({ missing, total }) {
+  // Recept bez jediné napárované suroviny má missing = 0, ale to neznamená
+  // "můžeš vařit" – znamená to "nevíme, z čeho je".
+  if (missing > 0 || !total) return null;
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-basil px-2.5 py-1 text-[11px] font-semibold text-white">
       Můžeš vařit

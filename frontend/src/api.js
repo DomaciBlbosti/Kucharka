@@ -167,6 +167,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then(J),
+  setRecipeHidden: (id, hidden) =>
+    afetch(`/api/recipes/${id}/hidden`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hidden }),
+    }).then(J),
   markCooked: (id) =>
     afetch(`/api/recipes/${id}/cooked`, { method: "POST" }).then(J),
   toggleUseSoon: (ingredientId) =>

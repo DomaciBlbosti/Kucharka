@@ -5,6 +5,7 @@ import { IngredientPicker } from "../components/IngredientPicker";
 import { CookMeter, EmptyState, Meta, ReadyStamp, Spinner, Stars } from "../components/ui";
 
 const SORTS = [
+  ["feed", "Doporučené"],
   ["smart", "Nejblíž uvaření"],
   ["rating", "Hodnocení"],
   ["time", "Nejrychlejší"],
@@ -22,7 +23,7 @@ export default function Recipes() {
   const [onlyHave, setOnlyHave] = useState(false);
   const [maxMissing, setMaxMissing] = useState("");
   const [maxTime, setMaxTime] = useState("");
-  const [sort, setSort] = useState("smart");
+  const [sort, setSort] = useState("feed");
   const [category, setCategory] = useState("");
   const [cats, setCats] = useState([]);
   const [tagGroups, setTagGroups] = useState([]);
@@ -359,7 +360,7 @@ function RecipeCard({ r, cookMode }) {
           </div>
         )}
         <div className="absolute left-2 top-2">
-          <ReadyStamp missing={r.missing_count} />
+          <ReadyStamp missing={r.missing_count} total={r.total} />
         </div>
         {cookMode ? (
           <div className="absolute right-2 top-2 rounded-full bg-white/90 px-2 py-0.5 text-xs font-semibold text-basil-dark shadow-card">

@@ -75,6 +75,7 @@ class RecipeDetail(RecipeCard):
     user_note: str | None = None
     original_title: str | None = None
     original_instructions: str | None = None
+    hidden: bool = False
     ingredients: list[RecipeIngredientOut] = []
     missing_ingredient_ids: list[int] = []
     # Spolehlivost výživy: kolik % napárovaných řádků stojí na odhadu

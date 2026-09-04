@@ -61,7 +61,7 @@ export default function RecipeGroup() {
                   <div className="flex h-full items-center justify-center text-3xl opacity-30">🍽️</div>
                 )}
                 <div className="absolute left-1 top-1">
-                  <ReadyStamp missing={r.missing_count} />
+                  <ReadyStamp missing={r.missing_count} total={r.total} />
                 </div>
               </div>
               <div className="flex min-w-0 flex-1 flex-col gap-2">

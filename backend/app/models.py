@@ -165,6 +165,11 @@ class Recipe(Base):
     # Klíč pro seskupení variant téhož jídla („těstovinový salát" ×15).
     # Stemované a seřazené názvy, viz textnorm.title_key.
     title_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    # Skryto uživatelem – z výpisů i z návrhů zmizí, ale recept se nemaže
+    # (jde vrátit a crawler ho při dalším průchodu znovu nenatáhne jako nový).
+    hidden: Mapped[bool] = mapped_column(Boolean, server_default="0", index=True)
+    # Pořadí na úvodní stránce; počítá se na pozadí (viz modules/feed.py).
+    feed_score: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     # Stavové sloupce – přidává je migrations.py (ALTER TABLE), zde jen
