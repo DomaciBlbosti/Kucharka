@@ -399,6 +399,7 @@ def _call_llm(prompt: str) -> dict | None:
         temperature=settings.llm_match_temperature,
         num_ctx=settings.llm_match_num_ctx,
         ollama_model=settings.llm_match_model or settings.ollama_fast_model,
+        component="párování",
     )
 
 
@@ -463,7 +464,7 @@ def estimate_nutrition(db: Session, ingredients: list[Ingredient], batch: int = 
             f"Potraviny:\n{listing}"
         )
         out = llmclient.structured_json(prompt, schema=_NUTRITION_SCHEMA, timeout=120,
-                                        num_ctx=8192)
+                                        num_ctx=8192, component="výživa")
         if out is None:
             log.warning("odhad výživy dávky selhal – %s surovin zůstává bez výživy",
                         len(chunk))
@@ -902,6 +903,7 @@ def _context_pass(
             timeout=max(30, settings.llm_match_timeout_s),
             num_ctx=settings.llm_match_num_ctx,
             ollama_model=settings.llm_match_model or settings.ollama_fast_model,
+            component="párování (kontext)",
         )
         stats["ctx_recipes"] += 1
         if resp is None:

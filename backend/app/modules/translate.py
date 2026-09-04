@@ -92,6 +92,7 @@ def _call(prompt: str, schema: dict, num_ctx: int) -> dict | None:
             # samostatný model jen pro překlad (experimenty s multilingválními
             # modely bez dopadu na párování); prázdné = rychlý model
             ollama_model=settings.translate_model or None,
+            component="překlad",
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("překlad selhal: %s", exc)
