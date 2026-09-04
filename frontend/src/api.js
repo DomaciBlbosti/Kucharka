@@ -338,6 +338,13 @@ export const api = {
     afetch(`/api/admin/ingredient-merge/run?dry_run=${dryRun ? "true" : "false"}`, {
       method: "POST",
     }).then(J),
+  recipeExportStatus: () => afetch("/api/admin/recipe-export/status").then(J),
+  recipeExportRun: ({ limit, pick, domain, seed }) =>
+    afetch(
+      `/api/admin/recipe-export/run?limit=${limit}&pick=${pick}&seed=${seed}` +
+        (domain ? `&domain=${encodeURIComponent(domain)}` : ""),
+      { method: "POST" },
+    ).then(J),
   feedStatus: () => afetch("/api/admin/feed/status").then(J),
   feedRecompute: () =>
     afetch("/api/admin/feed/recompute", { method: "POST" }).then(J),
