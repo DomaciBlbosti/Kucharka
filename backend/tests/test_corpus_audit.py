@@ -151,6 +151,58 @@ def main():
     check("'speciální koření' nespustí nic (žádná generická předpona)",
           ms(nm("přidáme speciální koření")) == [])
 
+    # ── druhá třída: úkony bez tepelné úpravy ──
+    mp = corpus_audit.matched_prep_stems
+    for phrase, stem in [
+        ("přidáme nasekanou cibuli", "prid"),
+        ("pečivo potřeme máslem", "potr"),
+        ("necháme odpočinout", "nech"),
+        ("podáváme s čerstvým pečivem", "podav"),
+        ("ozdobíme lístky máty", "ozdob"),
+        ("necháme vychladnout", "vychlad"),
+        ("vložíme do formy", "vloz"),
+        ("naplníme těstem", "napln"),
+        ("plátky chleba namažeme", "namaz"),
+        ("koláčky slepíme krémem", "slep"),
+    ]:
+        check(f"úkon: {stem}", stem in mp(nm(phrase)), str(mp(nm(phrase))))
+    check("'budeme potřebovat' nespustí 'potr'",
+          mp(nm("budeme potřebovat mísu")) == [], str(mp(nm("budeme potřebovat mísu"))))
+    check("'pomazánka' nespustí 'pomaz' (podstatné jméno)",
+          mp(nm("hotová pomazánka vydrží týden")) == [],
+          str(mp(nm("hotová pomazánka vydrží týden"))))
+    check("'zavařeninu' nespustí 'zavar'",
+          ms(nm("navršíme zavařeninu")) == [], str(ms(nm("navršíme zavařeninu"))))
+    check("kmeny se nepřekrývají mezi třídami",
+          not (set(corpus_audit.COOK_STEMS) & set(corpus_audit.PREP_STEMS)))
+
+    # has_no_action: studená kuchyně NENÍ podezřelá, prázdná fráze ano
+    def m(instr):
+        return corpus_audit.recipe_metrics("Test", instr, [])
+
+    cold = m("Plátky šunky naaranžujeme na talíř, ozdobíme a podáváme.")
+    check("studená kuchyně: 0 vaření, ale akce ano", cold["n_cook_verbs"] == 0)
+    check("studená kuchyně není 'bez akce'", not cold["has_no_action"])
+    check("studená kuchyně má úkony", cold["n_prep_verbs"] >= 2, str(cold["matched_prep_stems"]))
+    junk = m("Ruční práce\nVšechno je ruční práce.")
+    check("prázdná fráze je 'bez akce'", junk["has_no_action"])
+    warm = m("Cibuli osmažíme na oleji a vaříme 20 minut.")
+    check("normální recept není 'bez akce'", not warm["has_no_action"])
+    check("prázdný postup je 'bez akce'", m("")["has_no_action"])
+
+    check("profil nese histogram úkonů",
+          set(profile["global"]["n_prep_verbs"]) == set(profile["global"]["n_cook_verbs"]))
+    check("profil nese počet receptů bez akce",
+          isinstance(profile["global"]["has_no_action"], int))
+    check("rozpad podle domény nese pct_no_action",
+          all("pct_no_action" in d for d in profile["by_domain"]))
+    check("vzorek nese úkony i příznak",
+          all("n_prep_verbs" in r["metrics"] and "has_no_action" in r["metrics"]
+              for r in rows))
+    check("vrstva no_action je ve vzorku definovaná",
+          all(r["metrics"]["has_no_action"]
+              for r in rows if "no_action" in r["strata"]))
+
     # ── determinismus ──
     out2 = corpus_audit.run(seed=42)
     rows2 = [json.loads(ln) for ln in

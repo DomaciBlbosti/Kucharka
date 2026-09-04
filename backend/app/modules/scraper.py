@@ -6,6 +6,7 @@ funguje i na webech bez dedikovaného scraperu, pokud mají schema.org/Recipe.
 """
 from __future__ import annotations
 
+import re
 import time
 from urllib.parse import urlparse
 
@@ -49,6 +50,44 @@ def fetch_html(url: str) -> str:
         return r.text
 
 
+_LEAD_SEP_RE = re.compile(r"^[\s:.\-–—|]+")
+
+
+def strip_title_prefix(instructions: str | None, title: str | None) -> str | None:
+    """Odřízni z postupu úvodní opakování názvu receptu.
+
+    Některé weby (nejvýrazněji bestrecepty.cz – ve vzorku 16 z 26 receptů)
+    dávají do schema.org recipeInstructions jako první řádek název receptu:
+    „Plněné papriky se šunkou a sýrem 1. Papriky omyjeme…". Kazí to hledání
+    i metriky a v UI to vypadá jako překlep.
+
+    Zkouší se i zkrácené varianty názvu – v závorce nebo za pomlčkou bývá
+    upřesnění, které se v textu postupu neopakuje („Rychlá domácí tatarka
+    (tatarská omáčka)" → postup začíná jen „Rychlá domácí tatarka").
+
+    Ořízne se jen tehdy, když po odečtení zbude pořádný text; jinak by se z
+    receptu, jehož celý „postup" je jen název, stal prázdný řetězec.
+    """
+    text = (instructions or "").strip()
+    base = (title or "").strip()
+    if not text or len(base) < 8:
+        return instructions
+
+    variants = {base}
+    for sep in ("(", " - ", " – ", ","):
+        head = base.split(sep)[0].strip()
+        if len(head) >= 8:
+            variants.add(head)
+
+    for cand in sorted(variants, key=len, reverse=True):
+        if text[: len(cand)].lower() != cand.lower():
+            continue
+        rest = _LEAD_SEP_RE.sub("", text[len(cand) :])
+        # Pod 40 znaků už to není postup – radši nechat, jak to přišlo.
+        return rest if len(rest) >= 40 else instructions
+    return instructions
+
+
 def _safe(fn, default=None):
     try:
         val = fn()
@@ -83,7 +122,7 @@ def extract(html: str, url: str) -> dict | None:
         "source_url": url,
         "source_domain": domain_of(url),
         "image_url": _safe(s.image),
-        "instructions": _safe(s.instructions),
+        "instructions": strip_title_prefix(_safe(s.instructions), title),
         "ingredients": ingredients,
         "servings": _to_int(_safe(s.yields)),
         "total_time": _safe(s.total_time),
@@ -102,7 +141,5 @@ def _to_int(val) -> int | None:
         return None
     if isinstance(val, int):
         return val
-    import re
-
     m = re.search(r"\d+", str(val))
     return int(m.group()) if m else None

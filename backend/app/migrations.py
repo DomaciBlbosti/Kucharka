@@ -203,6 +203,25 @@ def run_all(engine: Engine) -> None:
                 daemon=True, name="migrations-perf",
             ).start()
 
+    # Jednorázové odříznutí názvu receptu ze začátku postupu (viz
+    # _strip_title_in_instr_bg). Opět jen MariaDB – na SQLite běží testy.
+    if (
+        engine.dialect.name != "sqlite"
+        and "recipe" in existing_tables
+        and "app_setting" in existing_tables
+    ):
+        with engine.begin() as conn:
+            marker = conn.execute(text(
+                "SELECT value FROM app_setting WHERE `key` = 'mig_strip_title_instr_v1'"
+            )).first()
+        if marker is None:
+            import threading
+
+            threading.Thread(
+                target=_strip_title_in_instr_bg, args=(engine,), daemon=True,
+                name="migrations-strip-title",
+            ).start()
+
 
 def _missing_fulltext(engine: Engine, insp, existing_tables: set[str]) -> list[IndexAdd]:
     if engine.dialect.name == "sqlite":
@@ -354,6 +373,59 @@ def _reparse_units_bg(engine: Engine) -> None:
         log.warning(
             "Migrace přepočtu jednotek selhala (zopakuje se při dalším startu): %s",
             exc,
+        )
+
+
+def _strip_title_in_instr_bg(engine: Engine) -> None:
+    """JEDNORÁZOVĚ odřízni z postupů úvodní opakování názvu receptu.
+
+    Některé zdroje (bestrecepty.cz nejvíc) dávají do schema.org
+    recipeInstructions jako první řádek název receptu. Nový scraper to už
+    ořezává při ingestu, historická data je potřeba srovnat.
+
+    Běží na pozadí po dávkách; marker se zapisuje až po úspěšném doběhu –
+    funkce je idempotentní, takže restart uprostřed nevadí (podruhé už
+    ořezaný postup názvem nezačíná a nezmění se)."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import sessionmaker
+
+    from .models import Recipe
+    from .modules.scraper import strip_title_prefix
+
+    log.info("Migrace: ořez názvu ze začátku postupu NA POZADÍ…")
+    Session = sessionmaker(bind=engine)
+    changed = 0
+    try:
+        db = Session()
+        try:
+            ids = list(db.scalars(select(Recipe.id)).all())
+        finally:
+            db.close()
+
+        CHUNK = 500
+        for i in range(0, len(ids), CHUNK):
+            db = Session()
+            try:
+                for r in db.scalars(
+                    select(Recipe).where(Recipe.id.in_(ids[i : i + CHUNK]))
+                ).all():
+                    fixed = strip_title_prefix(r.instructions, r.title)
+                    if fixed != r.instructions:
+                        r.instructions = fixed
+                        changed += 1
+                db.commit()
+            finally:
+                db.close()
+
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO app_setting (`key`, value)"
+                " VALUES ('mig_strip_title_instr_v1', '1')"
+            ))
+        log.info("Migrace: ořez názvu hotový – upraveno %s postupů.", changed)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "Migrace ořezu názvu selhala (zopakuje se při dalším startu): %s", exc
         )
 
 
