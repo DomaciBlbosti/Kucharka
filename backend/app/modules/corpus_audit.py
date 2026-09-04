@@ -33,12 +33,14 @@ import traceback
 import unicodedata
 from collections import Counter
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 from sqlalchemy import func, select
 
 from ..db import SessionLocal
 from ..models import Ingredient, Recipe, RecipeIngredient
+from . import textnorm
 
 log = logging.getLogger("kucharka.corpus_audit")
 
@@ -132,7 +134,6 @@ _PREP_RE = _alternation(PREP_STEMS)
 _TIME_RE = re.compile(r"\d+\s*(min|minut|hod|h\b)")
 _TEMP_RE = re.compile(r"\d+\s*(°|st\.|stupn)")
 _NUMBERED_STEP_RE = re.compile(r"^\s*\d+[.)]", re.M)
-_WORD_RE = re.compile(r"[a-z]{2,}")
 
 
 def matched_stems(norm_instr: str) -> list[str]:
@@ -156,22 +157,51 @@ def _n_steps(instructions: str) -> int:
     return max(paras, lines, numbered, 1)
 
 
-def _coverage(norm_instr: str, ingredient_texts: list[str]) -> float:
-    """Podíl surovin, jejichž první „pořádné" slovo se vyskytne v postupu.
+@lru_cache(maxsize=1)
+def _unit_stems() -> frozenset[str]:
+    """Kmeny jednotek a obalů („lžíce", „ks", „balení"…). Do pokrytí nepatří:
+    postup mluví o surovině, ne o tom, v čem byla navážená."""
+    from .nutrition import _UNIT_LOOKUP
 
-    První pořádné slovo = první alfabetický token ≥4 znaky (přeskočí „200",
-    „g", „ks"…). Kvůli flektivnosti se hledá PREFIX slova (poslední ≤2 znaky
-    se uříznou, min. 4 znaky): „mouky" → „mouk" najde i „mouku"/„mouka".
-    Suroviny bez takového slova se nepočítají ani do jmenovatele.
+    out = {textnorm.stem_word(u) for u in _UNIT_LOOKUP}
+    out |= {textnorm.stem_word(u) for u in _UNIT_LOOKUP.values()}
+    return frozenset(out)
+
+
+def _ingredient_stems(raw: str) -> set[str]:
+    """Kmeny slov suroviny bez jednotek a čísel."""
+    return {
+        t for t in textnorm.tokens(raw or "")
+        if not t.isdigit() and t not in _unit_stems()
+    }
+
+
+def _coverage(instructions: str, ingredient_texts: list[str]) -> float:
+    """Podíl surovin, které se vůbec objeví v postupu.
+
+    Shoda se hledá přes STEMMER (`textnorm`), tedy stejnou normalizací, jakou
+    jede hledání. Dřív to fungovalo na prefixu PRVNÍHO slova ≥4 znaky, a to
+    metriku systematicky podstřelovalo, protože první slovo skoro nikdy není
+    ta surovina:
+
+      „200 g hladké mouky"  → zkoušelo se „hladk", ne „mouk"
+      „1 lžíce olivového oleje" → zkoušelo se „lzic", ne „olej"
+
+    Postup „přidáme mouku a olej" tedy vyšel jako nulové pokrytí. Proto se
+    porovnávají VŠECHNA slova suroviny (bez jednotek a čísel) proti kmenům
+    postupu – shoda kteréhokoli z nich stačí.
+
+    Suroviny bez použitelného slova („2 ks", „špetka") se nepočítají ani do
+    jmenovatele.
     """
+    instr = set(textnorm.tokens(instructions or ""))
     hits = eligible = 0
     for raw in ingredient_texts:
-        word = next((w for w in _WORD_RE.findall(norm(raw)) if len(w) >= 4), None)
-        if word is None:
+        words = _ingredient_stems(raw)
+        if not words:
             continue
         eligible += 1
-        probe = word[: max(4, len(word) - 2)]
-        if probe in norm_instr:
+        if words & instr:
             hits += 1
     return round(hits / eligible, 3) if eligible else 0.0
 
@@ -195,7 +225,9 @@ def recipe_metrics(title: str, instructions: str | None, ingredient_texts: list[
         "has_no_action": not stems and not prep,
         "has_time": bool(_TIME_RE.search(ni)),
         "has_temp": bool(_TEMP_RE.search(ni)),
-        "ingr_coverage": _coverage(ni, ingredient_texts),
+        # Pozor: stemmer si text normalizuje sám, dostane tedy PŮVODNÍ postup
+        # (norm() už zahodilo diakritiku, kterou stemmer potřebuje).
+        "ingr_coverage": _coverage(instr, ingredient_texts),
         "title_chars": len((title or "").strip()),
         "has_empty_instr": len(instr) < 20,
         "has_empty_ingr": len(ingredient_texts) == 0,
