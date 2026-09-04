@@ -89,6 +89,10 @@ _COLUMNS: tuple[ColumnAdd, ...] = (
     # Recipe – denormalizovaný počet napárovaných surovin pro rychlý výpis
     # (viz models.py); historii plní jednorázová migrace na pozadí
     ColumnAdd("recipe", "ing_total", "INT NULL"),
+    # Recipe – normalizovaný text pro hledání (název + postup + suroviny
+    # prohnané stemmerem, viz modules/textnorm.py); plní jednorázová
+    # migrace na pozadí a pak ingest při každém uložení receptu
+    ColumnAdd("recipe", "search_text", "TEXT NULL"),
 )
 
 # Změny existujících sloupců (pouze nezbytné).
@@ -127,6 +131,11 @@ _INDEXES: tuple[IndexAdd, ...] = (
     # hledání do té doby automaticky jede přes ILIKE fallback.
     IndexAdd("recipe", "ft_recipe_title_instructions", ("title", "instructions"),
              fulltext=True),
+    # Fulltext nad normalizovaným textem (stemmer + bez diakritiky + suroviny).
+    # Nad původním textem hledání selhávalo na skloňování: „+péct*" nenajde
+    # „pečeme" a „+kuře*" nenajde „kuřecí". Staví se taky na pozadí; dokud
+    # není hotový, hledání jede přes starší index nad title+instructions.
+    IndexAdd("recipe", "ft_recipe_search_text", ("search_text",), fulltext=True),
 )
 
 
@@ -203,6 +212,45 @@ def run_all(engine: Engine) -> None:
                 daemon=True, name="migrations-perf",
             ).start()
 
+    # Jednorázové odříznutí názvu receptu ze začátku postupu (viz
+    # _strip_title_in_instr_bg). Opět jen MariaDB – na SQLite běží testy.
+    if (
+        engine.dialect.name != "sqlite"
+        and "recipe" in existing_tables
+        and "app_setting" in existing_tables
+    ):
+        with engine.begin() as conn:
+            marker = conn.execute(text(
+                "SELECT value FROM app_setting WHERE `key` = 'mig_strip_title_instr_v1'"
+            )).first()
+        if marker is None:
+            import threading
+
+            threading.Thread(
+                target=_strip_title_in_instr_bg, args=(engine,), daemon=True,
+                name="migrations-strip-title",
+            ).start()
+
+    # Naplnění recipe.search_text (normalizovaný text pro hledání). Na rozdíl
+    # od ostatních migrací platí i pro SQLite – testy hledání ten sloupec
+    # potřebují mít naplněný. Tam ale běží SYNCHRONNĚ: databáze je v testu
+    # maličká a vlákno na pozadí by závodilo se zápisy testu.
+    if "recipe" in existing_tables and "app_setting" in existing_tables:
+        with engine.begin() as conn:
+            marker = conn.execute(text(
+                "SELECT value FROM app_setting WHERE `key` = 'mig_search_text_v1'"
+            )).first()
+        if marker is None:
+            if engine.dialect.name == "sqlite":
+                _search_text_bg(engine)
+            else:
+                import threading
+
+                threading.Thread(
+                    target=_search_text_bg, args=(engine,), daemon=True,
+                    name="migrations-search-text",
+                ).start()
+
 
 def _missing_fulltext(engine: Engine, insp, existing_tables: set[str]) -> list[IndexAdd]:
     if engine.dialect.name == "sqlite":
@@ -212,9 +260,30 @@ def _missing_fulltext(engine: Engine, insp, existing_tables: set[str]) -> list[I
         if not spec.fulltext or spec.table not in existing_tables:
             continue
         existing = {ix["name"] for ix in insp.get_indexes(spec.table)}
-        if spec.name not in existing:
-            out.append(spec)
+        if spec.name in existing:
+            continue
+        # Index nad search_text nemá smysl stavět dřív, než je sloupec
+        # naplněný – jinak by se hledání přepnulo na prázdný index a recepty
+        # by dočasně "zmizely". Postaví se při dalším startu.
+        if spec.name == "ft_recipe_search_text" and not _marker_set(
+            engine, "mig_search_text_v1"
+        ):
+            log.info("Migrace: fulltext ft_recipe_search_text počká, "
+                     "až se dopočítá recipe.search_text.")
+            continue
+        out.append(spec)
     return out
+
+
+def _marker_set(engine: Engine, key: str) -> bool:
+    """Je jednorázová migrace `key` už hotová? (marker v app_setting)"""
+    try:
+        with engine.begin() as conn:
+            return conn.execute(
+                text("SELECT value FROM app_setting WHERE `key` = :k"), {"k": key}
+            ).first() is not None
+    except Exception:  # noqa: BLE001 – tabulka nemusí ještě existovat
+        return False
 
 
 def _add_fulltext_bg(engine: Engine, specs: list[IndexAdd]) -> None:
@@ -354,6 +423,117 @@ def _reparse_units_bg(engine: Engine) -> None:
         log.warning(
             "Migrace přepočtu jednotek selhala (zopakuje se při dalším startu): %s",
             exc,
+        )
+
+
+def _strip_title_in_instr_bg(engine: Engine) -> None:
+    """JEDNORÁZOVĚ odřízni z postupů úvodní opakování názvu receptu.
+
+    Některé zdroje (bestrecepty.cz nejvíc) dávají do schema.org
+    recipeInstructions jako první řádek název receptu. Nový scraper to už
+    ořezává při ingestu, historická data je potřeba srovnat.
+
+    Běží na pozadí po dávkách; marker se zapisuje až po úspěšném doběhu –
+    funkce je idempotentní, takže restart uprostřed nevadí (podruhé už
+    ořezaný postup názvem nezačíná a nezmění se)."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import sessionmaker
+
+    from .models import Recipe
+    from .modules.scraper import strip_title_prefix
+
+    log.info("Migrace: ořez názvu ze začátku postupu NA POZADÍ…")
+    Session = sessionmaker(bind=engine)
+    changed = 0
+    try:
+        db = Session()
+        try:
+            ids = list(db.scalars(select(Recipe.id)).all())
+        finally:
+            db.close()
+
+        CHUNK = 500
+        for i in range(0, len(ids), CHUNK):
+            db = Session()
+            try:
+                for r in db.scalars(
+                    select(Recipe).where(Recipe.id.in_(ids[i : i + CHUNK]))
+                ).all():
+                    fixed = strip_title_prefix(r.instructions, r.title)
+                    if fixed != r.instructions:
+                        r.instructions = fixed
+                        changed += 1
+                db.commit()
+            finally:
+                db.close()
+
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO app_setting (`key`, value)"
+                " VALUES ('mig_strip_title_instr_v1', '1')"
+            ))
+        log.info("Migrace: ořez názvu hotový – upraveno %s postupů.", changed)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "Migrace ořezu názvu selhala (zopakuje se při dalším startu): %s", exc
+        )
+
+
+def _search_text_bg(engine: Engine) -> None:
+    """JEDNORÁZOVĚ naplň recipe.search_text u receptů, které ho nemají.
+
+    Fulltext index nad původním textem selhával na skloňování – „+péct*"
+    nenajde „pečeme". Sloupec drží název, postup A suroviny prohnané
+    stemmerem (viz modules/textnorm.py); nové recepty ho dostávají při
+    ingestu, historii doplní tahle migrace.
+
+    Idempotentní: bere jen řádky s NULL, takže restart uprostřed nevadí.
+    Marker se zapisuje až po úplném doběhu."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload, sessionmaker
+
+    from .models import Recipe
+    from .modules.textnorm import search_text_for
+
+    log.info("Migrace: plním recipe.search_text…")
+    Session = sessionmaker(bind=engine)
+    filled = 0
+    try:
+        db = Session()
+        try:
+            ids = list(db.scalars(
+                select(Recipe.id).where(Recipe.search_text.is_(None))
+            ).all())
+        finally:
+            db.close()
+
+        CHUNK = 500
+        for i in range(0, len(ids), CHUNK):
+            db = Session()
+            try:
+                for r in db.scalars(
+                    select(Recipe)
+                    .where(Recipe.id.in_(ids[i : i + CHUNK]))
+                    .options(selectinload(Recipe.ingredients))
+                ).all():
+                    r.search_text = search_text_for(
+                        r.title, r.instructions,
+                        [ri.raw_text or "" for ri in r.ingredients],
+                    )
+                    filled += 1
+                db.commit()
+            finally:
+                db.close()
+
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO app_setting (`key`, value)"
+                " VALUES ('mig_search_text_v1', '1')"
+            ))
+        log.info("Migrace: search_text naplněn u %s receptů.", filled)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "Migrace search_text selhala (zopakuje se při dalším startu): %s", exc
         )
 
 

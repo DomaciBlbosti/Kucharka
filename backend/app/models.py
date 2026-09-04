@@ -158,6 +158,10 @@ class Recipe(Base):
     # originál před strojovým překladem (uloží se jen když se recept přeložil)
     original_title: Mapped[str | None] = mapped_column(Text, nullable=True)
     original_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Název + postup + suroviny prohnané stemmerem (viz modules/textnorm.py).
+    # Fulltext index jede nad tímhle sloupcem, ne nad původním textem: jinak
+    # by „péct" nenašlo „pečeme" a „kuře" nenašlo „kuřecí".
+    search_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     # Stavové sloupce – přidává je migrations.py (ALTER TABLE), zde jen

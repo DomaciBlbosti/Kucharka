@@ -59,8 +59,10 @@ def norm(s: str) -> str:
     return "".join(c for c in s if not unicodedata.combining(c))
 
 
-# Kmeny vařicích sloves (po normalizaci). Vzorek nese matched_stems, ať se
-# false positives odhalí očima. Úpravy proti startovní sadě ze zadání:
+# Kmeny sloves (po normalizaci) ve DVOU třídách. Vzorek nese matched_stems
+# i matched_prep_stems, ať se false positives odhalí očima.
+#
+# COOK = tepelná/kuchařská úprava. Úpravy proti startovní sadě ze zadání:
 #   - "sek" dostal (?!und) – "30 sekund" je v postupech všudypřítomné,
 #   - doplněné PŘEDPONOVÉ tvary: match na hranici slova nechytal "smícháme",
 #     "vyšleháme", "orestujeme", "nastrouháme", "rozmixujte", "svařte"… a
@@ -72,26 +74,60 @@ def norm(s: str) -> str:
 # Známé zbytkové false positives (ponechané kvůli recall, viz vzorek):
 # "var"→"varianta/varná", "pec"→"pečivo", "mix"→"mixér" (nástroj ≈ vaření).
 COOK_STEMS = [
-    "var", "uvar", "svar", "povar", "provar", "prevar",
-    "pec", "pek", "zapec", "opec", "propec",
-    "smaz", "osmaz", "dus", "restu", "orest",
+    "var", "uvar", "svar", "povar", "provar", "prevar", "zavar",
+    "pec", "pek", "zapec", "opec", "upec", "propec",
+    "smaz", "osmaz", "dus", "podus", "zadus", "restu", "orest",
+    "ohr", "zahr", "prohr",
     "mich", "vmich", "zamich", "smich", "promich", "rozmich", "umich",
     "sleh", "vysleh", "usleh", "mix", "rozmix",
-    "kraj", "nakraj", "rozkraj", "sek", "strouh", "nastrouh",
+    "kraj", "nakraj", "rozkraj", "strouh", "nastrouh",
+    "sek", "nasek", "posek", "usek", "rozsek",
     "oloup", "rozmack", "vymack", "vymaz", "vysyp", "nasyp",
     "hnet", "zadel", "marin", "gril", "blansir",
-    "ced", "scedit", "roztop", "rozehr", "rozpust", "ochut", "osol",
+    "ced", "scedit", "proced", "roztop", "rozehr", "rozpust", "ochut", "osol",
     "opepr", "obal", "zapras", "prosej",
-    "nalij", "podlij", "zalij", "prelij", "dolij",
+    "nalij", "podlij", "zalij", "prelij", "dolij", "polij",
 ]
 
-# Jedna kompilovaná alternace: delší kmeny první (ať "zapec" nespolkne "pec"
-# jinde než na své pozici), match jen na hranici slova.
-_STEM_ALTERNATION = "|".join(
-    (s + "(?!und)") if s == "sek" else s
-    for s in sorted(COOK_STEMS, key=len, reverse=True)
-)
-_STEM_RE = re.compile(rf"\b(?:{_STEM_ALTERNATION})")
+# PREP = úkony bez tepelné úpravy. Bez nich vycházely jako podezřelé i
+# recepty, které jsou v pořádku – pomazánky, nálevy, drinky, dekorace na
+# dorty, studená kuchyně. Nad produkčním vzorkem měl 81 ze 98 receptů
+# "0 vařicích sloves" popsané úkony právě těmito slovesy.
+PREP_STEMS = [
+    "prid", "potr", "nech", "podav", "serv",
+    "napln", "plni", "poklad", "poloz", "vloz", "vkla", "vyklop",
+    "ozdob", "zdob", "posyp", "natr", "utr", "namaz", "pomaz",
+    "vychlad", "zamraz", "zmraz", "susi",
+    "namoc", "namac", "omy", "osus", "oplach", "protres",
+    "rozval", "vyval", "stoc", "zabal", "tvarov", "vytvar", "tvor",
+    "rozdel", "vykroj", "vyrez", "odstran", "obrat", "otoc",
+    "zhust", "zredi", "vysklad", "posklad", "slep", "dopln",
+    "urovn", "navrs", "udel",
+]
+
+# Negativní lookahead u kmenů, které by jinak spolkly běžná nesouvisející
+# slova. Ověřeno nad produkčním vzorkem, ne odhadem.
+_STEM_GUARDS = {
+    "sek": "und",      # „30 sekund"
+    "potr": "eb",      # „potřeba / potřebovat"
+    "zahr": "n",       # „zahrneme"
+    "zavar": "enin",   # „zavařenina"
+    "pomaz": "ank",    # „pomazánka" (podstatné jméno, ne úkon)
+}
+
+
+def _alternation(stems: list[str]) -> re.Pattern:
+    """Jedna kompilovaná alternace: delší kmeny první (ať "zapec" nespolkne
+    "pec" jinde než na své pozici), match jen na hranici slova."""
+    body = "|".join(
+        s + (f"(?!{_STEM_GUARDS[s]})" if s in _STEM_GUARDS else "")
+        for s in sorted(stems, key=len, reverse=True)
+    )
+    return re.compile(rf"\b(?:{body})")
+
+
+_STEM_RE = _alternation(COOK_STEMS)
+_PREP_RE = _alternation(PREP_STEMS)
 
 _TIME_RE = re.compile(r"\d+\s*(min|minut|hod|h\b)")
 _TEMP_RE = re.compile(r"\d+\s*(°|st\.|stupn)")
@@ -100,8 +136,13 @@ _WORD_RE = re.compile(r"[a-z]{2,}")
 
 
 def matched_stems(norm_instr: str) -> list[str]:
-    """Seznam RŮZNÝCH kmenů, které se v (normalizovaném) postupu trefily."""
+    """Seznam RŮZNÝCH vařicích kmenů, které se v (norm.) postupu trefily."""
     return sorted(set(_STEM_RE.findall(norm_instr)))
+
+
+def matched_prep_stems(norm_instr: str) -> list[str]:
+    """Totéž pro úkony bez tepelné úpravy (přidat, potřít, ozdobit…)."""
+    return sorted(set(_PREP_RE.findall(norm_instr)))
 
 
 def _n_steps(instructions: str) -> int:
@@ -140,12 +181,18 @@ def recipe_metrics(title: str, instructions: str | None, ingredient_texts: list[
     instr = (instructions or "").strip()
     ni = norm(instr)
     stems = matched_stems(ni)
+    prep = matched_prep_stems(ni)
     return {
         "n_ingredients": len(ingredient_texts),
         "n_steps": _n_steps(instr),
         "instr_chars": len(instr),
         "n_cook_verbs": len(stems),
         "matched_stems": stems,
+        "n_prep_verbs": len(prep),
+        "matched_prep_stems": prep,
+        # Podezřelý je až recept BEZ jakékoli akce – ani vaření, ani úkon.
+        # Samotné "0 vařicích sloves" je u studené kuchyně normální stav.
+        "has_no_action": not stems and not prep,
         "has_time": bool(_TIME_RE.search(ni)),
         "has_temp": bool(_TEMP_RE.search(ni)),
         "ingr_coverage": _coverage(ni, ingredient_texts),
@@ -243,9 +290,11 @@ def run(seed: int = 42, do_profile: bool = True, do_sample: bool = True) -> dict
             "n_steps": _empty_hist(_STEP_EDGES),
             "instr_chars": _empty_hist(_CHAR_EDGES),
             "n_cook_verbs": _empty_hist(_VERB_EDGES),
+            "n_prep_verbs": _empty_hist(_VERB_EDGES),
             "ingr_coverage": _empty_hist(_COV_EDGES),
             "has_time": 0, "has_temp": 0,
             "has_empty_instr": 0, "has_empty_ingr": 0,
+            "has_no_action": 0,
         }
         # per-doména: countery hodnot (kvůli mediánům) + podílové čitatele
         dom: dict[str, dict] = {}
@@ -281,15 +330,17 @@ def run(seed: int = 42, do_profile: bool = True, do_sample: bool = True) -> dict
                 g["n_steps"][_bucket(m["n_steps"], _STEP_EDGES)] += 1
                 g["instr_chars"][_bucket(m["instr_chars"], _CHAR_EDGES)] += 1
                 g["n_cook_verbs"][_bucket(m["n_cook_verbs"], _VERB_EDGES)] += 1
+                g["n_prep_verbs"][_bucket(m["n_prep_verbs"], _VERB_EDGES)] += 1
                 g["ingr_coverage"][_bucket(m["ingr_coverage"], _COV_EDGES)] += 1
-                for flag in ("has_time", "has_temp", "has_empty_instr", "has_empty_ingr"):
+                for flag in ("has_time", "has_temp", "has_empty_instr",
+                             "has_empty_ingr", "has_no_action"):
                     g[flag] += int(m[flag])
 
                 domain = (rec.source_domain or "").replace("www.", "") or None
                 if domain is not None:
                     d = dom.setdefault(domain, {
                         "count": 0, "ing": Counter(), "chars": Counter(),
-                        "verbs": Counter(), "zero_verbs": 0,
+                        "verbs": Counter(), "zero_verbs": 0, "no_action": 0,
                         "empty_instr": 0, "few_ing": 0,
                     })
                     d["count"] += 1
@@ -297,13 +348,14 @@ def run(seed: int = 42, do_profile: bool = True, do_sample: bool = True) -> dict
                     d["chars"][m["instr_chars"]] += 1
                     d["verbs"][m["n_cook_verbs"]] += 1
                     d["zero_verbs"] += int(m["n_cook_verbs"] == 0)
+                    d["no_action"] += int(m["has_no_action"])
                     d["empty_instr"] += int(m["has_empty_instr"])
                     d["few_ing"] += int(m["n_ingredients"] <= 3)
 
                 title_counter[norm(rec.title).strip()] += 1
                 compact.append((
                     rec.id, m["n_ingredients"], m["instr_chars"],
-                    m["n_cook_verbs"], domain,
+                    m["n_cook_verbs"], domain, m["has_no_action"],
                 ))
                 done += 1
             _set(done=done)
@@ -335,7 +387,7 @@ def _write_profile(g, dom, title_counter, total_recipes, total_ingredients) -> N
     top = sorted(dom.items(), key=lambda kv: -kv[1]["count"])
     rows = []
     other = {"count": 0, "ing": Counter(), "chars": Counter(), "verbs": Counter(),
-             "zero_verbs": 0, "empty_instr": 0, "few_ing": 0}
+             "zero_verbs": 0, "no_action": 0, "empty_instr": 0, "few_ing": 0}
     for i, (domain, d) in enumerate(top):
         if i < 30:
             rows.append((domain, d))
@@ -343,7 +395,7 @@ def _write_profile(g, dom, title_counter, total_recipes, total_ingredients) -> N
             other["count"] += d["count"]
             for key in ("ing", "chars", "verbs"):
                 other[key] += d[key]
-            for key in ("zero_verbs", "empty_instr", "few_ing"):
+            for key in ("zero_verbs", "no_action", "empty_instr", "few_ing"):
                 other[key] += d[key]
     if other["count"]:
         rows.append(("__other__", other))
@@ -359,6 +411,7 @@ def _write_profile(g, dom, title_counter, total_recipes, total_ingredients) -> N
             "median_instr_chars": _median_from_counter(d["chars"]),
             "median_n_cook_verbs": _median_from_counter(d["verbs"]),
             "pct_zero_cook_verbs": _pct(d["zero_verbs"], d["count"]),
+            "pct_no_action": _pct(d["no_action"], d["count"]),
             "pct_empty_instr": _pct(d["empty_instr"], d["count"]),
             "pct_few_ingredients": _pct(d["few_ing"], d["count"]),
         }
@@ -403,7 +456,11 @@ def _select_sample(compact: list[tuple], dom: dict, seed: int) -> dict[int, list
     take("random", [t[0] for t in compact], 200)
     take("few_ingredients", [t[0] for t in compact if t[1] <= 3], 100)
     take("short_instr", [t[0] for t in compact if t[2] < 300], 100)
-    take("no_cook_verbs", [t[0] for t in compact if t[3] == 0], 100)
+    # Dvě vrstvy místo jedné: „no_action" je ta skutečně podezřelá (žádná
+    # akce v postupu), „no_cook_verbs" zůstává menší kvůli porovnatelnosti
+    # se staršími exporty – je z většiny studená kuchyně, ne vada.
+    take("no_action", [t[0] for t in compact if t[5]], 100)
+    take("no_cook_verbs", [t[0] for t in compact if t[3] == 0], 50)
     top10 = [d for d, _ in sorted(dom.items(), key=lambda kv: -kv[1]["count"])[:10]]
     for domain in top10:
         take(f"domain:{domain}", [t[0] for t in compact if t[4] == domain], 20)
@@ -460,7 +517,9 @@ def _write_sample(db, chosen: dict[int, list[str]], seed: int) -> None:
                     "metrics": {
                         k: m[k] for k in (
                             "n_ingredients", "n_steps", "instr_chars",
-                            "n_cook_verbs", "matched_stems", "has_time",
+                            "n_cook_verbs", "matched_stems",
+                            "n_prep_verbs", "matched_prep_stems",
+                            "has_no_action", "has_time",
                             "has_temp", "ingr_coverage", "title_chars",
                         )
                     },

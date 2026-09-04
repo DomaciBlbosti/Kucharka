@@ -23,6 +23,7 @@ from ..models import Recipe, RecipeIngredient
 from . import scraper, translate
 from .normalizer import normalize_lines
 from .nutrition import grams_for, kcal_for, recompute_recipe_kcal
+from .textnorm import refresh_search_text
 
 log = logging.getLogger("kucharka.ingest.timing")
 
@@ -142,6 +143,7 @@ def _persist(
         recipe.ingredients.append(ri)
 
     recompute_recipe_kcal(recipe)
+    refresh_search_text(recipe)
     with t.phase("commit"):
         db.commit()
         db.refresh(recipe)

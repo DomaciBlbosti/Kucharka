@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import func, inspect as sa_inspect, literal, select, text
+from sqlalchemy import and_, func, inspect as sa_inspect, literal, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import settings
@@ -14,7 +14,7 @@ from ..db import get_db
 from ..models import Ingredient, PantryItem, Recipe, RecipeIngredient, RecipeTag, Tag
 from ..modules.pantry import pantry_ingredient_ids, recipe_availability
 from ..modules.nutrition import recompute_recipe_kcal
-from ..modules import photo_recipe
+from ..modules import photo_recipe, textnorm
 from ..modules.ingest import persist as persist_recipe
 from ..seed.starter_tags import NAMESPACE_LABELS
 from ..schemas import RecipeCard, RecipeDetail, RecipeEdit, RecipeListOut
@@ -61,36 +61,57 @@ def _availability_cols(have_ids: set[int]):
 # jen dočasný stav – dokud není hotový, kontroluje se znovu max. 1× za minutu
 # a hledání mezitím jede přes ILIKE.
 _FT_RECHECK_S = 60.0
-_ft_state: dict = {"available": None, "checked_at": 0.0}
+_ft_state: dict = {"index": None, "checked_at": 0.0}
+
+# Který fulltext index je k dispozici. Nad `search_text` (normalizovaný text)
+# je hledání odolné vůči skloňování, nad title+instructions ne – ten zůstává
+# jako mezistupeň, dokud se nový index nedostaví.
+_FT_SEARCH_TEXT = "ft_recipe_search_text"
+_FT_LEGACY = "ft_recipe_title_instructions"
 
 
-def _fulltext_ok(db: Session) -> bool:
+def _fulltext_index(db: Session) -> str | None:
+    """Název použitelného fulltext indexu, nebo None (→ ILIKE fallback)."""
     import time as _time
 
-    if _ft_state["available"] is True:
-        return True
+    if _ft_state["index"] == _FT_SEARCH_TEXT:
+        return _FT_SEARCH_TEXT  # lepší už nebude, nemá smysl se ptát znovu
     now = _time.monotonic()
-    if _ft_state["available"] is False and now - _ft_state["checked_at"] < _FT_RECHECK_S:
-        return False
+    if now - _ft_state["checked_at"] < _FT_RECHECK_S and _ft_state["checked_at"]:
+        return _ft_state["index"]
+    found = None
     try:
         bind = db.get_bind()
-        if bind.dialect.name not in ("mysql", "mariadb"):
-            ok = False
-        else:
+        if bind.dialect.name in ("mysql", "mariadb"):
             names = {ix["name"] for ix in sa_inspect(bind).get_indexes("recipe")}
-            ok = "ft_recipe_title_instructions" in names
+            if _FT_SEARCH_TEXT in names:
+                found = _FT_SEARCH_TEXT
+            elif _FT_LEGACY in names:
+                found = _FT_LEGACY
     except Exception:  # noqa: BLE001
-        ok = False
-    _ft_state.update(available=ok, checked_at=now)
-    return ok
+        found = None
+    _ft_state.update(index=found, checked_at=now)
+    return found
 
 
 def _search_clause(db: Session, q: str):
-    """WHERE podmínka pro hledání: fulltext (boolean mode, prefixy), jinak ILIKE."""
-    if _fulltext_ok(db):
+    """WHERE podmínka pro hledání: fulltext (boolean mode, prefixy), jinak LIKE.
+
+    Nad `search_text` se dotaz prožene stejným stemmerem jako uložený text,
+    takže „péct" najde „pečeme" a „kuřecí prsa" najde „kuřecích prsou".
+    Prefix `*` zůstává – doříká to, co stemmer neuhlídá.
+    """
+    index = _fulltext_index(db)
+    if index == _FT_SEARCH_TEXT:
+        terms = [t for t in textnorm.tokens(q) if len(t) >= 3]
+        if terms:
+            return text(
+                "MATCH(recipe.search_text) AGAINST (:ftq IN BOOLEAN MODE)"
+            ).bindparams(ftq=" ".join(f"+{t}*" for t in terms))
+    elif index == _FT_LEGACY:
         # InnoDB fulltext ignoruje tokeny kratší než ~3 znaky – ty by dotaz
         # jen tiše vyprázdnily, proto krátká slova vynecháváme; když nezbude
-        # nic, spadneme na ILIKE.
+        # nic, spadneme na LIKE.
         cleaned = (re.sub(r"[+*<>()~@\"'-]", "", t) for t in re.split(r"\s+", q.strip()))
         terms = [t for t in cleaned if len(t) >= 3]
         if terms:
@@ -98,7 +119,16 @@ def _search_clause(db: Session, q: str):
             return text(
                 "MATCH(recipe.title, recipe.instructions) AGAINST (:ftq IN BOOLEAN MODE)"
             ).bindparams(ftq=boolean_q)
-    return Recipe.title.ilike(f"%{q}%")
+    # Bez fulltextu (SQLite, rozestavěný index): hledá se v normalizovaném
+    # sloupci přes LIKE. Skloňování to zvládne stejně, jen pomaleji.
+    # Shoda v názvu se přidává jako OR kvůli receptům, které search_text
+    # ještě nemají naplněný (běží backfill) – jinak by dočasně zmizely.
+    norm = textnorm.normalize(q)
+    by_title = Recipe.title.ilike(f"%{q}%")
+    if not norm:
+        return by_title
+    return or_(and_(*[Recipe.search_text.like(f"%{t}%") for t in norm.split()]),
+               by_title)
 
 
 def _tags_by_recipe(db: Session, recipe_ids: list[int]) -> dict[int, list[Tag]]:
@@ -119,7 +149,7 @@ def _tags_by_recipe(db: Session, recipe_ids: list[int]) -> dict[int, list[Tag]]:
 @router.get("", response_model=RecipeListOut)
 def list_recipes(
     db: Session = Depends(get_db),
-    q: str | None = Query(None, description="hledání v názvu"),
+    q: str | None = Query(None, description="hledání v názvu, postupu i surovinách"),
     only_have: bool = Query(False, description="jen co můžu uvařit teď"),
     max_missing: int | None = Query(None, ge=0),
     max_kcal: float | None = Query(None, ge=0),
@@ -433,6 +463,7 @@ def edit_recipe(recipe_id: int, req: RecipeEdit, db: Session = Depends(get_db)):
             ri.raw_text = txt.strip()
     if req.servings is not None:
         recompute_recipe_kcal(r)
+    textnorm.refresh_search_text(r)
     db.commit()
     return get_recipe(recipe_id, db)
 
