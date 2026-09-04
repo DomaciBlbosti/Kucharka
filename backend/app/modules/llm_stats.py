@@ -99,15 +99,21 @@ def record(
             db.close()
 
 
-def _cost(provider: str, prompt_tokens: float, completion_tokens: float) -> float:
-    """Odhad ceny v Kč. Lokální model = 0 (platí se elektřinou, ne tokeny)."""
+def _cost(provider: str, prompt_tokens, completion_tokens) -> float:
+    """Odhad ceny v Kč. Lokální model = 0 (platí se elektřinou, ne tokeny).
+
+    Vstupy se převádějí na float schválně: MariaDB vrací ze `SUM()` typ
+    Decimal a `Decimal * float` skončí TypeError (na SQLite se to neprojeví,
+    tam SUM vrací int).
+    """
     if provider != "api":
         return 0.0
+    tok_in = float(prompt_tokens or 0)
+    tok_out = float(completion_tokens or 0)
     per_mtok_in = settings.llm_price_in_usd * settings.usd_rate
     per_mtok_out = settings.llm_price_out_usd * settings.usd_rate
     return round(
-        (prompt_tokens / 1_000_000) * per_mtok_in
-        + (completion_tokens / 1_000_000) * per_mtok_out,
+        (tok_in / 1_000_000) * per_mtok_in + (tok_out / 1_000_000) * per_mtok_out,
         2,
     )
 
