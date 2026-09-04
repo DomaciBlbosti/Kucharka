@@ -171,6 +171,185 @@ def structured_json(
     return parsed
 
 
+# ─── OCR / obrázky ───────────────────────────────────────────────────────────
+
+def vision_error() -> str | None:
+    """None, když je OCR použitelné; jinak lidská hláška."""
+    if settings.llm_vision_provider == "api":
+        if not settings.llm_api_key or not settings.llm_api_url:
+            return "OCR přes komerční API je zvolené, ale chybí klíč nebo URL."
+        if not settings.llm_api_vision_model:
+            return "OCR přes komerční API je zvolené, ale chybí model."
+        return None
+    if not settings.ollama_enabled:
+        return "Ollama není dostupná (OLLAMA_URL)."
+    if not settings.ocr_model:
+        return "OCR model není nastaven (Administrace → Nástroje → OCR model)."
+    return None
+
+
+def vision_json(
+    prompt: str,
+    *,
+    images: list[str],
+    schema: dict | None = None,
+    timeout: float = 180,
+    component: str = "OCR",
+) -> tuple[dict | None, str]:
+    """Strukturovaný JSON z obrázků (účtenky, recepty z fotky).
+
+    `images` jsou base64 řetězce BEZ prefixu `data:` – Ollama je bere takhle,
+    pro komerční API se obalí do data URL. Vrací (naparsovaný JSON, syrová
+    odpověď) jako `chat_json_raw`, protože UI syrový text ukazuje při ladění.
+    """
+    err = vision_error()
+    if err:
+        _set_error(err)
+        return None, f"<{err}>"
+
+    api = settings.llm_vision_api_enabled
+    model = settings.llm_api_vision_model if api else settings.ocr_model
+    _trace.info("→ %s (OCR, %s obr.) | %s", model, len(images), _one_line(prompt))
+    t0 = time.monotonic()
+    usage: dict = {}
+
+    if api:
+        parsed, raw = _api_vision_json(
+            prompt, images=images, schema=schema, timeout=timeout, usage_out=usage
+        )
+    else:
+        with _ollama_gate:
+            parsed, raw = chat_json_raw(
+                settings.ollama_url, settings.ocr_model, prompt,
+                images=images, timeout=timeout, format_schema=schema,
+                usage_out=usage,
+            )
+        if parsed is None:
+            _set_error(raw or "prázdná odpověď modelu")
+        else:
+            _set_error(None)
+
+    _finish(component=component, provider="api" if api else "ollama", model=model,
+            t0=t0, out=parsed, usage=usage,
+            fail_detail=raw or "prázdná odpověď modelu")
+    return parsed, raw
+
+
+def _api_vision_json(
+    prompt: str, *, images: list[str], schema: dict | None, timeout: float,
+    usage_out: dict | None = None,
+) -> tuple[dict | None, str]:
+    """OpenAI-kompatibilní vision volání (obrázky jako data URL v obsahu)."""
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    for b64 in images:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+        })
+    payload = {
+        "model": settings.llm_api_vision_model,
+        "messages": [{"role": "user", "content": content}],
+        "temperature": 0,
+        # u vision necháváme jen json_object – json_schema některé modely
+        # v kombinaci s obrázky odmítají a struktura je popsaná v promptu
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        r = httpx.post(
+            f"{settings.llm_api_url.rstrip('/')}/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        body = r.json()
+        raw = (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        if usage_out is not None:
+            u = body.get("usage") or {}
+            usage_out["prompt_tokens"] = int(u.get("prompt_tokens") or 0)
+            usage_out["completion_tokens"] = int(u.get("completion_tokens") or 0)
+    except Exception as exc:  # noqa: BLE001 - síť, timeout, HTTP…
+        log.warning("LLM API OCR volání selhalo: %s", exc)
+        _set_error(str(exc)[:300])
+        return None, f"<chyba volání: {exc}>"
+    try:
+        out = parse_json_response(raw)
+        _set_error(None)
+        return out, raw
+    except Exception as exc:  # noqa: BLE001
+        log.warning("LLM API OCR odpověď není validní JSON (%s): %r", exc, raw[:300])
+        _set_error(f"nevalidní JSON: {str(exc)[:120]}")
+        return None, raw
+
+
+# ─── Embeddingy (RAG, nápověda při párování) ─────────────────────────────────
+
+def active_embed_model() -> str:
+    """Model, kterým se právě embedduje. Uloží se ke každému vektoru, aby
+    se po přepnutí providera nemíchaly nekompatibilní rozměry."""
+    if settings.llm_embed_api_enabled:
+        return settings.llm_api_embed_model
+    return settings.embed_model
+
+
+def embed_texts(texts: list[str], *, timeout: float = 60) -> list[list[float]]:
+    """Vrátí vektory pro texty (jedno volání na dávku). Vyhazuje výjimku při
+    selhání – volající (rag) má vlastní retry a fallback."""
+    if not texts:
+        return []
+    t0 = time.monotonic()
+    usage: dict = {}
+    api = settings.llm_embed_api_enabled
+    try:
+        if api:
+            vecs = _api_embed(texts, timeout=timeout, usage_out=usage)
+        else:
+            r = httpx.post(
+                f"{settings.ollama_url}/api/embed",
+                json={"model": settings.embed_model, "input": texts},
+                timeout=timeout,
+            )
+            r.raise_for_status()
+            vecs = r.json()["embeddings"]
+        if len(vecs) != len(texts):
+            raise ValueError(
+                f"počet vektorů ({len(vecs)}) nesedí na počet vstupů ({len(texts)})"
+            )
+    except Exception as exc:  # noqa: BLE001
+        _finish_embed(api, t0, usage, ok=False, detail=str(exc))
+        raise
+    _finish_embed(api, t0, usage, ok=True, detail="")
+    return vecs
+
+
+def _finish_embed(api: bool, t0: float, usage: dict, *, ok: bool, detail: str) -> None:
+    from . import llm_stats
+
+    llm_stats.record(
+        component="embeddingy", provider="api" if api else "ollama",
+        model=active_embed_model(),
+        prompt_tokens=usage.get("prompt_tokens", 0),
+        duration_ms=int((time.monotonic() - t0) * 1000),
+        ok=ok, error=None if ok else detail,
+    )
+
+
+def _api_embed(texts: list[str], *, timeout: float, usage_out: dict | None = None) -> list[list[float]]:
+    r = httpx.post(
+        f"{settings.llm_api_url.rstrip('/')}/embeddings",
+        json={"model": settings.llm_api_embed_model, "input": texts},
+        headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+        timeout=timeout,
+    )
+    r.raise_for_status()
+    body = r.json()
+    if usage_out is not None:
+        usage_out["prompt_tokens"] = int((body.get("usage") or {}).get("prompt_tokens") or 0)
+    # API nezaručuje pořadí – seřadíme podle indexu
+    items = sorted(body.get("data") or [], key=lambda d: d.get("index", 0))
+    return [d["embedding"] for d in items]
+
+
 def _api_chat_json(
     prompt: str,
     *,

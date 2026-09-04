@@ -33,7 +33,6 @@ import re
 
 from ..config import settings
 from .normalizer import parse_line_regex
-from .ollamachat import chat_json_raw
 from .receipt import preprocess_image  # sdílené zmenšení/oříznutí podle EXIF
 from .textmerge import merge_lists, merge_texts
 from .uploads import save_recipe_photo
@@ -64,15 +63,17 @@ _PROMPT = (
 
 
 def _extract_segment(image_bytes: bytes) -> dict:
-    if not settings.ocr_model:
-        raise RuntimeError("OCR model není nastaven (Admin → Nástroje → OCR model).")
+    from . import llmclient
+
+    err = llmclient.vision_error()
+    if err:
+        raise RuntimeError(err)
     b64 = base64.b64encode(preprocess_image(image_bytes)).decode()
-    out, raw = chat_json_raw(
-        settings.ollama_url,
-        settings.ocr_model,
+    out, raw = llmclient.vision_json(
         _PROMPT,
         images=[b64],
         timeout=max(settings.http_timeout, 120),
+        component="OCR receptu",
     )
     if out is None:
         log.warning("OCR receptu: volání modelu selhalo nebo odpověď nešla naparsovat.")

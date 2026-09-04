@@ -21,7 +21,6 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Recipe, RecipeEmbedding
 from .ingest import _persist
-from .ollamachat import chat_json
 
 log = logging.getLogger("kucharka.rag")
 
@@ -31,21 +30,22 @@ _index_state: dict = {"running": False, "done": 0, "total": 0, "finished_at": No
 # Matice embeddingů se drží v paměti mezi dotazy (načtení stovek MB blobů
 # z DB při KAŽDÉM generování bylo při růstu DB neúnosné). Invalidace přes
 # počet řádků – po doindexování se počet změní a matice se načte znovu.
-_matrix_cache: dict = {"count": -1, "ids": None, "mat": None}
+_matrix_cache: dict = {"count": -1, "ids": None, "mat": None, "model": None}
 _matrix_lock = threading.Lock()
 
 
 # ----------------------------- embedding -----------------------------
+def _normalize(v) -> np.ndarray:
+    arr = np.asarray(v, dtype=np.float32)
+    n = np.linalg.norm(arr)
+    return arr / n if n else arr  # normalizace → kosinus = dot
+
+
 def embed_text(text: str) -> np.ndarray:
-    r = httpx.post(
-        f"{settings.ollama_url}/api/embeddings",
-        json={"model": settings.embed_model, "prompt": text},
-        timeout=60,
-    )
-    r.raise_for_status()
-    vec = np.asarray(r.json()["embedding"], dtype=np.float32)
-    n = np.linalg.norm(vec)
-    return vec / n if n else vec  # normalizace → kosinus = dot
+    """Jeden text. Provider řeší llmclient (lokální Ollama, nebo komerční API)."""
+    from . import llmclient
+
+    return _normalize(llmclient.embed_texts([text])[0])
 
 
 def embed_texts_batch(texts: list[str], timeout: float = 60, retries: int = 2) -> list[np.ndarray]:
@@ -59,24 +59,12 @@ def embed_texts_batch(texts: list[str], timeout: float = 60, retries: int = 2) -
     """
     if not texts:
         return []
+    from . import llmclient
+
     last_exc: Exception | None = None
     for attempt in range(retries):
         try:
-            r = httpx.post(
-                f"{settings.ollama_url}/api/embed",
-                json={"model": settings.embed_model, "input": texts},
-                timeout=timeout,
-            )
-            r.raise_for_status()
-            vecs = r.json()["embeddings"]
-            if len(vecs) != len(texts):
-                raise ValueError(f"počet vektorů ({len(vecs)}) nesedí na počet vstupů ({len(texts)})")
-            out = []
-            for v in vecs:
-                arr = np.asarray(v, dtype=np.float32)
-                n = np.linalg.norm(arr)
-                out.append(arr / n if n else arr)
-            return out
+            return [_normalize(v) for v in llmclient.embed_texts(texts, timeout=timeout)]
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             if attempt < retries - 1:
@@ -115,13 +103,23 @@ def index_status() -> dict:
         s = dict(_index_state)
     db = SessionLocal()
     try:
+        from . import llmclient
+
+        model = llmclient.active_embed_model()
         s["indexed"] = db.scalar(
             select(func.count(RecipeEmbedding.recipe_id))
+            .where(RecipeEmbedding.model == model)
         ) or 0
+        # vektory z JINÉHO modelu (po přepnutí provideru) – jsou k ničemu,
+        # dokud se nepřeindexuje, tak ať je to v administraci vidět
+        s["indexed_other_model"] = (db.scalar(
+            select(func.count(RecipeEmbedding.recipe_id))
+            .where(RecipeEmbedding.model != model)
+        ) or 0)
         s["recipes_total"] = db.scalar(select(func.count(Recipe.id))) or 0
     finally:
         db.close()
-    s["model"] = settings.embed_model
+    s["model"] = model
     return s
 
 
@@ -149,12 +147,19 @@ def index_recipes(rebuild: bool = False, chunk_size: int = 32) -> dict:
     Dávkově po `chunk_size` přes /api/embed – řádově rychlejší než volání
     po jednom. Recepty se načítají po chunkách, ne celá DB do paměti.
     """
+    from . import llmclient
+
+    model = llmclient.active_embed_model()
     db = SessionLocal()
     try:
         if rebuild:
             db.query(RecipeEmbedding).delete()
             db.commit()
-        have = set(db.scalars(select(RecipeEmbedding.recipe_id)).all())
+        # jen vektory z AKTIVNÍHO modelu; po přepnutí provideru (jiný rozměr)
+        # se index doplní znovu místo míchání nekompatibilních vektorů
+        have = set(db.scalars(
+            select(RecipeEmbedding.recipe_id).where(RecipeEmbedding.model == model)
+        ).all())
         todo_ids = [rid for rid in _candidate_ids(db) if rid not in have]
         with _lock:
             _index_state.update(running=True, done=0, total=len(todo_ids), finished_at=None)
@@ -176,7 +181,7 @@ def index_recipes(rebuild: bool = False, chunk_size: int = 32) -> dict:
                 continue
             for r, vec in zip(recipes, vecs):
                 db.merge(RecipeEmbedding(
-                    recipe_id=r.id, model=settings.embed_model,
+                    recipe_id=r.id, model=llmclient.active_embed_model(),
                     dim=int(vec.shape[0]), vec=vec.tobytes(),
                 ))
             db.commit()
@@ -189,7 +194,7 @@ def index_recipes(rebuild: bool = False, chunk_size: int = 32) -> dict:
         with _lock:
             _index_state.update(running=False, finished_at=time.time())
         with _matrix_lock:
-            _matrix_cache.update(count=-1, ids=None, mat=None)  # invalidace
+            _matrix_cache.update(count=-1, ids=None, mat=None, model=None)  # invalidace
         db.close()
     return index_status()
 
@@ -205,17 +210,27 @@ def index_async(rebuild: bool = False) -> bool:
 # ----------------------------- vyhledání -----------------------------
 def _load_matrix(db: Session) -> tuple[list[int], np.ndarray] | None:
     """Vrátí (ids, matice) z cache; při změně počtu embeddingů se načte znovu."""
-    count = db.scalar(select(func.count(RecipeEmbedding.recipe_id))) or 0
+    from . import llmclient
+
+    model = llmclient.active_embed_model()
+    count = db.scalar(
+        select(func.count(RecipeEmbedding.recipe_id)).where(RecipeEmbedding.model == model)
+    ) or 0
     if count == 0:
         return None
     with _matrix_lock:
-        if _matrix_cache["count"] == count:
+        if _matrix_cache["count"] == count and _matrix_cache["model"] == model:
             return _matrix_cache["ids"], _matrix_cache["mat"]
-    rows = db.execute(select(RecipeEmbedding.recipe_id, RecipeEmbedding.vec)).all()
+    # Jen vektory aktivního modelu: po přepnutí provideru mají staré vektory
+    # jiný rozměr a np.stack by na míchání spadl.
+    rows = db.execute(
+        select(RecipeEmbedding.recipe_id, RecipeEmbedding.vec)
+        .where(RecipeEmbedding.model == model)
+    ).all()
     ids = [rid for rid, _ in rows]
     mat = np.stack([np.frombuffer(v, dtype=np.float32) for _, v in rows])
     with _matrix_lock:
-        _matrix_cache.update(count=len(ids), ids=ids, mat=mat)
+        _matrix_cache.update(count=len(ids), ids=ids, mat=mat, model=model)
     return ids, mat
 
 
@@ -295,12 +310,15 @@ def generate(
         f"Zadání: {prompt}\n{limit_block}\n\n"
         f"Existující recepty pro inspiraci:\n{context_block}"
     )
-    out = chat_json(
-        settings.ollama_url,
-        settings.ollama_model,
+    from . import llmclient
+
+    out = llmclient.structured_json(
         sys_prompt,
         timeout=max(settings.http_timeout, 180),
         temperature=0.7,
+        # generování je kreativní úloha → hlavní (větší) model, ne rychlý
+        ollama_model=settings.ollama_model,
+        component="generování",
     )
     if out is None:
         raise RuntimeError("generování receptu selhalo (volání modelu nebo parsování)")

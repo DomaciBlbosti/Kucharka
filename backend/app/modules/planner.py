@@ -21,7 +21,6 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Recipe, RecipeIngredient
 from . import rag
-from .ollamachat import chat_json
 
 log = logging.getLogger("kucharka.planner")
 
@@ -91,12 +90,14 @@ def _pick_day(cands, meals, daily_kcal, preferences, used, day_idx) -> dict:
         '{"meals": {"<chod>": {"recipe_id": <id>, "alternatives": [<id>, ...]}}}.\n'
         f"Recepty: {json.dumps(cands, ensure_ascii=False)}"
     )
-    out = chat_json(
-        settings.ollama_url,
-        settings.ollama_model,
+    from . import llmclient
+
+    out = llmclient.structured_json(
         prompt,
         timeout=max(settings.http_timeout, 180),
         temperature=0.4,
+        ollama_model=settings.ollama_model,
+        component="plánovač",
     )
     if out is None:
         raise RuntimeError("plánovač: volání modelu selhalo nebo odpověď nešla naparsovat")
