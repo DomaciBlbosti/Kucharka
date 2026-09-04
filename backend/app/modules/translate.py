@@ -233,6 +233,62 @@ def is_running() -> bool:
         return bool(_state["running"])
 
 
+# Recept z cizí domény (.cz se nepřekládá). Recepty z fotky/AI mají doménu
+# NULL – ty sem taky spadají, protože i ony mohou být cizojazyčné.
+_FOREIGN_DOMAIN = (Recipe.source_domain.is_(None)) | (~Recipe.source_domain.like("%.cz"))
+
+# Kolik znaků postupu stačí na detekci češtiny (diakritiky). Netaháme celé
+# postupy – u tisíců receptů by to byly megabajty pro pár znaků.
+_PROBE_CHARS = 600
+
+
+def _foreign_probe_rows(db):
+    """Lehké řádky (id, titul, originál?, začátek postupu) receptů z cizích
+    domén – řádově tisíce, takže je lze projít v Pythonu (`looks_czech`).
+    Dřív se kvůli tomuhle načítal CELÝ korpus (171k ORM objektů) – a to při
+    každém tiku automatického překladu i při každém načtení administrace."""
+    return db.execute(
+        select(
+            Recipe.id,
+            Recipe.title,
+            Recipe.original_title,
+            func.substr(func.coalesce(Recipe.instructions, ""), 1, _PROBE_CHARS).label("instr"),
+        ).where(_FOREIGN_DOMAIN)
+    ).all()
+
+
+def _is_untranslated(row) -> bool:
+    """Recept ještě neprošel překladem a vypadá cizojazyčně.
+
+    Uložený originál je důkaz, že překlad proběhl – takový recept se sem už
+    nikdy nevrátí (jinak by počítadlo „čeká na překlad" nikdy nedošlo na nulu
+    a fronta by dokola překládala už přeložené). Nepovedený postup řeší
+    `_is_partial` a karta „Znovu přeložit z originálů", která má k dispozici
+    původní text, ne jeho poloviční překlad.
+    """
+    if row.original_title:
+        return False
+    return not looks_czech(None, f"{row.title or ''} {row.instr or ''}")
+
+
+def _is_partial(row) -> bool:
+    """Titul přeložený, ale postup zůstal cizojazyčný (vyhořelo druhé volání).
+    Prázdný postup se nehodnotí – nemá co být přeloženo."""
+    instr = (row.instr or "").strip()
+    if not instr or _is_untranslated(row):
+        return False
+    return not looks_czech(None, instr)
+
+
+def _classify_foreign(rows) -> tuple[int, int]:
+    """(čeká na překlad, přeložený titul ale ne postup) nad `_foreign_probe_rows`.
+    Stejné predikáty používá i fronta překladu, takže se čísla v administraci
+    a skutečná práce nemohou rozejít."""
+    pending = sum(1 for r in rows if _is_untranslated(r))
+    partial = sum(1 for r in rows if _is_partial(r))
+    return pending, partial
+
+
 def status() -> dict:
     from . import llmclient
 
@@ -242,11 +298,12 @@ def status() -> dict:
     db = SessionLocal()
     try:
         s["recipes_total"] = db.scalar(select(func.count(Recipe.id))) or 0
-        s["foreign_estimate"] = db.scalar(
-            select(func.count(Recipe.id)).where(
-                (Recipe.source_domain.is_(None)) | (~Recipe.source_domain.like("%.cz"))
-            )
-        ) or 0
+        rows = _foreign_probe_rows(db)
+        # Pool cizích receptů podle DOMÉNY – tohle číslo se překladem nemění
+        # (dřív se ukazovalo jako „pravděpodobně cizích" a budilo dojem, že
+        # se nic nepřekládá, protože nikdy neklesalo).
+        s["foreign_total"] = len(rows)
+        s["foreign_pending"], s["foreign_partial"] = _classify_foreign(rows)
     finally:
         db.close()
     return s
@@ -273,7 +330,9 @@ def retranslate_all() -> None:
     _set(running=True, done=0, total=0, translated=0, finished_at=None)
     db = SessionLocal()
     try:
-        ids = [r.id for r in db.scalars(select(Recipe)).all() if is_foreign(r)]
+        # jen cizí domény, jen náhled textu – ne celý korpus (viz _foreign_probe_rows);
+        # stejný predikát jako počítadlo „čeká na překlad" v administraci
+        ids = [r.id for r in _foreign_probe_rows(db) if _is_untranslated(r)]
     finally:
         db.close()
     _set(total=len(ids))
@@ -451,12 +510,40 @@ def needs_reset(recipe: Recipe) -> bool:
     return looks_czech(None, f"{recipe.title} {recipe.instructions or ''}")
 
 
+def _reset_candidate_rows(db):
+    """Lehké řádky kandidátů na dohledání originálu – podmínky, které jdou do
+    SQL (viz `needs_reset`), se tam taky vyhodnotí; v Pythonu zbývá jen
+    kontrola „vypadá česky". Bez toho se kvůli počtu v administraci načítal
+    celý korpus při každém načtení stránky."""
+    return db.execute(
+        select(
+            Recipe.id,
+            Recipe.title,
+            func.substr(func.coalesce(Recipe.instructions, ""), 1, _PROBE_CHARS).label("instr"),
+        ).where(
+            func.coalesce(Recipe.original_title, "") == "",
+            Recipe.source_domain.is_not(None),
+            ~Recipe.source_domain.like("%.cz"),
+            Recipe.source_url.is_not(None),
+            ~Recipe.source_url.like("photo://%"),
+            ~Recipe.source_url.like("ai://%"),
+        )
+    ).all()
+
+
+def _reset_candidate_ids(db) -> list[int]:
+    return [
+        r.id for r in _reset_candidate_rows(db)
+        if looks_czech(None, f"{r.title or ''} {r.instr or ''}")
+    ]
+
+
 def reset_status() -> dict:
     with _reset_lock:
         s = dict(_reset_state)
     db = SessionLocal()
     try:
-        s["candidates"] = sum(1 for r in db.scalars(select(Recipe)).all() if needs_reset(r))
+        s["candidates"] = len(_reset_candidate_ids(db))
     finally:
         db.close()
     return s
@@ -483,7 +570,7 @@ def reset_translations_all() -> None:
     _reset_set(running=True, done=0, total=0, reset=0, finished_at=None)
     db = SessionLocal()
     try:
-        ids = [r.id for r in db.scalars(select(Recipe)).all() if needs_reset(r)]
+        ids = _reset_candidate_ids(db)
     finally:
         db.close()
     _reset_set(total=len(ids))
