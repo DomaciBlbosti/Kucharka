@@ -302,6 +302,35 @@ def corpus_audit_sample():
     )
 
 
+# ─── Přeparsování postupů podle doménových pravidel ─────────────────────────
+
+@router.post("/reparse-instructions/run")
+def reparse_instructions_run(limit: int | None = None):
+    """Znovu stáhne stránky domén s vlastním pravidlem a přepíše postup.
+    Běží NA POZADÍ – stovky stránek s throttlem trvají minuty."""
+    from ..modules import reparse
+
+    started = reparse.run_async(limit=limit)
+    return {"started": started, "status": reparse.status()}
+
+
+@router.post("/reparse-instructions/stop")
+def reparse_instructions_stop():
+    from ..modules import reparse
+
+    reparse.stop()
+    return {"stopping": True}
+
+
+@router.get("/reparse-instructions/status")
+def reparse_instructions_status():
+    from ..modules import reparse
+
+    st = reparse.status()
+    st["candidates"] = reparse.pending_count()
+    return st
+
+
 @router.get("/db/export")
 def export_db(db: Session = Depends(get_db)):
     dump = {"version": 1, "tables": {}}

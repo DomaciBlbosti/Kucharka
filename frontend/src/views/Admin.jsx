@@ -1699,6 +1699,79 @@ function CorpusAuditCard() {
   );
 }
 
+function ReparseInstructionsCard() {
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState(null);
+  const timer = useRef(null);
+  const load = () => api.reparseInstructionsStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    load();
+    return () => clearInterval(timer.current);
+  }, []);
+  useEffect(() => {
+    if (st?.running && !timer.current) {
+      timer.current = setInterval(load, 3000);
+    } else if (!st?.running && timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+      load();
+    }
+  }, [st?.running]);
+
+  const run = async () => {
+    setErr(null);
+    try {
+      const r = await api.reparseInstructionsRun();
+      setSt({ ...r.status, candidates: st?.candidates });
+      if (!r.started) setErr("Přeparsování už běží.");
+    } catch (e) {
+      setErr(e?.message || String(e));
+    }
+  };
+
+  const doms = (st?.domains_with_rule || []).join(", ");
+
+  return (
+    <Section title="Přeparsování postupů">
+      <p className="mb-4 text-sm text-ink/60">
+        Některé weby mají ve strojově čitelných datech místo postupu jen
+        marketingový úvod („…je skvělý pokrm s kuřecích prsních řízků…") a
+        skutečné kroky jsou pouze v těle článku. Pro takové domény je ruční
+        pravidlo – tohle projde už uložené recepty, stránky stáhne znovu a
+        postup přepíše. Název, suroviny ani obrázek se nemění.
+        {doms && <> Domény s pravidlem: <strong>{doms}</strong>.</>}
+      </p>
+      {st?.running ? (
+        <div className="flex flex-col gap-3">
+          <Spinner label={`Stahuji… ${st.done}/${st.total} · přepsáno ${st.changed}`} />
+          <div>
+            <Button variant="ghost" onClick={() => api.reparseInstructionsStop().catch(() => {})}>
+              Zastavit
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button onClick={run}>Přeparsovat postupy</Button>
+            <span className="text-sm text-ink/60">
+              Ke zpracování: {st?.candidates ?? "…"} receptů
+            </span>
+          </div>
+          {st?.finished_at != null && (
+            <p className="text-sm text-ink/60">
+              Poslední běh: přepsáno {st.changed}, beze změny {st.unchanged},
+              bez postupu na stránce {st.no_rule_match}, chyb {st.failed}.
+            </p>
+          )}
+          {st?.last_error && <p className="text-sm text-miss">Poslední chyba: {st.last_error}</p>}
+          {err && <p className="text-sm text-miss">{err}</p>}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 function HmiCard() {
   const [s, setS] = useState(null);
   const [token, setToken] = useState("");
@@ -2151,6 +2224,7 @@ export default function Admin() {
         <LlmStatsCard />
       </Section>
       <CorpusAuditCard />
+      <ReparseInstructionsCard />
       <MatchPanel />
       <LlmMatchCard />
       <DecisionsCard />

@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import httpx
 
 from ..config import settings
+from . import site_rules
 from .normalizer import is_section_header
 
 try:
@@ -65,6 +66,11 @@ def strip_title_prefix(instructions: str | None, title: str | None) -> str | Non
     upřesnění, které se v textu postupu neopakuje („Rychlá domácí tatarka
     (tatarská omáčka)" → postup začíná jen „Rychlá domácí tatarka").
 
+    Ořezává se jen skutečný NADPIS, tedy když za názvem začíná nová věta
+    (velké písmeno nebo číslo kroku). Jinak bývá název podmětem první věty
+    („Sladkokyselý nálev na babiččiny okurky JE lák, který…") a ořez by z
+    textu udělal trosku začínající „je lák, který…".
+
     Ořízne se jen tehdy, když po odečtení zbude pořádný text; jinak by se z
     receptu, jehož celý „postup" je jen název, stal prázdný řetězec.
     """
@@ -84,7 +90,12 @@ def strip_title_prefix(instructions: str | None, title: str | None) -> str | Non
             continue
         rest = _LEAD_SEP_RE.sub("", text[len(cand) :])
         # Pod 40 znaků už to není postup – radši nechat, jak to přišlo.
-        return rest if len(rest) >= 40 else instructions
+        if len(rest) < 40:
+            return instructions
+        # Pokračování věty (malé písmeno) = název byl podmět, ne nadpis.
+        if not (rest[0].isdigit() or rest[0].isupper()):
+            return instructions
+        return rest
     return instructions
 
 
@@ -108,6 +119,7 @@ def extract(html: str, url: str) -> dict | None:
     except Exception:
         return None
 
+    domain = domain_of(url)
     ingredients = _safe(s.ingredients, []) or []
     # Weby často vkládají do seznamu ingrediencí i nadpisy skupin ("Marináda:",
     # "Na ozdobu:") jako další položku – to není surovina, jen by to zbytečně
@@ -117,12 +129,18 @@ def extract(html: str, url: str) -> dict | None:
     if not title or len(ingredients) < 2:
         return None  # pravděpodobně špatný parse / listing stránka
 
+    # Doménové pravidlo má přednost: na některých webech je v JSON-LD místo
+    # postupu jen marketingový úvod a kroky se dají vzít jen z těla článku.
+    instructions = site_rules.instructions_for(domain, html)
+    if not instructions:
+        instructions = strip_title_prefix(_safe(s.instructions), title)
+
     return {
         "title": title,
         "source_url": url,
-        "source_domain": domain_of(url),
+        "source_domain": domain,
         "image_url": _safe(s.image),
-        "instructions": strip_title_prefix(_safe(s.instructions), title),
+        "instructions": instructions,
         "ingredients": ingredients,
         "servings": _to_int(_safe(s.yields)),
         "total_time": _safe(s.total_time),
