@@ -22,6 +22,7 @@ from ..db import SessionLocal
 from ..models import Recipe, RecipeEmbedding
 from . import site_rules
 from .scraper import fetch_html
+from .textnorm import refresh_search_text
 
 log = logging.getLogger("kucharka.reparse")
 
@@ -130,6 +131,7 @@ def _one(db, recipe_id: int) -> None:
             _state["unchanged"] += 1
         return
     rec.instructions = instructions
+    refresh_search_text(rec)
     # Vektor v RAG indexu je počítaný ze starého textu. index_recipes()
     # přeskakuje recepty, které už embedding mají, takže ho musíme zahodit –
     # jinak by se sémantické hledání dál řídilo marketingovým úvodem.

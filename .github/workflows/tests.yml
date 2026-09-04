@@ -30,6 +30,7 @@ jobs:
           python -m tests.test_auth_and_search
           python -m tests.test_translate
           python -m tests.test_units
+          python -m tests.test_textnorm
           python -m tests.test_scraper_cleanup
           python -m tests.test_corpus_audit
           python -m tests.test_llm_stats

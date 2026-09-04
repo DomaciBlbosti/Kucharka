@@ -85,6 +85,40 @@ def run_tests() -> int:
                   it["id"] == ids["recipe"] for it in r.json()["items"]),
               str(r.json())[:200])
 
+        # ─── Hledání přes skloňování (normalizovaný search_text) ─────────
+        # Recept se uloží se stemovaným textem stejně jako při ingestu;
+        # dotaz se normalizuje toutéž funkcí, takže se musí potkat i tvary,
+        # které se nekryjí ani prefixem („péct" vs „pečeme").
+        from app.modules.textnorm import refresh_search_text  # noqa: PLC0415
+
+        r2 = Recipe(title="Pečené kuře na paprice", source_url="http://test/g2",
+                    instructions="Kuře nakrájíme a pečeme v troubě 40 minut.")
+        db.add(r2)
+        db.flush()
+        r2.ingredients.append(
+            RecipeIngredient(raw_text="300 g kuřecích prsou")
+        )
+        refresh_search_text(r2)
+        db.commit()
+
+        for query, why in [
+            ("péct", "infinitiv najde 'pečeme'"),
+            ("pekli", "minulý čas najde 'pečeme'"),
+            ("upéct", "předponový tvar najde 'pečeme'"),
+            ("kuřecí prsa", "1. pád najde 'kuřecích prsou' ze surovin"),
+            ("troubu", "4. pád najde 'v troubě'"),
+            ("nakrajet", "bez diakritiky najde 'nakrájíme'"),
+        ]:
+            resp = c.get("/api/recipes", params={"q": query})
+            check(f"hledání '{query}': {why}",
+                  resp.status_code == 200 and any(
+                      it["id"] == r2.id for it in resp.json()["items"]),
+                  str(resp.json())[:160])
+
+        resp = c.get("/api/recipes", params={"q": "čokoláda"})
+        check("nesouvisející dotaz recept nenajde",
+              all(it["id"] != r2.id for it in resp.json()["items"]))
+
         # ─── Spolehlivost výživy v detailu ───────────────────────────────
         r = c.get(f"/api/recipes/{ids['recipe']}")
         pct = r.json().get("nutrition_estimated_pct")

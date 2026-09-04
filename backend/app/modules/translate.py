@@ -24,6 +24,7 @@ from sqlalchemy.orm import selectinload
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Recipe
+from .textnorm import refresh_search_text
 
 log = logging.getLogger("kucharka.translate")
 
@@ -208,6 +209,7 @@ def retranslate_recipe(db, recipe: Recipe) -> bool:
         if ri.original_raw_text is None:
             ri.original_raw_text = ri.raw_text
         ri.raw_text = new
+    refresh_search_text(recipe)
     db.commit()
     return True
 
@@ -428,6 +430,7 @@ def _retranslate_original_one(recipe_id: int) -> bool:
                 ri.grams = grams_for(ri.amount, ri.unit, ri.ingredient)
                 ri.kcal = kcal_for(ri.grams, ri.ingredient)
         recompute_recipe_kcal(r)
+        refresh_search_text(r)
         db.commit()
         return True
     except Exception as exc:  # noqa: BLE001
