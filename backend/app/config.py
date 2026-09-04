@@ -57,6 +57,14 @@ class Settings:
         self.crawler_workers: int = max(1, int(_env("CRAWLER_WORKERS", "4")))
         # Prodleva mezi recepty ZE STEJNÉ domény (s), aby se cizí web nezahltil.
         self.crawler_delay: float = float(_env("CRAWLER_DELAY", "0.4"))
+        # Fond DB spojení. Výchozí hodnoty SQLAlchemy (5 + 10) na tuhle appku
+        # nestačí: souběžně sahají do DB workeři crawleru (drží spojení po
+        # celou dávku domény), dávkové úlohy (kategorie/tagy/párování) i
+        # dotazy z administrace – při zapnutém komerčním API navíc bez stropu
+        # 2 workerů, který platí jen pro lokální GPU. Fond se pak vyčerpal a
+        # v logu se objevilo „QueuePool limit of size 5 overflow 10 reached".
+        self.db_pool_size: int = max(5, int(_env("DB_POOL_SIZE", "20")))
+        self.db_max_overflow: int = max(0, int(_env("DB_MAX_OVERFLOW", "30")))
 
         # --- LLM batch matching (llm_match.py) --------------------------
         # Dávkové dopárování nenamatchnutých surovin u receptů s

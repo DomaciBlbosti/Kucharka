@@ -17,14 +17,26 @@ class Base(DeclarativeBase):
 
 
 _connect_args: dict = {}
+_pool_kw: dict = {}
 if settings.database_url.startswith("sqlite"):
     _connect_args = {"check_same_thread": False}
+else:
+    # Velikost fondu podle skutečného souběhu appky (viz config.db_pool_size);
+    # se SQLite se neladí – tam se podle URL použije jiný typ poolu, který
+    # tyhle parametry nezná. pool_recycle drží spojení mladší než MariaDB
+    # wait_timeout, ať se nesahá na zahozené spojení.
+    _pool_kw = {
+        "pool_size": settings.db_pool_size,
+        "max_overflow": settings.db_max_overflow,
+        "pool_recycle": 3600,
+    }
 
 engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
     future=True,
     connect_args=_connect_args,
+    **_pool_kw,
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)

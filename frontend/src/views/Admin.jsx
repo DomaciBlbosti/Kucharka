@@ -16,6 +16,51 @@ function Field({ label, children, hint }) {
 const input =
   "w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm outline-none focus:border-basil";
 
+// Sbalovací karta administrace. Ve sbaleném stavu je vidět jen nadpis –
+// stránka se tak dá projít pohledem místo dlouhého skrolování (obzvlášť
+// když čeká hodně položek k ručnímu rozhodnutí).
+//
+// Tělo se ve sbaleném stavu VŮBEC nevykresluje, takže se nespustí ani jeho
+// dotazy na API (většina karet se doptává v intervalu). Otevřít se dá víc
+// karet naráz; volba přežije refresh (localStorage), ať se člověk nemusí
+// proklikávat pořád dokola k tomu, co zrovna sleduje.
+function Section({ title, children }) {
+  const key = `admin.open.${title}`;
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(key) === "1";
+    } catch {
+      return false; // privátní režim / zakázané úložiště
+    }
+  });
+  const toggle = () => {
+    setOpen((o) => {
+      try {
+        localStorage.setItem(key, o ? "0" : "1");
+      } catch {
+        /* nevadí, jen se volba nezapamatuje */
+      }
+      return !o;
+    });
+  };
+
+  return (
+    <section className="rounded-xl2 border border-line bg-white shadow-card">
+      <button
+        onClick={toggle}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left"
+      >
+        <span className="text-lg font-bold">{title}</span>
+        <span className={`shrink-0 text-ink/40 transition-transform ${open ? "rotate-180" : ""}`}>
+          ▾
+        </span>
+      </button>
+      {open && <div className="border-t border-line p-5">{children}</div>}
+    </section>
+  );
+}
+
 // Sbalení dlouhých seznamů: ukáže prvních `initial` položek + tlačítko
 // „Zobrazit dalších N". Drží stránku administrace čitelnou na mobilu.
 function useCollapse(count, initial = 10) {
@@ -91,8 +136,7 @@ function ToolsCard() {
   };
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-3 text-lg font-bold">Nástroje (servery)</h2>
+    <Section title="Nástroje (servery)">
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Ollama URL" hint={s.ollama_enabled ? "připojeno" : "nenastaveno"}>
           <input className={input} value={s.ollama_url || ""}
@@ -296,7 +340,7 @@ function ToolsCard() {
           )}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -321,8 +365,7 @@ function DomainsCard() {
     setSaved(true);
   };
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Domény receptů</h2>
+    <Section title="Domény receptů">
       <p className="mb-3 text-sm text-ink/60">Které weby smí crawler procházet (jedna na řádek).</p>
       <textarea rows={6} className={`${input} font-mono`} value={text}
         onChange={(e) => { setText(e.target.value); setSaved(false); }} />
@@ -336,7 +379,7 @@ function DomainsCard() {
         <input ref={fileRef} type="file" accept=".txt,.csv" hidden onChange={onImport} />
         {saved && <span className="text-sm text-have">Uloženo ✓</span>}
       </div>
-    </section>
+    </Section>
   );
 }
 
@@ -364,8 +407,7 @@ function NutriCard() {
   };
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">NutriDatabáze</h2>
+    <Section title="NutriDatabáze">
       <p className="mb-3 text-sm text-ink/60">
         Nahraj CSV export z nutridatabaze.cz — zpřesní výživu surovin a přepočítá kalorie receptů.
       </p>
@@ -395,7 +437,7 @@ function NutriCard() {
           )}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -421,8 +463,7 @@ function BackupCard() {
     }
   };
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Záloha databáze</h2>
+    <Section title="Záloha databáze">
       <p className="mb-3 text-sm text-ink/60">
         Kompletní data (recepty, suroviny, spíž, embeddingy) jako jeden JSON.
       </p>
@@ -447,7 +488,7 @@ function BackupCard() {
             : `Chyba: ${res.error}`}
         </p>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -493,8 +534,7 @@ function ServicesStatusCard() {
   ];
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Služby na pozadí</h2>
+    <Section title="Služby na pozadí (stav a log)">
       <p className="mb-4 text-sm text-ink/60">
         Co je naplánované, kdy poběží příště a jestli zrovna něco běží. Log
         níž ukazuje, co se reálně děje – ať je vidět, jestli se úlohy opravdu
@@ -570,7 +610,7 @@ function ServicesStatusCard() {
           ))
         )}
       </div>
-    </section>
+    </Section>
   );
 }
 
@@ -592,8 +632,7 @@ function CrawlerCard() {
     setSaved(true);
   };
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Automatické objevování (crawler)</h2>
+    <Section title="Automatické objevování (crawler)">
       <p className="mb-4 text-sm text-ink/60">
         Na pozadí pravidelně prochází weby z domén výše a stahuje nové recepty.
       </p>
@@ -616,7 +655,7 @@ function CrawlerCard() {
         <Button onClick={save}>Uložit</Button>
         {saved && <span className="text-sm text-have">Uloženo ✓ (přeplánováno)</span>}
       </div>
-    </section>
+    </Section>
   );
 }
 
@@ -637,9 +676,8 @@ function CrawlerPanel() {
 
   const running = st?.running;
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+    <Section title="Objevování receptů (ručně)">
       <div className="mb-1 flex items-center justify-between gap-3">
-        <h2 className="text-lg font-bold">Objevování receptů (ručně)</h2>
         {st && (
           <span className="nums text-xs text-ink/50">
             {st.recipes_total} receptů · {st.ingredients_total} surovin
@@ -690,7 +728,7 @@ function CrawlerPanel() {
           )}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -841,9 +879,8 @@ function CrawlQueueCard() {
   const pages = Math.max(1, Math.ceil(total / LIMIT));
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+    <Section title="Fronta URL (přehled)">
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-bold">Fronta URL (přehled)</h2>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="ghost" onClick={resync} disabled={resyncing}>
             {resyncing ? "Načítám sitemapy…" : domain ? `Resync ${domain}` : "Resync sitemap"}
@@ -1008,7 +1045,7 @@ function CrawlQueueCard() {
           </div>
         </>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -1049,9 +1086,8 @@ function MatchPanel() {
   };
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+    <Section title="Párování surovin">
       <div className="mb-1 flex items-center justify-between gap-3">
-        <h2 className="text-lg font-bold">Párování surovin</h2>
         <span className="nums text-xs text-ink/50">{pct}% napárováno</span>
       </div>
       <p className="mb-4 text-sm text-ink/60">
@@ -1107,7 +1143,7 @@ function MatchPanel() {
         <p className="mt-2 text-xs text-miss">Poslední běh skončil chybou: {st.error}</p>
       )}
       {manual && <ManualMatch onClose={() => { setManual(false); refresh(); }} />}
-    </section>
+    </Section>
   );
 }
 
@@ -1272,9 +1308,8 @@ function SystemPanel() {
   };
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
+    <Section title="Verze a aktualizace">
       <div className="mb-1 flex items-center justify-between gap-3">
-        <h2 className="text-lg font-bold">Verze a aktualizace</h2>
         <span className="nums text-xs text-ink/45">
           {v.branch}@{v.commit || "?"}
         </span>
@@ -1308,7 +1343,7 @@ function SystemPanel() {
           Mimo Docker: po stažení je potřeba ručně restartovat API.
         </p>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -1345,8 +1380,7 @@ function CorpusAuditCard() {
   const fmtKb = (b) => `${Math.max(1, Math.round((b || 0) / 1024))} kB`;
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Audit korpusu</h2>
+    <Section title="Audit korpusu">
       <p className="mb-4 text-sm text-ink/60">
         Spočítá profil celé databáze receptů (histogramy, rozpad po doménách,
         duplicitní názvy) a vytáhne stratifikovaný vzorek ~600 receptů
@@ -1385,7 +1419,7 @@ function CorpusAuditCard() {
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -1407,8 +1441,7 @@ function HmiCard() {
   const url = `${window.location.origin}/hmi${token ? `?token=${encodeURIComponent(token)}` : ""}`;
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Kuchyňský displej / E-ink</h2>
+    <Section title="Kuchyňský displej / E-ink">
       <p className="mb-4 text-sm text-ink/60">
         Statická stránka bez JS pro tablet/E-ink v kuchyni — ukáže dnešní
         jídelníček a nákup, nebo (po „Odeslat na displej" u receptu) velký
@@ -1425,7 +1458,7 @@ function HmiCard() {
         </a>
       </div>
       <p className="mt-2 break-all text-xs text-ink/40">{url}</p>
-    </section>
+    </Section>
   );
 }
 
@@ -1448,8 +1481,7 @@ function SecurityCard() {
   };
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Zabezpečení heslem</h2>
+    <Section title="Zabezpečení heslem">
       <p className="mb-4 text-sm text-ink/60">
         {enabled
           ? "Aplikace je chráněná heslem. Nové heslo nastavíš níže; prázdné pole zabezpečení vypne."
@@ -1478,7 +1510,7 @@ function SecurityCard() {
         )}
         {msg && <span className="text-sm text-ink/60">{msg}</span>}
       </div>
-    </section>
+    </Section>
   );
 }
 
@@ -1508,8 +1540,7 @@ function TranslateCard() {
   };
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Překlad receptů do češtiny</h2>
+    <Section title="Překlad receptů do češtiny">
       <p className="mb-4 text-sm text-ink/60">
         Zpětně přeloží cizojazyčné recepty (titul, postup i suroviny) — hodí se
         pro recepty stažené, když nebyla dostupná Ollama.
@@ -1555,7 +1586,7 @@ function TranslateCard() {
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -1586,8 +1617,7 @@ function RetranslateOriginalsCard() {
   };
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Znovu přeložit z originálů</h2>
+    <Section title="Znovu přeložit z originálů">
       <p className="mb-4 text-sm text-ink/60">
         Přeloží znovu recepty, které mají <b>uložený originál</b> — aktuální
         cestou (lepší prompt, případně jiný model / komerční API). Nic se
@@ -1633,7 +1663,7 @@ function RetranslateOriginalsCard() {
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -1663,8 +1693,7 @@ function ResetTranslateCard() {
   };
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Dohledat chybějící originály</h2>
+    <Section title="Dohledat chybějící originály">
       <p className="mb-4 text-sm text-ink/60">
         Nové překlady si originál (předlohu) ukládají automaticky — v detailu
         receptu jde přepnout mezi překladem a originálem. Tohle je jen pro
@@ -1696,7 +1725,7 @@ function ResetTranslateCard() {
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -1759,8 +1788,7 @@ function LidlAccountsCard() {
   };
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Lidl Plus účty</h2>
+    <Section title="Lidl Plus účty">
       <p className="mb-4 text-sm text-ink/60">
         Nákupy z propojených účtů se pravidelně stahují a napárované položky
         přidávají do spíže. Přihlašovací token se získává mimo appku (na PC:{" "}
@@ -1828,7 +1856,7 @@ function LidlAccountsCard() {
       <div className="mt-3">
         <Button onClick={addAccount} disabled={adding}>{adding ? "Ověřuji…" : "Přidat účet"}</Button>
       </div>
-    </section>
+    </Section>
   );
 }
 
@@ -1881,8 +1909,7 @@ function ServicesCard() {
     setSaved(true);
   };
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Služby na pozadí</h2>
+    <Section title="Automatické služby (nastavení)">
       <p className="mb-4 text-sm text-ink/60">
         Automaticky průběžně překládají a párují nově stažené recepty. Běží
         jeden po druhém (nervou si GPU).
@@ -1932,7 +1959,7 @@ function ServicesCard() {
         <Button onClick={save}>Uložit</Button>
         {saved && <span className="text-sm text-have">Uloženo ✓ (přeplánováno)</span>}
       </div>
-    </section>
+    </Section>
   );
 }
 
@@ -1962,8 +1989,7 @@ function LlmMatchCard() {
   };
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Dávkové dopárování (LLM)</h2>
+    <Section title="Dávkové dopárování (LLM)">
       <p className="mb-4 text-sm text-ink/60">
         Doplní nenapárované suroviny u receptů čekajících na ruční revizi –
         dávkově, s deduplikací, přes jedno LLM volání na desítky surovin
@@ -2032,7 +2058,7 @@ function LlmMatchCard() {
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -2167,8 +2193,7 @@ function DecisionsCard() {
   const pages = Math.max(1, Math.ceil(total / LIMIT));
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Katalog rozhodnutí (párování)</h2>
+    <Section title="Katalog rozhodnutí (párování)">
       <p className="mb-4 text-sm text-ink/60">
         Každý výsledek dávkového dopárování se tu ukládá – i zamítnutí a chyby.
         AI se na už rozhodnuté položky znovu neptá. „Návrhy" jsou shody s nízkou
@@ -2244,7 +2269,7 @@ function DecisionsCard() {
           </div>
         </>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -2274,8 +2299,7 @@ function CategorizeCard() {
   };
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Kategorizace surovin</h2>
+    <Section title="Kategorizace surovin">
       <p className="mb-4 text-sm text-ink/60">
         Zařadí suroviny do hierarchie (např. „maso › drůbeží › kuřecí") pro
         snadnější hledání a filtrování. Běží jen pro dosud nezařazené.
@@ -2308,7 +2332,7 @@ function CategorizeCard() {
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -2338,8 +2362,7 @@ function TagCard() {
   };
 
   return (
-    <section className="rounded-xl2 border border-line bg-white p-5 shadow-card">
-      <h2 className="mb-1 text-lg font-bold">Otagování receptů</h2>
+    <Section title="Otagování receptů">
       <p className="mb-4 text-sm text-ink/60">
         Přiřadí receptům tagy (chod, denní doba, chuť, technika, dieta,
         kuchyně) pro filtrování. Vybírá jen z pevného seznamu, nevymýšlí
@@ -2373,6 +2396,6 @@ function TagCard() {
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
