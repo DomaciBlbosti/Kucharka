@@ -172,6 +172,13 @@ class Settings:
         self.auto_ingredients: bool = _env("AUTO_INGREDIENTS", "false").lower() in (
             "1", "true", "yes", "on"
         )
+
+        # Spíž (co mám doma) – když je vypnutá, výpisy s ní vůbec nepočítají
+        # a v UI zmizí dostupnost i filtry na ni navázané. Pro někoho, kdo si
+        # spíž neplní, je "chybí 9 surovin" u každého receptu jen šum.
+        self.pantry_enabled: bool = _env("PANTRY_ENABLED", "true").lower() in (
+            "1", "true", "yes", "on",
+        )
         # Překlad zahraničních receptů do češtiny (vyžaduje Ollamu)
         self.translate_to_cs: bool = _env("TRANSLATE_TO_CS", "true").lower() in (
             "1", "true", "yes", "on"
@@ -253,6 +260,7 @@ class Settings:
         "ocr_model",
         "hmi_token",
         "recipe_domains", "translate_to_cs", "auto_ingredients",
+        "pantry_enabled",
         "scraper_verify_ssl", "rag_k", "rag_max_recipes",
         "crawler_enabled", "crawler_interval_min", "crawler_max_per_run",
         "ollama_keep_alive", "bg_workers",
@@ -286,6 +294,7 @@ class Settings:
             "recipe_domains": ",".join(sorted(self.recipe_domains)),
             "translate_to_cs": self.translate_to_cs,
             "auto_ingredients": self.auto_ingredients,
+            "pantry_enabled": self.pantry_enabled,
             "scraper_verify_ssl": self.scraper_verify is not False,
             "rag_k": self.rag_k,
             "rag_max_recipes": self.rag_max_recipes,
@@ -357,7 +366,7 @@ class Settings:
                 if d.strip()
             }
         elif key in (
-            "translate_to_cs", "auto_ingredients", "crawler_enabled",
+            "translate_to_cs", "auto_ingredients", "pantry_enabled", "crawler_enabled",
             "auto_translate_enabled", "auto_match_enabled", "lidl_sync_enabled",
             "llm_match_enabled",
         ):

@@ -14,7 +14,7 @@ import ShareRecipe from "./views/ShareRecipe";
 
 const CORE_NAV = [
   { to: "/", label: "Recepty", icon: "🍲", end: true },
-  { to: "/spiz", label: "Spíž", icon: "🧺" },
+  { to: "/spiz", label: "Spíž", icon: "🧺", needsPantry: true },
   { to: "/plan", label: "Plán", icon: "📅" },
   { to: "/nakup", label: "Nákup", icon: "🛒" },
 ];
@@ -152,6 +152,10 @@ function Login({ onOk }) {
 
 export default function App() {
   const [gate, setGate] = useState({ loading: true, ok: false });
+  // Vypnutá spíž (administrace → Nástroje) schová záložku Spíž i všechno,
+  // co se o ni opírá. Než se stav načte, počítáme s ní – ať záložka
+  // neproblikává.
+  const [pantryOn, setPantryOn] = useState(true);
 
   const check = () =>
     api
@@ -166,6 +170,12 @@ export default function App() {
     return () => window.removeEventListener("kucharka-unauth", onUnauth);
   }, []);
 
+  useEffect(() => {
+    if (gate.ok) api.appConfig().then((c) => setPantryOn(c.pantry)).catch(() => {});
+  }, [gate.ok]);
+
+  const nav = CORE_NAV.filter((n) => pantryOn || !n.needsPantry);
+
   if (gate.loading) return null;
   if (!gate.ok) return <Login onOk={() => check()} />;
 
@@ -176,7 +186,7 @@ export default function App() {
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
           <Brand />
           <nav className="hidden items-center gap-1 md:flex">
-            {CORE_NAV.map((n) => (
+            {nav.map((n) => (
               <NavLink
                 key={n.to}
                 to={n.to}
@@ -215,7 +225,7 @@ export default function App() {
       {/* Spodní taby na mobilu */}
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-paper/95 backdrop-blur md:hidden">
         <div className="mx-auto grid max-w-5xl grid-cols-5">
-          {CORE_NAV.map((n) => (
+          {nav.map((n) => (
             <NavLink
               key={n.to}
               to={n.to}

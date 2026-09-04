@@ -219,6 +219,10 @@ def health() -> dict:
         "status": "ok",
         "searxng": settings.searxng_enabled,
         "ollama": settings.ollama_enabled,
+        # Frontend podle tohohle skrývá dostupnost vůči spíži i záložku Spíž.
+        # Jde přes health, ne přes admin nastavení – běžný výpis nemá důvod
+        # tahat celou administraci.
+        "pantry": settings.pantry_enabled,
     }
 
 

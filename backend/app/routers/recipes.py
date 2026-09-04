@@ -168,6 +168,15 @@ def list_recipes(
     have = pantry_ingredient_ids(db)
     _sub, total_col, have_col, missing_col = _availability_cols(have)
 
+    # Vypnutá spíž: dostupnost není o co opřít, takže filtry i řazení podle
+    # ní nedávají smysl. Místo prázdného výsledku se prostě ignorují a
+    # „Nejblíž uvaření" spadne na doporučené pořadí.
+    if not settings.pantry_enabled:
+        only_have = False
+        max_missing = None
+        if sort == "smart":
+            sort = "feed"
+
     # Obyčejné filtry (bez dostupnosti) – aplikují se na hlavní dotaz i na
     # levný COUNT, který díky tomu nemusí joinovat agregaci spíže.
     conds = []

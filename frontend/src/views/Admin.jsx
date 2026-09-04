@@ -122,6 +122,7 @@ function ToolsCard() {
   const save = async () => {
     const keys = ["ollama_url", "ollama_model", "ollama_fast_model", "embed_model",
       "ocr_model", "searxng_url", "translate_to_cs", "auto_ingredients", "scraper_verify_ssl",
+      "pantry_enabled",
       "rag_k", "rag_max_recipes", "ollama_keep_alive", "bg_workers",
       "llm_match_enabled", "llm_match_model", "llm_match_batch_size",
       "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
@@ -348,6 +349,11 @@ function ToolsCard() {
           <input type="checkbox" className="accent-basil" checked={!!s.scraper_verify_ssl}
             onChange={(e) => set("scraper_verify_ssl", e.target.checked)} />
           Ověřovat SSL při stahování
+        </label>
+        <label className="flex items-center gap-2 text-sm" title="Vypnutá spíž zmizí z menu a recepty přestanou ukazovat „mám/chybí“">
+          <input type="checkbox" className="accent-basil" checked={s.pantry_enabled !== false}
+            onChange={(e) => set("pantry_enabled", e.target.checked)} />
+          Používat spíž
         </label>
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-3">

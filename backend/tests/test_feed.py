@@ -160,6 +160,39 @@ def main():
                   c.patch("/api/recipes/99999/hidden", json={"hidden": True})
                   .status_code == 404)
 
+            # ── vypnutá spíž ───────────────────────────────────────────
+            # Kdo si spíž neplní, nemá u každého receptu koukat na
+            # „chybí 9 surovin". Vypnutá spíž se chová jako prázdná, ale
+            # filtry a řazení podle ní se ignorují místo prázdného výsledku.
+            from app.config import settings  # noqa: PLC0415
+            from app.modules.pantry import pantry_ingredient_ids  # noqa: PLC0415
+
+            settings.set_admin("pantry_enabled", False)
+            try:
+                check("vypnutá spíž se tváří jako prázdná",
+                      pantry_ingredient_ids(db) == set())
+                check("health hlásí vypnutou spíž",
+                      c.get("/api/health").json()["pantry"] is False)
+
+                r = c.get("/api/recipes", params={"only_have": True, "limit": 50})
+                ids = [it["id"] for it in r.json()["items"]]
+                check("'můžu uvařit teď' se ignoruje, ne že nic nevrátí",
+                      dobry_id in ids and dek_id in ids, str(ids))
+                r = c.get("/api/recipes", params={"max_missing": 0, "limit": 50})
+                check("'max chybí' se taky ignoruje",
+                      len(r.json()["items"]) == 2, str(r.json()["total"]))
+                r = c.get("/api/recipes", params={"sort": "smart", "limit": 50})
+                order = [it["id"] for it in r.json()["items"]]
+                check("smart spadne na doporučené pořadí",
+                      order[0] == dobry_id, str(order))
+            finally:
+                settings.set_admin("pantry_enabled", True)
+            check("zapnutá spíž zase počítá",
+                  c.get("/api/health").json()["pantry"] is True)
+            r = c.get("/api/recipes", params={"only_have": True, "limit": 50})
+            check("a filtr zase filtruje",
+                  dek_id not in [it["id"] for it in r.json()["items"]])
+
             # ── skóre je opravdu v DB ──
             # Přepočet běžel ve vlastní session; tahle má expire_on_commit=False,
             # takže by jinak vracela hodnoty z doby před přepočtem.
