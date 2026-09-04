@@ -92,6 +92,29 @@ def active_model(ollama_model: str | None = None) -> str:
     return ollama_model or settings.ollama_fast_model
 
 
+def _finish(
+    *, component: str, provider: str, model: str, t0: float,
+    out: dict | None, usage: dict, fail_detail: str,
+) -> None:
+    """Společný závěr volání: trasovací log + zápis do telemetrie."""
+    dt = time.monotonic() - t0
+    ok = out is not None
+    if ok:
+        _trace.info("← %s | %.1f s | %s", model, dt,
+                    _one_line(json.dumps(out, ensure_ascii=False)))
+    else:
+        _trace.warning("← %s | %.1f s | SELHALO: %s", model, dt, _one_line(fail_detail))
+    from . import llm_stats  # lazy: telemetrie sahá do DB, llmclient se importuje brzy
+
+    llm_stats.record(
+        component=component, provider=provider, model=model,
+        prompt_tokens=usage.get("prompt_tokens", 0),
+        completion_tokens=usage.get("completion_tokens", 0),
+        duration_ms=int(dt * 1000), ok=ok,
+        error=None if ok else fail_detail,
+    )
+
+
 def structured_json(
     prompt: str,
     *,
@@ -100,27 +123,27 @@ def structured_json(
     temperature: float = 0,
     num_ctx: int | None = None,
     ollama_model: str | None = None,
+    component: str = "ostatní",
 ) -> dict | None:
     """Vrátí naparsovaný JSON, nebo None při jakékoli chybě (volající má fallback).
 
     `num_ctx` a `ollama_model` se týkají jen Ollamy – komerční API má kontext
     dost velký a model globálně nastavený (`settings.llm_api_model`).
+    `component` říká, kdo se ptá (překlad / kategorie / tagy / párování …) –
+    slouží jen telemetrii v Admin → Spotřeba LLM.
     """
     model = active_model(ollama_model)
     _trace.info("→ %s | %s zn | %s", model, len(prompt), _one_line(prompt))
     t0 = time.monotonic()
+    usage: dict = {}
 
     if settings.llm_api_enabled:
         out = _api_chat_json(
-            prompt, schema=schema, timeout=timeout, temperature=temperature
+            prompt, schema=schema, timeout=timeout, temperature=temperature,
+            usage_out=usage,
         )
-        dt = time.monotonic() - t0
-        if out is None:
-            _trace.warning("← %s | %.1f s | SELHALO: %s", model, dt,
-                           _one_line(last_error() or "bez detailu"))
-        else:
-            _trace.info("← %s | %.1f s | %s", model, dt,
-                        _one_line(json.dumps(out, ensure_ascii=False)))
+        _finish(component=component, provider="api", model=model, t0=t0, out=out,
+                usage=usage, fail_detail=last_error() or "bez detailu")
         return out
 
     if not settings.ollama_enabled:
@@ -136,17 +159,15 @@ def structured_json(
             temperature=temperature,
             format_schema=schema,
             num_ctx=num_ctx,
+            usage_out=usage,
         )
-    dt = time.monotonic() - t0
     if parsed is None:
         # raw je buď "<chyba volání: …>" (síť/HTTP), nebo neparsovatelná odpověď
         _set_error(raw or "prázdná odpověď modelu")
-        _trace.warning("← %s | %.1f s | SELHALO: %s", model, dt,
-                       _one_line(raw or "prázdná odpověď modelu"))
     else:
         _set_error(None)
-        _trace.info("← %s | %.1f s | %s", model, dt,
-                    _one_line(json.dumps(parsed, ensure_ascii=False)))
+    _finish(component=component, provider="ollama", model=model, t0=t0, out=parsed,
+            usage=usage, fail_detail=raw or "prázdná odpověď modelu")
     return parsed
 
 
@@ -156,6 +177,7 @@ def _api_chat_json(
     schema: dict | None,
     timeout: float,
     temperature: float,
+    usage_out: dict | None = None,
 ) -> dict | None:
     """OpenAI-kompatibilní /chat/completions se strukturovaným výstupem.
 
@@ -186,7 +208,13 @@ def _api_chat_json(
                 timeout=timeout,
             )
             r.raise_for_status()
-            raw = (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "")
+            body = r.json()
+            raw = (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
+            if usage_out is not None:
+                # OpenAI-kompatibilní odpověď nese spotřebu v `usage`
+                u = body.get("usage") or {}
+                usage_out["prompt_tokens"] = int(u.get("prompt_tokens") or 0)
+                usage_out["completion_tokens"] = int(u.get("completion_tokens") or 0)
         except httpx.HTTPStatusError as exc:
             code = exc.response.status_code
             if 400 <= code < 500 and i + 1 < len(formats):

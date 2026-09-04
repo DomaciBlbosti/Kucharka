@@ -252,6 +252,14 @@ def _row_to_dict(obj, model) -> dict:
     return d
 
 
+@router.get("/llm-stats")
+def llm_stats_summary(days: int = 14):
+    """Spotřeba tokenů, doba odezvy a výpadky LLM za posledních `days` dní."""
+    from ..modules import llm_stats
+
+    return llm_stats.summary(days=max(1, min(days, 365)))
+
+
 # ─── Audit korpusu (read-only profil + stratifikovaný vzorek) ────────────────
 
 @router.post("/corpus-audit/run")

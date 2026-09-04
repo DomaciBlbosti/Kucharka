@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     Float,
@@ -432,3 +433,28 @@ class LidlReceipt(Base):
     items_matched: Mapped[int] = mapped_column(Integer, default=0)
     items_unmatched: Mapped[int] = mapped_column(Integer, default=0)
     imported_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class LlmCall(Base):
+    """Jedno LLM volání dávkové úlohy – kolik stálo tokenů, jak dlouho trvalo
+    a jestli prošlo. Slouží ke sledování spotřeby a spolehlivosti (Admin →
+    Spotřeba LLM); appka podle něj nic neřídí, takže případný výpadek zápisu
+    nesmí volání shodit (viz llm_stats.record).
+
+    Staré záznamy maže `llm_stats.prune` – tabulka je čistě provozní telemetrie
+    a nemá růst donekonečna.
+    """
+
+    __tablename__ = "llm_call"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    # kdo si o volání řekl: preklad / kategorie / tagy / parovani / …
+    component: Mapped[str] = mapped_column(String(40), index=True)
+    provider: Mapped[str] = mapped_column(String(20))   # ollama | api
+    model: Mapped[str] = mapped_column(String(120))
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)

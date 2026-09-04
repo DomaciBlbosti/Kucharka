@@ -60,9 +60,15 @@ def chat_json_raw(
     temperature: float = 0,
     format_schema: dict | None = None,
     num_ctx: int | None = None,
+    usage_out: dict | None = None,
 ) -> tuple[dict | None, str]:
     """Totéž jako chat_json, ale navíc vrací i syrový text odpovědi modelu
-    (i když se nepodaří naparsovat) – pro debug náhled v UI (viz photo_recipe)."""
+    (i když se nepodaří naparsovat) – pro debug náhled v UI (viz photo_recipe).
+
+    Do `usage_out` (pokud je předán) se doplní spotřeba tokenů z odpovědi
+    Ollamy – slouží telemetrii v llm_stats. Slovník patří volajícímu, takže
+    je to bezpečné i při souběžných voláních.
+    """
     message: dict = {"role": "user", "content": prompt}
     if images:
         message["images"] = images
@@ -81,7 +87,11 @@ def chat_json_raw(
     try:
         r = httpx.post(f"{base_url.rstrip('/')}/api/chat", json=payload, timeout=timeout)
         r.raise_for_status()
-        raw = r.json().get("message", {}).get("content", "")
+        body = r.json()
+        raw = body.get("message", {}).get("content", "")
+        if usage_out is not None:
+            usage_out["prompt_tokens"] = int(body.get("prompt_eval_count") or 0)
+            usage_out["completion_tokens"] = int(body.get("eval_count") or 0)
     except Exception as exc:  # noqa: BLE001
         log.warning("Ollama chat volání selhalo (model %s): %s", model, exc)
         return None, f"<chyba volání: {exc}>"

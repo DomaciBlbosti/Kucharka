@@ -1347,6 +1347,221 @@ function SystemPanel() {
   );
 }
 
+// Dvě série grafu spotřeby. Odstíny prošly kontrolou na barvosleposti
+// (protan ΔE 20,3 · normální vidění 25,9 · kontrast vůči bílé > 3:1) –
+// oranžová je brandová `miss`, modrá k ní je bezpečný protějšek. Identita
+// se navíc nese legendou a tooltipem, nikdy jen barvou.
+const TOK_IN = "#2D7FB8";
+const TOK_OUT = "#C8772E";
+
+const fmtNum = (n) => (n ?? 0).toLocaleString("cs-CZ");
+const fmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms} ms`);
+const fmtDay = (iso) => {
+  const d = new Date(`${iso}T00:00:00`);
+  return `${d.getDate()}.${d.getMonth() + 1}.`;
+};
+
+function TokenChart({ rows }) {
+  const [hover, setHover] = useState(null);
+  const max = Math.max(1, ...rows.map((r) => r.tokens_in + r.tokens_out));
+  // u delších období popisky prořeď, ať se nepřekrývají
+  const step = Math.ceil(rows.length / 8);
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-4 text-xs text-ink/60">
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: TOK_IN }} />
+          vstupní tokeny
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: TOK_OUT }} />
+          výstupní tokeny
+        </span>
+      </div>
+
+      <div className="relative">
+        {hover && (
+          <div className="pointer-events-none absolute -top-1 left-1/2 z-10 w-52 -translate-x-1/2 rounded-lg border border-line bg-white p-2 text-xs shadow-card">
+            <div className="mb-1 font-semibold">{fmtDay(hover.day)}</div>
+            <div className="flex justify-between"><span className="text-ink/60">vstupní</span><span className="nums">{fmtNum(hover.tokens_in)}</span></div>
+            <div className="flex justify-between"><span className="text-ink/60">výstupní</span><span className="nums">{fmtNum(hover.tokens_out)}</span></div>
+            <div className="flex justify-between"><span className="text-ink/60">volání</span><span className="nums">{fmtNum(hover.calls)}{hover.failed ? ` (${hover.failed} chyb)` : ""}</span></div>
+            <div className="flex justify-between"><span className="text-ink/60">odezva ⌀</span><span className="nums">{fmtMs(hover.avg_ms)}</span></div>
+            <div className="flex justify-between"><span className="text-ink/60">odhad ceny</span><span className="nums">{hover.cost_czk.toFixed(2)} Kč</span></div>
+          </div>
+        )}
+        <div className="flex h-40 items-end gap-1 border-b border-line">
+          {rows.map((r) => {
+            const total = r.tokens_in + r.tokens_out;
+            const h = (total / max) * 100;
+            const outShare = total ? (r.tokens_out / total) * 100 : 0;
+            return (
+              <div
+                key={r.day}
+                className="flex h-full flex-1 cursor-default flex-col justify-end"
+                onMouseEnter={() => setHover(r)}
+                onMouseLeave={() => setHover(null)}
+                title={`${fmtDay(r.day)}: ${fmtNum(total)} tokenů`}
+              >
+                <div className="flex flex-col justify-end" style={{ height: `${h}%` }}>
+                  <div
+                    className="rounded-t"
+                    style={{ background: TOK_OUT, height: `${outShare}%`, marginBottom: 2 }}
+                  />
+                  <div style={{ background: TOK_IN, flex: 1 }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-1 flex gap-1 text-[10px] text-ink/40">
+          {rows.map((r, i) => (
+            <span key={r.day} className="flex-1 text-center">
+              {i % step === 0 ? fmtDay(r.day) : ""}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatTable({ rows, labelKey, labelHead }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-sm">
+        <thead>
+          <tr className="text-xs text-ink/40">
+            <th className="pb-1 pr-3 font-medium">{labelHead}</th>
+            <th className="pb-1 pr-3 text-right font-medium">volání</th>
+            <th className="pb-1 pr-3 text-right font-medium">chyby</th>
+            <th className="pb-1 pr-3 text-right font-medium">tokeny</th>
+            <th className="pb-1 pr-3 text-right font-medium">odezva ⌀ / max</th>
+            <th className="pb-1 text-right font-medium">odhad</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-line">
+          {rows.map((r) => (
+            <tr key={r[labelKey]}>
+              <td className="py-1.5 pr-3">{r[labelKey]}</td>
+              <td className="nums py-1.5 pr-3 text-right">{fmtNum(r.calls)}</td>
+              <td className={`nums py-1.5 pr-3 text-right ${r.failed ? "text-miss" : "text-ink/40"}`}>
+                {r.failed || "–"}
+              </td>
+              <td className="nums py-1.5 pr-3 text-right">
+                {fmtNum(r.tokens_in + r.tokens_out)}
+              </td>
+              <td className="nums py-1.5 pr-3 text-right text-ink/60">
+                {fmtMs(r.avg_ms)} / {fmtMs(r.max_ms)}
+              </td>
+              <td className="nums py-1.5 text-right">
+                {r.cost_czk ? `${r.cost_czk.toFixed(2)} Kč` : "–"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function LlmStatsCard() {
+  const [st, setSt] = useState(null);
+  const [days, setDays] = useState(14);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    setErr(null);
+    api.llmStats(days).then(setSt).catch((e) => setErr(e?.message || String(e)));
+  }, [days]);
+
+  if (err) return <p className="text-sm text-miss">{err}</p>;
+  if (!st) return <Spinner label="Načítám statistiku…" />;
+
+  const t = st.totals;
+  const failRate = t.calls ? (100 * t.failed) / t.calls : 0;
+  const tiles = [
+    ["volání", fmtNum(t.calls)],
+    ["tokeny", fmtNum(t.tokens_in + t.tokens_out)],
+    ["odhad ceny", `${t.cost_czk.toFixed(2)} Kč`],
+    ["výpadky", `${failRate.toFixed(1)} %`],
+    ["odezva ⌀", fmtMs(t.avg_ms)],
+  ];
+
+  return (
+    <div className="flex flex-col gap-5">
+      <p className="text-sm text-ink/60">
+        Kolik stojí dávkové úlohy na LLM: spotřeba tokenů, doba odezvy a
+        výpadky podle toho, která část appky se ptala a jaký model odpověděl.
+      </p>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        {[7, 14, 30, 90].map((d) => (
+          <button
+            key={d}
+            onClick={() => setDays(d)}
+            className={`rounded-full border px-2.5 py-1 text-xs ${
+              days === d ? "border-basil text-basil-dark" : "border-line text-ink/50"
+            }`}
+          >
+            {d} dní
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        {tiles.map(([label, value]) => (
+          <div key={label} className="rounded-lg border border-line p-3">
+            <div className="text-xs text-ink/45">{label}</div>
+            <div className="nums text-lg font-bold">{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {st.by_day.length === 0 ? (
+        <p className="text-sm text-ink/45">
+          Zatím žádná data – statistika se plní až z nových LLM volání.
+        </p>
+      ) : (
+        <TokenChart rows={st.by_day} />
+      )}
+
+      {st.by_component.length > 0 && (
+        <div>
+          <h3 className="mb-2 text-sm font-bold text-ink/70">Podle komponenty</h3>
+          <StatTable rows={st.by_component} labelKey="component" labelHead="komponenta" />
+        </div>
+      )}
+
+      {st.by_model.length > 0 && (
+        <div>
+          <h3 className="mb-2 text-sm font-bold text-ink/70">Podle modelu</h3>
+          <StatTable rows={st.by_model} labelKey="model" labelHead="model" />
+        </div>
+      )}
+
+      {st.recent_errors.length > 0 && (
+        <div>
+          <h3 className="mb-2 text-sm font-bold text-ink/70">Poslední výpadky</h3>
+          <ul className="space-y-1 text-xs text-ink/60">
+            {st.recent_errors.map((e, i) => (
+              <li key={i} className="truncate">
+                <span className="text-ink/40">
+                  {e.ts ? new Date(e.ts).toLocaleString("cs-CZ") : ""}
+                </span>{" "}
+                <b>{e.component}</b> · {e.model} · <span className="text-miss">{e.error}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <p className="text-xs text-ink/40">Cena je {st.price_note}.</p>
+    </div>
+  );
+}
+
 function CorpusAuditCard() {
   const [st, setSt] = useState(null);
   const [err, setErr] = useState(null);
@@ -1871,6 +2086,9 @@ export default function Admin() {
       <CrawlerCard />
       <CrawlerPanel />
       <CrawlQueueCard />
+      <Section title="Spotřeba LLM">
+        <LlmStatsCard />
+      </Section>
       <CorpusAuditCard />
       <MatchPanel />
       <LlmMatchCard />

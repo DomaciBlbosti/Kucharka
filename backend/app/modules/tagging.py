@@ -124,6 +124,7 @@ def _tag_batch(recipe_ids: list[int]) -> None:
             # stejný timeout jako dávkové párování (viz categorize.py)
             timeout=max(settings.http_timeout, settings.llm_match_timeout_s),
             num_ctx=8192,
+            component="tagy",
         )
         if out is None:
             log.warning("otagování dávky selhalo (volání modelu nebo parsování).")

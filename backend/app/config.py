@@ -65,6 +65,13 @@ class Settings:
         # v logu se objevilo „QueuePool limit of size 5 overflow 10 reached".
         self.db_pool_size: int = max(5, int(_env("DB_POOL_SIZE", "20")))
         self.db_max_overflow: int = max(0, int(_env("DB_MAX_OVERFLOW", "30")))
+        # Telemetrie LLM volání (Admin → Spotřeba LLM). Ceny jsou jen pro
+        # ODHAD útraty – výchozí sazby odpovídají gpt-4o-mini, u jiného modelu
+        # je přepiš v administraci. Lokální Ollama se počítá jako nula.
+        self.llm_stats_retention_days: int = int(_env("LLM_STATS_RETENTION_DAYS", "90"))
+        self.llm_price_in_usd: float = float(_env("LLM_PRICE_IN_USD", "0.15"))
+        self.llm_price_out_usd: float = float(_env("LLM_PRICE_OUT_USD", "0.60"))
+        self.usd_rate: float = float(_env("USD_RATE", "23"))
 
         # --- LLM batch matching (llm_match.py) --------------------------
         # Dávkové dopárování nenamatchnutých surovin u receptů s
@@ -230,6 +237,7 @@ class Settings:
         "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
         "llm_match_timeout_s", "translate_model",
         "llm_provider", "llm_api_url", "llm_api_key", "llm_api_model",
+        "llm_price_in_usd", "llm_price_out_usd", "usd_rate",
     )
 
     CRAWLER_KEYS = ("crawler_enabled", "crawler_interval_min", "crawler_max_per_run")
@@ -279,6 +287,9 @@ class Settings:
             # klíč se NIKDY nevrací ven, jen příznak, že je nastavený
             "llm_api_key_set": bool(self.llm_api_key),
             "llm_api_model": self.llm_api_model,
+            "llm_price_in_usd": self.llm_price_in_usd,
+            "llm_price_out_usd": self.llm_price_out_usd,
+            "usd_rate": self.usd_rate,
             "llm_api_enabled": self.llm_api_enabled,
             "ollama_enabled": self.ollama_enabled,
             "searxng_enabled": self.searxng_enabled,
@@ -327,9 +338,12 @@ class Settings:
                 self.rag_max_recipes = max(0, int(value))  # 0 = bez stropu
             except (TypeError, ValueError):
                 pass
-        elif key in ("llm_match_min_confidence", "llm_match_temperature"):
+        elif key in (
+            "llm_match_min_confidence", "llm_match_temperature",
+            "llm_price_in_usd", "llm_price_out_usd", "usd_rate",
+        ):
             try:
-                setattr(self, key, float(value))
+                setattr(self, key, max(0.0, float(value)))
             except (TypeError, ValueError):
                 pass
         elif key in (

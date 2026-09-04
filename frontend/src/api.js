@@ -304,6 +304,7 @@ export const api = {
     afetch("/api/maintenance/translate", { method: "POST" }).then(J),
   retranslateOne: (id) =>
     afetch(`/api/recipes/${id}/retranslate`, { method: "POST" }).then(J),
+  llmStats: (days = 14) => afetch(`/api/admin/llm-stats?days=${days}`).then(J),
   corpusAuditStatus: () => afetch("/api/admin/corpus-audit/status").then(J),
   corpusAuditRun: () =>
     afetch("/api/admin/corpus-audit/run", { method: "POST" }).then(J),

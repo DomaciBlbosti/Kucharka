@@ -101,6 +101,7 @@ def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
         # frontou 120s nestíhal a padaly VŠECHNY dávky
         timeout=max(settings.http_timeout, settings.llm_match_timeout_s),
         num_ctx=8192,
+        component="kategorie",
     )
     if out is None:
         log.warning("kategorizace dávky selhala (volání modelu nebo parsování).")
