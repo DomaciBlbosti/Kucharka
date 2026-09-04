@@ -28,6 +28,11 @@ export default function Recipes() {
   const [tagGroups, setTagGroups] = useState([]);
   const [selectedTags, setSelectedTags] = useState([]); // ["namespace:slug", ...]
   const [tagsOpen, setTagsOpen] = useState(false);
+  // Sloučit varianty téhož jídla do jedné karty (12 tisíc názvů v korpusu
+  // má dvě a víc variant). Volba se pamatuje mezi návštěvami.
+  const [groupVariants, setGroupVariants] = useState(
+    () => localStorage.getItem("recipes.group") !== "0",
+  );
 
   useEffect(() => {
     api.ingredientCategories().then(setCats).catch(() => setCats([]));
@@ -54,6 +59,7 @@ export default function Recipes() {
     category: category || undefined,
     tags: selectedTags,
     sort,
+    group: groupVariants || undefined,
   };
 
   useEffect(() => {
@@ -86,7 +92,8 @@ export default function Recipes() {
       clearTimeout(t);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, onlyHave, maxMissing, maxTime, sort, category, selectedTags, cookMode, pickedKey]);
+  }, [q, onlyHave, maxMissing, maxTime, sort, category, selectedTags, cookMode, pickedKey,
+      groupVariants]);
 
   const loadMore = async () => {
     if (cookMode || loadingMore || recipes === null) return;
@@ -238,6 +245,22 @@ export default function Recipes() {
             >
               Můžu uvařit teď
             </button>
+            <button
+              onClick={() =>
+                setGroupVariants((v) => {
+                  localStorage.setItem("recipes.group", v ? "0" : "1");
+                  return !v;
+                })
+              }
+              title="Recepty se stejným názvem se ukážou jako jedna položka"
+              className={`rounded-full px-3 py-1.5 font-medium transition ${
+                groupVariants
+                  ? "bg-basil text-white"
+                  : "bg-white border border-line text-ink/70 hover:border-basil"
+              }`}
+            >
+              Sloučit varianty
+            </button>
             <label className="flex items-center gap-1.5 rounded-full border border-line bg-white px-3 py-1.5 text-ink/70">
               max chybí
               <input
@@ -314,9 +337,12 @@ export default function Recipes() {
 }
 
 function RecipeCard({ r, cookMode }) {
+  // Karta s víc variantami vede na seznam variant, ne rovnou na jeden recept –
+  // jinak by se ostatní zdroje téhož jídla nedaly proklikat.
+  const grouped = r.variants > 1 && r.group_key;
   return (
     <Link
-      to={`/recept/${r.id}`}
+      to={grouped ? `/varianty/${encodeURIComponent(r.group_key)}` : `/recept/${r.id}`}
       className="group flex flex-col overflow-hidden rounded-xl2 border border-line bg-white shadow-card transition hover:-translate-y-0.5 hover:shadow-lg"
     >
       <div className="relative aspect-[16/10] overflow-hidden bg-basil-soft">
@@ -335,11 +361,15 @@ function RecipeCard({ r, cookMode }) {
         <div className="absolute left-2 top-2">
           <ReadyStamp missing={r.missing_count} />
         </div>
-        {cookMode && (
+        {cookMode ? (
           <div className="absolute right-2 top-2 rounded-full bg-white/90 px-2 py-0.5 text-xs font-semibold text-basil-dark shadow-card">
             {r.have}/{r.total} z výběru
           </div>
-        )}
+        ) : grouped ? (
+          <div className="absolute right-2 top-2 rounded-full bg-white/90 px-2 py-0.5 text-xs font-semibold text-basil-dark shadow-card">
+            {r.variants} variant
+          </div>
+        ) : null}
       </div>
       <div className="flex flex-1 flex-col gap-3 p-4">
         <h3 className="line-clamp-2 text-lg font-semibold leading-snug">

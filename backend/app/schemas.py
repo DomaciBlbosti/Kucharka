@@ -52,6 +52,10 @@ class RecipeCard(BaseModel):
     total: int = 0
     missing_count: int = 0
     ratio: float = 0.0
+    # Seskupení variant téhož jídla (výpis s group=true). `variants` je počet
+    # receptů v kategorii včetně tohohle; 1 = recept je ve výpisu sám.
+    group_key: str | None = None
+    variants: int = 1
 
 
 class RecipeListOut(BaseModel):

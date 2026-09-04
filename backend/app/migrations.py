@@ -93,6 +93,8 @@ _COLUMNS: tuple[ColumnAdd, ...] = (
     # prohnané stemmerem, viz modules/textnorm.py); plní jednorázová
     # migrace na pozadí a pak ingest při každém uložení receptu
     ColumnAdd("recipe", "search_text", "TEXT NULL"),
+    # Recipe – klíč pro seskupení variant téhož jídla (viz textnorm.title_key)
+    ColumnAdd("recipe", "title_key", "VARCHAR(200) NULL"),
 )
 
 # Změny existujících sloupců (pouze nezbytné).
@@ -136,6 +138,8 @@ _INDEXES: tuple[IndexAdd, ...] = (
     # „pečeme" a „+kuře*" nenajde „kuřecí". Staví se taky na pozadí; dokud
     # není hotový, hledání jede přes starší index nad title+instructions.
     IndexAdd("recipe", "ft_recipe_search_text", ("search_text",), fulltext=True),
+    # Seskupení variant ve výpisu jede přes GROUP BY title_key.
+    IndexAdd("recipe", "ix_recipe_title_key", ("title_key",)),
 )
 
 
@@ -238,7 +242,7 @@ def run_all(engine: Engine) -> None:
     if "recipe" in existing_tables and "app_setting" in existing_tables:
         with engine.begin() as conn:
             marker = conn.execute(text(
-                "SELECT value FROM app_setting WHERE `key` = 'mig_search_text_v1'"
+                "SELECT value FROM app_setting WHERE `key` = 'mig_search_text_v2'"
             )).first()
         if marker is None:
             if engine.dialect.name == "sqlite":
@@ -266,7 +270,7 @@ def _missing_fulltext(engine: Engine, insp, existing_tables: set[str]) -> list[I
         # naplněný – jinak by se hledání přepnulo na prázdný index a recepty
         # by dočasně "zmizely". Postaví se při dalším startu.
         if spec.name == "ft_recipe_search_text" and not _marker_set(
-            engine, "mig_search_text_v1"
+            engine, "mig_search_text_v2"
         ):
             log.info("Migrace: fulltext ft_recipe_search_text počká, "
                      "až se dopočítá recipe.search_text.")
@@ -480,29 +484,34 @@ def _strip_title_in_instr_bg(engine: Engine) -> None:
 
 
 def _search_text_bg(engine: Engine) -> None:
-    """JEDNORÁZOVĚ naplň recipe.search_text u receptů, které ho nemají.
+    """JEDNORÁZOVĚ naplň recipe.search_text a recipe.title_key.
 
     Fulltext index nad původním textem selhával na skloňování – „+péct*"
     nenajde „pečeme". Sloupec drží název, postup A suroviny prohnané
     stemmerem (viz modules/textnorm.py); nové recepty ho dostávají při
     ingestu, historii doplní tahle migrace.
 
-    Idempotentní: bere jen řádky s NULL, takže restart uprostřed nevadí.
-    Marker se zapisuje až po úplném doběhu."""
+    `title_key` seskupuje varianty téhož jídla ve výpisu (viz
+    textnorm.title_key); plní se v témže průchodu, ať se tabulka nečte dvakrát.
+
+    Idempotentní: bere jen řádky, kterým některý sloupec chybí, takže restart
+    uprostřed nevadí. Marker se zapisuje až po úplném doběhu."""
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload, sessionmaker
 
     from .models import Recipe
-    from .modules.textnorm import search_text_for
+    from .modules.textnorm import refresh_search_text
 
-    log.info("Migrace: plním recipe.search_text…")
+    log.info("Migrace: plním recipe.search_text a recipe.title_key…")
     Session = sessionmaker(bind=engine)
     filled = 0
     try:
         db = Session()
         try:
             ids = list(db.scalars(
-                select(Recipe.id).where(Recipe.search_text.is_(None))
+                select(Recipe.id).where(
+                    Recipe.search_text.is_(None) | Recipe.title_key.is_(None)
+                )
             ).all())
         finally:
             db.close()
@@ -516,10 +525,7 @@ def _search_text_bg(engine: Engine) -> None:
                     .where(Recipe.id.in_(ids[i : i + CHUNK]))
                     .options(selectinload(Recipe.ingredients))
                 ).all():
-                    r.search_text = search_text_for(
-                        r.title, r.instructions,
-                        [ri.raw_text or "" for ri in r.ingredients],
-                    )
+                    refresh_search_text(r)
                     filled += 1
                 db.commit()
             finally:
@@ -528,12 +534,12 @@ def _search_text_bg(engine: Engine) -> None:
         with engine.begin() as conn:
             conn.execute(text(
                 "INSERT INTO app_setting (`key`, value)"
-                " VALUES ('mig_search_text_v1', '1')"
+                " VALUES ('mig_search_text_v2', '1')"
             ))
-        log.info("Migrace: search_text naplněn u %s receptů.", filled)
+        log.info("Migrace: search_text a title_key naplněny u %s receptů.", filled)
     except Exception as exc:  # noqa: BLE001
         log.warning(
-            "Migrace search_text selhala (zopakuje se při dalším startu): %s", exc
+            "Migrace search_text/title_key selhala (zopakuje se při dalším startu): %s", exc
         )
 
 
