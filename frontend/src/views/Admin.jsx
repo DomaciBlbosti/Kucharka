@@ -1320,13 +1320,68 @@ function SystemPanel() {
   const [chk, setChk] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
+  // Rozlišujeme "ještě nevím" a "nepodařilo se zjistit". Dřív se obojí
+  // schovávalo za v === null a karta prostě zmizela – stačil jeden neúspěšný
+  // dotaz (typicky když backend zrovna restartoval po aktualizaci) a už se
+  // nevrátila, protože se nic nezkoušelo znovu.
+  const [loadErr, setLoadErr] = useState(null);
 
-  const loadVersion = () => api.sysVersion().then(setV).catch(() => {});
+  const loadVersion = () =>
+    api
+      .sysVersion()
+      .then((data) => {
+        setV(data);
+        setLoadErr(null);
+      })
+      .catch((e) => setLoadErr(e?.message || "nedostupné"));
+
   useEffect(() => {
-    loadVersion();
+    let live = true;
+    let tries = 0;
+    const attempt = () => {
+      if (!live) return;
+      api
+        .sysVersion()
+        .then((data) => {
+          if (!live) return;
+          setV(data);
+          setLoadErr(null);
+        })
+        .catch((e) => {
+          if (!live) return;
+          setLoadErr(e?.message || "nedostupné");
+          // Po aktualizaci backend chvíli restartuje – pár pokusů s odstupem
+          // kartu vrátí samo, bez reloadu stránky.
+          if (++tries < 5) setTimeout(attempt, 3000);
+        });
+    };
+    attempt();
+    return () => {
+      live = false;
+    };
   }, []);
 
-  if (!v || !v.enabled) return null;
+  // Karta zmizí jen tehdy, když server VÝSLOVNĚ řekne, že jsou aktualizace
+  // vypnuté. Dokud se to neví, ukáže se aspoň s hláškou a tlačítkem.
+  if (v && !v.enabled) return null;
+  if (!v) {
+    return (
+      <Section title="Verze a aktualizace">
+        {loadErr ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-sm text-miss">
+              Verzi se nepodařilo zjistit ({loadErr}).
+            </p>
+            <Button variant="ghost" onClick={loadVersion}>
+              Zkusit znovu
+            </Button>
+          </div>
+        ) : (
+          <Spinner label="Zjišťuji verzi…" />
+        )}
+      </Section>
+    );
+  }
 
   const check = async () => {
     setBusy(true);
