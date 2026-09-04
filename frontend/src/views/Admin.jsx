@@ -1515,13 +1515,28 @@ function TranslateCard() {
         pro recepty stažené, když nebyla dostupná Ollama.
       </p>
       {st && (
-        <p className="mb-3 text-sm text-ink/70">
-          Receptů celkem: <b>{st.recipes_total}</b> · pravděpodobně cizích:{" "}
-          <b>{st.foreign_estimate}</b>
-          {st.finished_at && !st.running && (
-            <> · naposledy přeloženo: <b>{st.translated}</b></>
-          )}
-        </p>
+        <div className="mb-3 text-sm text-ink/70">
+          <p>
+            Receptů celkem: <b>{st.recipes_total}</b> · z cizích domén:{" "}
+            <b>{st.foreign_total}</b>
+            {st.finished_at && !st.running && (
+              <> · naposledy přeloženo: <b>{st.translated}</b></>
+            )}
+          </p>
+          <p className="mt-1">
+            {st.foreign_pending > 0 ? (
+              <span className="text-miss">Čeká na překlad: <b>{st.foreign_pending}</b></span>
+            ) : (
+              <span className="text-have">✓ Vše přeloženo – nic nečeká</span>
+            )}
+            {st.foreign_partial > 0 && (
+              <span className="text-amber-600">
+                {" · "}u <b>{st.foreign_partial}</b> se nepřeložil postup
+                {" "}(sprav kartou „Znovu přeložit z originálů" níž)
+              </span>
+            )}
+          </p>
+        </div>
       )}
       {st?.running ? (
         <div className="text-sm text-ink/70">
@@ -1530,11 +1545,11 @@ function TranslateCard() {
       ) : (
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-3">
-            <Button onClick={run} disabled={!st || !st.ollama}>
+            <Button onClick={run} disabled={!st || !st.ollama || st.foreign_pending === 0}>
               Přeložit cizí recepty
             </Button>
             {st && !st.ollama && (
-              <span className="text-sm text-miss">Ollama není dostupná.</span>
+              <span className="text-sm text-miss">LLM není dostupné.</span>
             )}
           </div>
           {err && <p className="text-sm text-miss">{err}</p>}
@@ -1582,9 +1597,16 @@ function RetranslateOriginalsCard() {
       {st && (
         <p className="mb-3 text-sm text-ink/70">
           Receptů s uloženým originálem: <b>{st.candidates}</b>
+          {/* Tenhle počet je POOL, ne fronta – originály zůstávají uložené,
+              takže překladem neklesá. Hotovo se pozná z posledního běhu. */}
           {st.finished_at && !st.running && (
-            <> · naposledy přeloženo: <b>{st.translated}</b>
-              {st.domain ? <> (doména {st.domain})</> : null}</>
+            <> · naposledy přeloženo: <b>{st.translated}</b> z {st.total}
+              {st.domain ? <> (doména {st.domain})</> : null}
+              {st.total > st.translated && (
+                <span className="text-amber-600">
+                  {" "}· {st.total - st.translated} neprošlo, zkus spustit znovu
+                </span>
+              )}</>
           )}
         </p>
       )}
