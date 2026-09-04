@@ -1923,6 +1923,70 @@ function MergeDuplicates() {
   );
 }
 
+/** Přepočet pořadí na úvodní stránce. Jinak jede jako poslední krok úlohy
+ *  „Párování surovin"; tohle je ruční spuštění pro případ, že je automatika
+ *  vypnutá nebo se změnila pravidla skóre. */
+function FeedScoreCard() {
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState(null);
+  const timer = useRef(null);
+  const load = () => api.feedStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    load();
+    return () => clearInterval(timer.current);
+  }, []);
+  useEffect(() => {
+    if (st?.running && !timer.current) {
+      timer.current = setInterval(load, 2000);
+    } else if (!st?.running && timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+      load();
+    }
+  }, [st?.running]);
+
+  const run = async () => {
+    setErr(null);
+    try {
+      const r = await api.feedRecompute();
+      setSt(r.status);
+      if (!r.started) setErr("Přepočet už běží.");
+    } catch (e) {
+      setErr(e?.message || String(e));
+    }
+  };
+
+  return (
+    <Section title="Pořadí na úvodní stránce">
+      <p className="mb-4 text-sm text-ink/60">
+        Přepočítá skóre, podle kterého se řadí výpis receptů. Skóre stojí na
+        bayesovském průměru hodnocení (&bdquo;5,0 od tří lidí&ldquo; nepřebije
+        &bdquo;4,6 od pěti set&ldquo;) a strhává body receptům bez napárovaných
+        surovin nebo s prázdným postupem &ndash; kvůli nim se dřív nahoru dostaly
+        návody na zdobení dortů. Počítá se automaticky po každém párování
+        surovin; ručně jen když je automatika vypnutá.
+      </p>
+      {st?.running ? (
+        <Spinner label={`Počítám… ${st.done}/${st.total}`} />
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button onClick={run}>Přepočítat pořadí</Button>
+            {st?.updated > 0 && (
+              <span className="text-sm text-ink/60">
+                Naposledy: {st.updated} receptů
+                {st.duration_s ? ` (${st.duration_s} s)` : ""}
+              </span>
+            )}
+          </div>
+          {st?.error && <p className="text-sm text-miss">Poslední běh selhal: {st.error}</p>}
+          {err && <p className="text-sm text-miss">{err}</p>}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 function ReparseInstructionsCard() {
   const [st, setSt] = useState(null);
   const [err, setErr] = useState(null);
@@ -2449,6 +2513,7 @@ export default function Admin() {
       </Section>
       <CorpusAuditCard />
       <IngredientAuditCard />
+      <FeedScoreCard />
       <ReparseInstructionsCard />
       <MatchPanel />
       <LlmMatchCard />

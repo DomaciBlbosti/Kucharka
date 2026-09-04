@@ -28,9 +28,9 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
-from ..db import SessionLocal
+from ..db import SessionLocal, engine
 from ..models import Recipe
 
 log = logging.getLogger("kucharka.feed")
@@ -121,6 +121,17 @@ def is_running() -> bool:
         return bool(_state["running"])
 
 
+def _instr_len():
+    """Počet ZNAKŮ oříznutého postupu, spočítaný databází.
+
+    MariaDB má LENGTH v bajtech – česká diakritika by ho nafoukla a prahu
+    `_SHORT_INSTR_CHARS` by se dotýkaly i delší postupy. CHAR_LENGTH počítá
+    znaky, ale SQLite ho nezná; tam je znakové rovnou LENGTH.
+    """
+    fn = func.length if engine.dialect.name == "sqlite" else func.char_length
+    return fn(func.trim(func.coalesce(Recipe.instructions, "")))
+
+
 def recompute_all() -> dict:
     """Přepočítá `feed_score` u všech receptů.
 
@@ -128,6 +139,10 @@ def recompute_all() -> dict:
     hromadně po dávkách – přes 171 tisíc receptů to jinak není únosné.
     Zápis jde přes hromadný ORM UPDATE podle primárního klíče: seznam dictů
     s `id` a novou hodnotou, jeden příkaz na dávku místo příkazu na řádek.
+
+    Délka postupu se počítá NA SERVERU. Skóre z `instructions` potřebuje jen
+    počet znaků, ale stáhnout kvůli tomu text všech receptů znamená stovky MB
+    v paměti – na NASu zbytečné riziko. Takhle jde přes drát jedno číslo.
     """
     started = time.monotonic()
     now = datetime.now(timezone.utc)
@@ -135,7 +150,7 @@ def recompute_all() -> dict:
     try:
         rows = db.execute(
             select(Recipe.id, Recipe.rating, Recipe.rating_count, Recipe.ing_total,
-                   Recipe.instructions, Recipe.created_at)
+                   _instr_len().label("instr_chars"), Recipe.created_at)
         ).all()
         _set(total=len(rows), done=0, updated=0, error=None)
 
@@ -147,7 +162,7 @@ def recompute_all() -> dict:
                 "feed_score": score(
                     rating=r.rating, rating_count=r.rating_count,
                     ing_total=r.ing_total,
-                    instr_chars=len((r.instructions or "").strip()),
+                    instr_chars=r.instr_chars or 0,
                     created_at=r.created_at, now=now,
                 ),
             })

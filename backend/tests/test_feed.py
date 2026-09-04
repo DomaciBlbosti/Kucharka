@@ -202,6 +202,33 @@ def main():
                   str(fresh.feed_score))
             check("dekorace má nižší skóre",
                   db.get(Recipe, dek_id).feed_score < fresh.feed_score)
+
+            # ── délku postupu počítá databáze, a to ve ZNACÍCH ──
+            # recompute_all kvůli `len()` netahá text postupu do paměti
+            # (171k receptů = stovky MB), počítá ho SQL funkcí. Na MariaDB by
+            # LENGTH vracelo bajty a česká diakritika by postup nafoukla nad
+            # práh – proto CHAR_LENGTH. Tenhle postup má 100 znaků, ale ve
+            # UTF-8 přes 120 bajtů: musí dostat postih za krátký postup.
+            diakritika = "Žluťoučký kůň úpěl ďábelské ódy, přičemž míchal řídké těsto. " * 3
+            diakritika = diakritika[:100]  # 100 znaků / 134 bajtů
+            kratky = Recipe(title="Krátký postup s diakritikou", source_url="u:kratky",
+                            rating=4.5, rating_count=50, ing_total=8,
+                            instructions=diakritika)
+            db.add(kratky)
+            db.commit()
+            kratky_id = kratky.id
+            feed.recompute_all()
+            db.expire_all()
+
+            check("postup se měří na 100 znaků, ne na 120+ bajtů",
+                  len(diakritika) == 100 and len(diakritika.encode()) > 120,
+                  f"{len(diakritika)} znaků / {len(diakritika.encode())} bajtů")
+            expected = feed.score(rating=4.5, rating_count=50, ing_total=8,
+                                  instr_chars=100, created_at=kratky.created_at,
+                                  now=datetime.now(timezone.utc))
+            check("krátký postup dostane postih i s diakritikou",
+                  abs(db.get(Recipe, kratky_id).feed_score - expected) < 0.05,
+                  f"{db.get(Recipe, kratky_id).feed_score} vs {expected}")
         finally:
             db.close()
 
