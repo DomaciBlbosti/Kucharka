@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..models import Ingredient, IngredientAlias
+from . import ingredient_resolve
 from .nutrition import PIECE_GRAMS, UNIT_TO_G, UNIT_TO_ML, find_unit
 
 log = logging.getLogger("kucharka.normalizer")
@@ -278,6 +279,17 @@ def create_ingredient_via_llm(db: Session, name: str) -> Ingredient | None:
         log.info("create_ingredient_via_llm: LLM vrátilo moc dlouhý name_cs, zahazuji: %r…", name_cs[:80])
         return None
 
+    # Fuzzy match nahoře běžel na SUROVÉM textu („olivového oleje"), tohle je
+    # název, který z něj udělalo LLM („olivový olej") – a ten se musí zkusit
+    # dohledat znovu, jinak vznikne duplicita k surovině, která už v tabulce
+    # je. Bez téhle kontroly rostl slovník o každou variantu zvlášť.
+    existing = ingredient_resolve.find_by_name(db, name_cs)
+    if existing is not None:
+        log.info("create_ingredient_via_llm: %r už existuje jako %r (id=%s), "
+                 "zakládat nebudu", name_cs, existing.name_cs, existing.id)
+        db.add(IngredientAlias(alias=clean, ingredient_id=existing.id))
+        return existing
+
     ing = Ingredient(
         name_cs=name_cs,
         category=(data.get("category") or None),
@@ -290,6 +302,7 @@ def create_ingredient_via_llm(db: Session, name: str) -> Ingredient | None:
     )
     db.add(ing)
     db.flush()  # potřebujeme id pro alias
+    ingredient_resolve.invalidate()
     db.add(IngredientAlias(alias=clean, ingredient_id=ing.id))
     return ing
 

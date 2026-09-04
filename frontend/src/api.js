@@ -308,6 +308,10 @@ export const api = {
   corpusAuditStatus: () => afetch("/api/admin/corpus-audit/status").then(J),
   corpusAuditRun: () =>
     afetch("/api/admin/corpus-audit/run", { method: "POST" }).then(J),
+  ingredientAuditStatus: () =>
+    afetch("/api/admin/ingredient-audit/status").then(J),
+  ingredientAuditRun: () =>
+    afetch("/api/admin/ingredient-audit/run", { method: "POST" }).then(J),
   reparseInstructionsStatus: () =>
     afetch("/api/admin/reparse-instructions/status").then(J),
   reparseInstructionsRun: () =>
