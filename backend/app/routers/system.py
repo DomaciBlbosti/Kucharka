@@ -26,11 +26,11 @@ def _repo_dir() -> str:
     return str(Path(__file__).resolve().parents[3])
 
 
-def _git(*args: str) -> str:
+def _git(*args: str, timeout: int = 120) -> str:
     try:
         r = subprocess.run(
             ["git", "-C", _repo_dir(), *args],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=timeout,
         )
         return (r.stdout or r.stderr).strip()
     except Exception as exc:  # noqa: BLE001
@@ -40,6 +40,40 @@ def _git(*args: str) -> str:
 def _branch() -> str:
     b = _git("rev-parse", "--abbrev-ref", "HEAD")
     return b if b and "chyba" not in b else "main"
+
+
+# Cache verze. Proč: /version sahal na git ČTYŘIKRÁT a každé volání mělo
+# timeout 120 s. Zrovna po kliknutí na „Aktualizovat" dělá supervisor v tomtéž
+# repozitáři `git pull`, takže se čeká na index.lock – endpoint se zasekl na
+# minuty, dotaz z UI vypršel a karta „Verze a aktualizace" zmizela.
+#
+# Commit se za běhu procesu nezmění (aktualizace proces restartuje), takže
+# stačí krátká cache a jedno volání gitu místo čtyř. Timeout je nízký: radši
+# vrátit „?" hned než držet request.
+_VERSION_TTL_S = 60.0
+_version_cache: dict = {"at": 0.0, "data": None}
+_GIT_TIMEOUT_S = 5
+_SEP = "\x1f"
+
+
+def _version_info() -> dict:
+    data = {
+        "supervised": os.environ.get("SUPERVISED") == "1",
+        "commit": "",
+        "date": "",
+        "subject": "",
+        "branch": "main",
+    }
+    # Jeden `git log` místo tří – pole oddělená znakem, který se v commit
+    # message nevyskytuje.
+    out = _git("log", "-1", f"--format=%h{_SEP}%ci{_SEP}%s", timeout=_GIT_TIMEOUT_S)
+    if out and not out.startswith("chyba:") and _SEP in out:
+        commit, date, subject = (out.split(_SEP) + ["", "", ""])[:3]
+        data.update(commit=commit, date=date, subject=subject)
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD", timeout=_GIT_TIMEOUT_S)
+    if branch and not branch.startswith("chyba:"):
+        data["branch"] = branch
+    return data
 
 
 @router.get("/jobs")
@@ -67,15 +101,20 @@ def system_log(
 
 
 @router.get("/version")
-def version():
-    return {
-        "enabled": settings.update_enabled,
-        "supervised": os.environ.get("SUPERVISED") == "1",
-        "commit": _git("log", "-1", "--format=%h"),
-        "date": _git("log", "-1", "--format=%ci"),
-        "subject": _git("log", "-1", "--format=%s"),
-        "branch": _branch(),
-    }
+def version(refresh: bool = Query(False, description="obejít cache")):
+    """Verze běžící appky. Nikdy neselže – když git nejde (běží pull, chybí
+    .git), vrátí prázdné hodnoty, ale `enabled` je vždycky správně: podle něj
+    se v UI rozhoduje, jestli kartu vůbec ukázat."""
+    now = time.monotonic()
+    cached = _version_cache["data"]
+    if refresh or cached is None or now - _version_cache["at"] > _VERSION_TTL_S:
+        fresh = _version_info()
+        # Když git zrovna nejde, radši ponechat poslední známý údaj než
+        # ukázat prázdno – po aktualizaci se cache stejně obnoví restartem.
+        if fresh["commit"] or cached is None:
+            _version_cache.update(at=now, data=fresh)
+            cached = fresh
+    return {"enabled": settings.update_enabled, **cached}
 
 
 @router.post("/check")
