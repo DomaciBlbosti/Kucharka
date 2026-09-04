@@ -142,12 +142,16 @@ _INDEXES: tuple[IndexAdd, ...] = (
     # „pečeme" a „+kuře*" nenajde „kuřecí". Staví se taky na pozadí; dokud
     # není hotový, hledání jede přes starší index nad title+instructions.
     IndexAdd("recipe", "ft_recipe_search_text", ("search_text",), fulltext=True),
+    # Tyhle tři jsou čistě výkonové: appka bez nich funguje, jen pomaleji.
+    # Na `recipe` (dva FULLTEXT indexy, 171k řádků) je CREATE INDEX přestavba
+    # tabulky v řádu minut, takže se staví NA POZADÍ – jinak by každý z nich
+    # držel start appky a healthcheck by ji mezitím zabil.
     # Seskupení variant ve výpisu jede přes GROUP BY title_key.
-    IndexAdd("recipe", "ix_recipe_title_key", ("title_key",)),
+    IndexAdd("recipe", "ix_recipe_title_key", ("title_key",), background=True),
     # Úvodní stránka čte prvních N receptů podle skóre – bez indexu by to
     # znamenalo setřídit celou tabulku při každém načtení.
-    IndexAdd("recipe", "ix_recipe_feed_score", ("feed_score",)),
-    IndexAdd("recipe", "ix_recipe_hidden", ("hidden",)),
+    IndexAdd("recipe", "ix_recipe_feed_score", ("feed_score",), background=True),
+    IndexAdd("recipe", "ix_recipe_hidden", ("hidden",), background=True),
 )
 
 
@@ -603,20 +607,57 @@ def _search_text_bg(engine: Engine) -> None:
 
 
 def _add_columns(engine: Engine, insp, existing_tables: set[str]) -> None:
+    """Doplň chybějící sloupce – všechny pro jednu tabulku JEDNÍM příkazem.
+
+    Proč jedním: `recipe` má dva FULLTEXT indexy a InnoDB na takové tabulce
+    neumí ADD COLUMN „instantně" – přestavuje celou tabulku a znovu tokenizuje
+    oba fulltexty. U 171 tisíc receptů je to minuty. Když se sloupce přidávaly
+    po jednom, byla to jedna přestavba NA SLOUPEC: čtyři nové sloupce = čtyři
+    přestavby a start appky stál přes deset minut (viz "Waiting for application
+    startup" v logu). Sloučené do jednoho ALTERu je přestavba jen jedna.
+
+    Nejdřív se zkusí ALGORITHM=INSTANT: na tabulkách bez fulltextu je pak
+    přidání sloupce okamžité. Když ho engine pro danou změnu neumí, spadne to
+    na obyčejný ALTER.
+    """
+    by_table: dict[str, list[ColumnAdd]] = {}
     for spec in _COLUMNS:
         if spec.table not in existing_tables:
             continue
         have = {c["name"] for c in insp.get_columns(spec.table)}
         if spec.name in have:
             continue
-        try:
-            with engine.begin() as conn:
-                conn.execute(text(
-                    f"ALTER TABLE {spec.table} ADD COLUMN {spec.name} {spec.ddl}"
-                ))
-            log.info("Migrace: + sloupec %s.%s (%s)", spec.table, spec.name, spec.ddl)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Migrace ADD %s.%s selhala: %s", spec.table, spec.name, exc)
+        by_table.setdefault(spec.table, []).append(spec)
+
+    # SQLite umí v jednom ALTERu jen jeden ADD COLUMN – tam zůstává po jednom.
+    single = engine.dialect.name == "sqlite"
+    for table, specs in by_table.items():
+        groups = [[s] for s in specs] if single else [specs]
+        for group in groups:
+            adds = ", ".join(f"ADD COLUMN {s.name} {s.ddl}" for s in group)
+            names = ", ".join(s.name for s in group)
+            log.info("Migrace: přidávám do %s sloupce %s – u velké tabulky "
+                     "s fulltextem to znamená přestavbu a může to trvat minuty.",
+                     table, names)
+            ok = False
+            if not single:
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text(
+                            f"ALTER TABLE {table} {adds}, ALGORITHM=INSTANT"
+                        ))
+                    ok = True
+                    log.info("Migrace: + sloupce %s.%s (okamžitě)", table, names)
+                except Exception:  # noqa: BLE001 – engine to pro tuhle změnu neumí
+                    pass
+            if ok:
+                continue
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {table} {adds}"))
+                log.info("Migrace: + sloupce %s.%s", table, names)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Migrace ADD %s.%s selhala: %s", table, names, exc)
 
 
 def _modify_columns(engine: Engine, insp, existing_tables: set[str]) -> None:
