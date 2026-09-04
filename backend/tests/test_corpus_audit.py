@@ -83,6 +83,60 @@ def db_fingerprint():
         db.close()
 
 
+def coverage_checks():
+    """`ingr_coverage` – podíl surovin, které postup vůbec zmíní.
+
+    Metrika dřív jela na prefixu PRVNÍHO slova suroviny delšího než 4 znaky.
+    Jenže první slovo je skoro vždycky jednotka nebo přívlastek, ne surovina:
+    u „200 g hladké mouky" se hledalo „hladk" místo „mouk", u „1 lžíce
+    olivového oleje" zase „lzic" místo „olej". Úplně v pořádku napsané recepty
+    tak vycházely jako skoro nulové pokrytí a v nejnižším pásmu profilu skončilo
+    20 563 receptů. Teď se porovnávají všechna slova suroviny přes stemmer.
+    """
+    cov = corpus_audit._coverage
+    print("\n── ingr_coverage ──")
+
+    instr = ("Máslo utřeme s cukrem, přidáme vejce. Vmícháme hladkou mouku "
+             "a mléko. Pečeme 45 minut.")
+    check("surovina se pozná podle podstatného jména, ne podle prvního slova",
+          cov(instr, ["200 g hladké mouky"]) == 1.0,
+          str(cov(instr, ["200 g hladké mouky"])))
+    check("jednotka na začátku řádku nevadí",
+          cov("Zalijeme olejem.", ["2 lžíce olivového oleje"]) == 1.0)
+    check("skloňování se stemmerem sedí",
+          cov("Přidáme mléko a vejce.", ["200 ml mléka", "3 vejce"]) == 1.0)
+
+    # Celý recept: dřív 0.67, nově 1.0.
+    babovka = ["200 g hladké mouky", "150 g krystalového cukru", "3 vejce",
+               "125 g změklého másla", "200 ml mléka"]
+    check("běžný recept vychází jako plné pokrytí", cov(instr, babovka) == 1.0,
+          str(cov(instr, babovka)))
+
+    # Metrika musí pořád UMĚT ukázat na díru – jinak by byla k ničemu.
+    check("chybějící surovina se pozná",
+          cov("Máslo utřeme s cukrem.", ["150 g cukru", "300 g brambor"]) == 0.5,
+          str(cov("Máslo utřeme s cukrem.", ["150 g cukru", "300 g brambor"])))
+    check("postup, který nezmiňuje nic, je nula",
+          cov("Vše smícháme a podáváme.", ["200 g mouky", "3 vejce"]) == 0.0)
+    check("prázdný postup je nula",
+          cov("", ["200 g mouky"]) == 0.0)
+
+    # Jednotky se nesmí počítat ani do jmenovatele: „2 ks" nenese surovinu,
+    # takže by ji postup nemohl zmínit a metrika by klesala za nic.
+    check("řádek bez suroviny se do jmenovatele nepočítá",
+          cov("Přidáme mouku.", ["200 g hladké mouky", "2 ks", "špetka"]) == 1.0,
+          str(cov("Přidáme mouku.", ["200 g hladké mouky", "2 ks", "špetka"])))
+    check("žádná použitelná surovina → nula, ne dělení nulou",
+          cov("Přidáme mouku.", ["2 ks", "špetka"]) == 0.0)
+    check("prázdný seznam surovin nespadne", cov("Vaříme.", []) == 0.0)
+
+    check("jednotky jsou vyfiltrované i z víceslovných řádků",
+          "lzic" not in corpus_audit._ingredient_stems("3 lžíce majonézy"),
+          str(corpus_audit._ingredient_stems("3 lžíce majonézy")))
+    check("čísla se do kmenů suroviny nepočítají",
+          not any(t.isdigit() for t in corpus_audit._ingredient_stems("200 g mouky")))
+
+
 def main():
     seed_db()
     before = db_fingerprint()
@@ -217,6 +271,8 @@ def main():
 
     # ── read-only ──
     check("audit nezměnil ani řádek v DB", db_fingerprint() == before)
+
+    coverage_checks()
 
     print(f"\n{PASSED} OK, {FAILED} FAIL")
     return 1 if FAILED else 0
