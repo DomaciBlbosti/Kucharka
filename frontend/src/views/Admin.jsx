@@ -1767,7 +1767,98 @@ function IngredientAuditCard() {
           {err && <p className="text-sm text-miss">{err}</p>}
         </div>
       )}
+      <MergeDuplicates />
     </Section>
+  );
+}
+
+/** Sloučení shluků se SHODNÝM názvem. Ostatní třídy z auditu se automaticky
+ *  neslučují – „Těsto"/„tresti" nebo „plátek másla"/„plátky masa" jsou různé
+ *  suroviny a rozhodnout to musí člověk nad reportem. */
+function MergeDuplicates() {
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+  const timer = useRef(null);
+  const load = () => api.ingredientMergeStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    load();
+    return () => clearInterval(timer.current);
+  }, []);
+  useEffect(() => {
+    if (st?.running && !timer.current) {
+      timer.current = setInterval(load, 2000);
+    } else if (!st?.running && timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+      load();
+    }
+  }, [st?.running]);
+
+  const run = async (dryRun) => {
+    setErr(null);
+    setConfirming(false);
+    try {
+      const r = await api.ingredientMergeRun(dryRun);
+      setSt(r.status);
+      if (!r.started) setErr("Slučování už běží.");
+    } catch (e) {
+      setErr(e?.message || String(e));
+    }
+  };
+
+  const done = !st?.running && st?.finished_at;
+
+  return (
+    <div className="mt-6 border-t border-line pt-5">
+      <h3 className="font-display text-sm font-bold">Sloučit duplicity</h3>
+      <p className="mb-3 mt-1 text-sm text-ink/60">
+        Sloučí jen shluky se <strong>zcela shodným názvem</strong> (98× &bdquo;máslo&ldquo;,
+        81× &bdquo;mléko&ldquo;). Vítězí referenční záznam z NutriDatabáze, jinak ten
+        s nejvíc recepty; ostatní se přepojí a smažou a dotčeným receptům se
+        přepočítají kalorie. Shluky &bdquo;podobný název&ldquo; se takhle slučovat
+        nesmí &ndash; ty projdi v reportu a řeš jednotlivě.
+      </p>
+      {st?.running ? (
+        <Spinner
+          label={`${st.dry_run ? "Počítám nanečisto" : "Slučuji"}… ${st.done}/${st.total}`}
+        />
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button variant="ghost" onClick={() => run(true)}>
+              Spočítat nanečisto
+            </Button>
+            {confirming ? (
+              <>
+                <Button onClick={() => run(false)}>Opravdu sloučit</Button>
+                <button
+                  onClick={() => setConfirming(false)}
+                  className="text-sm text-ink/45 hover:text-ink"
+                >
+                  zrušit
+                </button>
+              </>
+            ) : (
+              <Button variant="ghost" onClick={() => setConfirming(true)}>
+                Sloučit naostro…
+              </Button>
+            )}
+          </div>
+          {done && (
+            <p className="text-sm text-ink/60">
+              {st.dry_run ? "Nanečisto: " : "Sloučeno: "}
+              {st.merged_clusters} shluků, {st.removed_ingredients} surovin ke
+              smazání, {st.moved_rows} přepojených řádků
+              {!st.dry_run && `, ${st.recipes_touched} receptů přepočítáno`}
+              {st.duration_s ? ` (${st.duration_s} s)` : ""}.
+            </p>
+          )}
+          {st?.error && <p className="text-sm text-miss">Poslední běh selhal: {st.error}</p>}
+          {err && <p className="text-sm text-miss">{err}</p>}
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -19,9 +19,26 @@ _tmpdir = tempfile.mkdtemp(prefix="kucharka-ingredients-test-")
 os.environ["DATABASE_URL"] = f"sqlite:///{_tmpdir}/test.db"
 
 import app.models  # noqa: E402,F401 - naplní metadata před create_all
+from sqlalchemy import func, select  # noqa: E402
+
 from app.db import Base, SessionLocal, engine  # noqa: E402
-from app.models import Ingredient, PantryItem, Recipe, RecipeIngredient  # noqa: E402
-from app.modules import ingredient_audit, ingredient_resolve, llm_match  # noqa: E402
+from app.models import (  # noqa: E402
+    BarcodeMap,
+    Ingredient,
+    IngredientAlias,
+    IngredientEmbedding,
+    MatchDecision,
+    PantryItem,
+    Recipe,
+    RecipeIngredient,
+    ShoppingItem,
+)
+from app.modules import (  # noqa: E402
+    ingredient_audit,
+    ingredient_merge,
+    ingredient_resolve,
+    llm_match,
+)
 
 Base.metadata.create_all(engine)
 
@@ -155,6 +172,106 @@ def main():
         check("běh vrátí cestu k reportu", "report_path" in out)
         check("audit nic nesmazal",
               db.query(Ingredient).count() == report["total_ingredients"])
+
+        # ── slučování ──────────────────────────────────────────────────
+        # Shluk se shodným názvem, na kterém visí úplně všechny typy vazeb.
+        dup_a = Ingredient(name_cs="mrkev", source="nutridatabaze", kcal_100g=35)
+        dup_b = Ingredient(name_cs="Mrkev", source="ollama", kcal_100g=41)
+        db.add_all([dup_a, dup_b])
+        db.flush()
+        r2 = Recipe(title="Mrkvový salát", source_url="http://t/2", servings=1)
+        db.add(r2)
+        db.flush()
+        db.add_all([
+            RecipeIngredient(recipe_id=r2.id, raw_text="100 g mrkev",
+                             ingredient_id=dup_b.id, amount=100, unit="g",
+                             grams=100, kcal=41),
+            PantryItem(ingredient_id=dup_b.id),
+            ShoppingItem(ingredient_id=dup_b.id, label="mrkev"),
+            IngredientAlias(alias="mrkvicka", ingredient_id=dup_b.id),
+            MatchDecision(lookup_key="mrkvicka", sample_text="mrkvička",
+                          status="applied", ingredient_id=dup_b.id),
+            BarcodeMap(barcode="8595000000001", ingredient_id=dup_b.id),
+            IngredientEmbedding(ingredient_id=dup_b.id, model="test", dim=2,
+                                vec=b"\x00\x00\x00\x00"),
+        ])
+        db.commit()
+        # Sloučení běží ve VLASTNÍ session a poražené řádky maže; po
+        # expire_all by na odstraněném objektu spadl i přístup k .id,
+        # takže si identifikátory schováme jako čísla.
+        a_id, b_id, r2_id = dup_a.id, dup_b.id, r2.id
+
+        clusters = ingredient_merge.exact_name_clusters(db)
+        mrkev = [c for c in clusters if b_id in c[1]]
+        check("shluk shodných názvů se najde i přes velikost písmen",
+              len(mrkev) == 1, str(clusters))
+        check("vítězem je referenční záznam",
+              mrkev and mrkev[0][0] == a_id, str(mrkev))
+
+        before = db.query(Ingredient).count()
+        dry = ingredient_merge.merge_exact_names(dry_run=True)
+        check("nanečisto nic nesmaže",
+              db.query(Ingredient).count() == before, str(db.query(Ingredient).count()))
+        check("nanečisto spočítá řádky k přepojení",
+              dry["moved_rows"] >= 1 and dry["removed_ingredients"] >= 1, str(dry))
+
+        out = ingredient_merge.merge_exact_names(dry_run=False)
+        db.expire_all()
+        check("poražená surovina zmizela", db.get(Ingredient, b_id) is None)
+        check("vítěz zůstal", db.get(Ingredient, a_id) is not None)
+        check("řádek receptu se přepojil",
+              db.scalar(select(RecipeIngredient.ingredient_id)
+                        .where(RecipeIngredient.recipe_id == r2_id)) == a_id)
+        check("řádku se přepočítaly kalorie podle vítěze",
+              db.scalar(select(RecipeIngredient.kcal)
+                        .where(RecipeIngredient.recipe_id == r2_id)) == 35,
+              str(db.scalar(select(RecipeIngredient.kcal)
+                            .where(RecipeIngredient.recipe_id == r2_id))))
+        for model, label in ((PantryItem, "spíž"), (ShoppingItem, "nákup"),
+                             (IngredientAlias, "alias"), (MatchDecision, "rozhodnutí"),
+                             (BarcodeMap, "čárový kód")):
+            left = db.scalar(select(func.count()).select_from(model)
+                             .where(model.ingredient_id == b_id)) or 0
+            moved = db.scalar(select(func.count()).select_from(model)
+                              .where(model.ingredient_id == a_id)) or 0
+            check(f"{label} nezůstal na poražené surovině", left == 0, str(left))
+            check(f"{label} se přepojil na vítěze", moved >= 1, str(moved))
+        check("embedding poražené se smazal",
+              db.get(IngredientEmbedding, b_id) is None)
+        check("běh hlásí, co udělal",
+              out["removed_ingredients"] >= 1 and out["recipes_touched"] >= 1, str(out))
+
+        # Opakovaný běh už nemá co dělat – slučování je idempotentní.
+        again = ingredient_merge.merge_exact_names(dry_run=False)
+        check("druhý běh už nic neslučuje",
+              again["removed_ingredients"] == 0, str(again))
+
+        # Spíž: vítěz i poražený v ní jsou → řádek se maže, ne přepojuje
+        # (pantry_item má UNIQUE na ingredient_id).
+        p1 = Ingredient(name_cs="celer", source="nutridatabaze")
+        p2 = Ingredient(name_cs="Celer", source="ollama")
+        db.add_all([p1, p2])
+        db.flush()
+        db.add_all([PantryItem(ingredient_id=p1.id), PantryItem(ingredient_id=p2.id)])
+        db.commit()
+        p1_id, p2_id = p1.id, p2.id
+        ingredient_merge.merge_exact_names(dry_run=False)
+        db.expire_all()
+        check("kolize ve spíži nespadne na UNIQUE",
+              db.scalar(select(func.count()).select_from(PantryItem)
+                        .where(PantryItem.ingredient_id == p1_id)) == 1)
+        check("duplicitní řádek spíže je pryč", db.get(Ingredient, p2_id) is None)
+
+        # Ruční sloučení různých názvů (třídy, které automat neslučuje)
+        m1 = Ingredient(name_cs="rajče", source="nutridatabaze")
+        m2 = Ingredient(name_cs="rajčata loupaná", source="ollama")
+        db.add_all([m1, m2])
+        db.commit()
+        m1_id, m2_id = m1.id, m2.id
+        res = ingredient_merge.merge_manual(m1_id, [m2_id])
+        db.expire_all()
+        check("ruční sloučení projde", db.get(Ingredient, m2_id) is None, str(res))
+        check("ruční sloučení hlásí vítěze", res["keep_name"] == "rajče", str(res))
     finally:
         db.close()
 

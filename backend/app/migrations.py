@@ -255,6 +255,23 @@ def run_all(engine: Engine) -> None:
                     name="migrations-search-text",
                 ).start()
 
+    # UNIQUE na názvu suroviny – přidá se, jakmile jsou duplicity uklizené.
+    # Na SQLite se přeskakuje: testy zakládají suroviny volně a index by jim
+    # padal na tvrdém omezení, které produkce dostane až po sloučení.
+    if (
+        engine.dialect.name != "sqlite"
+        and "ingredient" in existing_tables
+        and "uq_ingredient_name" not in {
+            ix["name"] for ix in inspect(engine).get_indexes("ingredient")
+        }
+    ):
+        import threading
+
+        threading.Thread(
+            target=_unique_ingredient_name_bg, args=(engine,), daemon=True,
+            name="migrations-uq-ingredient",
+        ).start()
+
 
 def _missing_fulltext(engine: Engine, insp, existing_tables: set[str]) -> list[IndexAdd]:
     if engine.dialect.name == "sqlite":
@@ -277,6 +294,40 @@ def _missing_fulltext(engine: Engine, insp, existing_tables: set[str]) -> list[I
             continue
         out.append(spec)
     return out
+
+
+def _unique_ingredient_name_bg(engine: Engine) -> None:
+    """Zkus přidat UNIQUE na `ingredient.name_cs` – trvalá pojistka proti
+    duplicitám, kterou nemůže obejít žádná budoucí zapisovací cesta.
+
+    Nejde přidat rovnou: audit našel v produkci 538 shluků se shodným
+    názvem (98× „máslo"), na kterých by ALTER selhal. Proto se nejdřív
+    zkontroluje, jestli duplicity ještě jsou, a když ano, index se
+    přeskočí a zkusí znovu při dalším startu – typicky po doběhu
+    dávkového slučování (`ingredient_merge`).
+    """
+    try:
+        with engine.begin() as conn:
+            dupes = conn.execute(text(
+                "SELECT COUNT(*) FROM (SELECT LOWER(TRIM(name_cs)) k"
+                " FROM ingredient GROUP BY k HAVING COUNT(*) > 1) d"
+            )).scalar() or 0
+        if dupes:
+            log.info(
+                "Migrace: UNIQUE na ingredient.name_cs čeká – %s názvů má "
+                "zatím víc záznamů (slouč je v administraci).", dupes,
+            )
+            return
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE UNIQUE INDEX uq_ingredient_name ON ingredient (name_cs)"
+            ))
+        log.info("Migrace: UNIQUE na ingredient.name_cs přidán.")
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "Migrace UNIQUE na ingredient.name_cs selhala "
+            "(zopakuje se při dalším startu): %s", exc,
+        )
 
 
 def _marker_set(engine: Engine, key: str) -> bool:
