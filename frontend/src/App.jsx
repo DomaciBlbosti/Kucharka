@@ -9,6 +9,7 @@ import Shopping from "./views/Shopping";
 import AddRecipe from "./views/AddRecipe";
 import Generate from "./views/Generate";
 import Admin from "./views/Admin";
+import Review from "./views/Review";
 import MealPlan from "./views/MealPlan";
 import ShareRecipe from "./views/ShareRecipe";
 
@@ -22,6 +23,7 @@ const CORE_NAV = [
 const MORE_NAV = [
   { to: "/vymyslet", label: "Vymyslet", icon: "✨" },
   { to: "/pridat", label: "Přidat", icon: "➕" },
+  { to: "/kontrola", label: "Kontrola", icon: "🔍" },
   { to: "/admin", label: "Admin", icon: "⚙️" },
 ];
 
@@ -218,6 +220,7 @@ export default function App() {
           <Route path="/sdilet" element={<ShareRecipe />} />
           <Route path="/nakup" element={<Shopping />} />
           <Route path="/pridat" element={<AddRecipe />} />
+          <Route path="/kontrola" element={<Review />} />
           <Route path="/admin" element={<Admin />} />
         </Routes>
       </main>

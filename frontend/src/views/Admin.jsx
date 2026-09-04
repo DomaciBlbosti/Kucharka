@@ -1923,6 +1923,121 @@ function MergeDuplicates() {
   );
 }
 
+/** Export receptů ke kontrole. Profil z auditu korpusu říká, KOLIK receptů
+ *  je podezřelých; tenhle export ukazuje PROČ – originál vedle zobrazené
+ *  verze, výsledek párování surovin, metriky a tagy. */
+function RecipeExportCard() {
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState(null);
+  const [limit, setLimit] = useState(100);
+  const [pick, setPick] = useState("random");
+  const [domain, setDomain] = useState("");
+  const [seed, setSeed] = useState(42);
+  const timer = useRef(null);
+  const load = () => api.recipeExportStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    load();
+    return () => clearInterval(timer.current);
+  }, []);
+  useEffect(() => {
+    if (st?.running && !timer.current) {
+      timer.current = setInterval(load, 1500);
+    } else if (!st?.running && timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+      load();
+    }
+  }, [st?.running]);
+
+  const run = async () => {
+    setErr(null);
+    try {
+      const r = await api.recipeExportRun({ limit, pick, domain, seed });
+      setSt(r.status);
+      if (!r.started) setErr("Export už běží.");
+    } catch (e) {
+      setErr(e?.message || String(e));
+    }
+  };
+
+  const fmtWhen = (iso) => (iso ? new Date(iso).toLocaleString("cs-CZ") : null);
+  const fmtKb = (b) => `${Math.max(1, Math.round((b || 0) / 1024))} kB`;
+  const picks = st?.picks || { random: "náhodný vzorek" };
+
+  return (
+    <Section title="Export receptů ke kontrole">
+      <p className="mb-4 text-sm text-ink/60">
+        Vyexportuje vzorek receptů do jednoho HTML souboru, kde je vedle sebe
+        text ze zdroje a text, který vidíš v appce &ndash; u přeložených receptů
+        i verze před překladem. Ke každému receptu tabulka surovin s tím, na co
+        se řádek napároval a kolik z toho vyšlo gramů a kalorií, plus metriky a
+        tagy. Nejhůř zpracované recepty jsou nahoře. Soubor má filtry přímo
+        v sobě, funguje offline. XML je totéž strojově.
+      </p>
+      {st?.running ? (
+        <Spinner label={`Exportuji… ${st.done}/${st.total}`} />
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-ink/60">Výběr</span>
+              <select value={pick} onChange={(e) => setPick(e.target.value)}
+                className="rounded-lg border border-line px-3 py-2 text-sm">
+                {Object.entries(picks).map(([k, v]) => (
+                  <option key={k} value={k}>{v}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-ink/60">Počet</span>
+              <input type="number" min={1} max={2000} value={limit}
+                onChange={(e) => setLimit(Number(e.target.value) || 1)}
+                className="w-24 rounded-lg border border-line px-3 py-2 text-sm" />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-ink/60">Doména (nepovinné)</span>
+              <input value={domain} onChange={(e) => setDomain(e.target.value)}
+                placeholder="např. recepty.cz"
+                className="w-44 rounded-lg border border-line px-3 py-2 text-sm" />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-ink/60">Seed</span>
+              <input type="number" value={seed}
+                onChange={(e) => setSeed(Number(e.target.value) || 0)}
+                className="w-20 rounded-lg border border-line px-3 py-2 text-sm" />
+            </label>
+            <Button onClick={run}>Vyexportovat</Button>
+          </div>
+          {st?.html_mtime && (
+            <span className="text-sm text-ink/60">
+              Poslední export: {fmtWhen(st.html_mtime)}
+              {st.duration_s ? ` (${st.duration_s} s)` : ""}
+            </span>
+          )}
+          <div className="flex flex-wrap gap-3">
+            {[["html", "Otevřít export (HTML)"], ["xml", "Data (XML)"]].map(
+              ([kind, label]) => (
+                <a key={kind}
+                  href={st?.[`${kind}_exists`]
+                    ? withToken(`/api/admin/recipe-export/${kind}`) : undefined}
+                  target="_blank" rel="noopener"
+                  className={`rounded-full border px-4 py-2 text-sm font-semibold ${
+                    st?.[`${kind}_exists`]
+                      ? "border-brand text-brand hover:bg-brand/5"
+                      : "pointer-events-none border-line text-ink/30"}`}>
+                  {label}
+                  {st?.[`${kind}_exists`] ? ` · ${fmtKb(st[`${kind}_bytes`])}` : ""}
+                </a>
+              ))}
+          </div>
+          {st?.error && <p className="text-sm text-miss">Poslední běh selhal: {st.error}</p>}
+          {err && <p className="text-sm text-miss">{err}</p>}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 /** Přepočet pořadí na úvodní stránce. Jinak jede jako poslední krok úlohy
  *  „Párování surovin"; tohle je ruční spuštění pro případ, že je automatika
  *  vypnutá nebo se změnila pravidla skóre. */
@@ -2513,6 +2628,7 @@ export default function Admin() {
       </Section>
       <CorpusAuditCard />
       <IngredientAuditCard />
+      <RecipeExportCard />
       <FeedScoreCard />
       <ReparseInstructionsCard />
       <MatchPanel />

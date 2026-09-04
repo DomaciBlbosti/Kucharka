@@ -11,7 +11,9 @@ import threading
 import time
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (
+    APIRouter, Depends, File, Form, HTTPException, Query, UploadFile,
+)
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import Date, DateTime, delete, select
@@ -328,6 +330,59 @@ def ingredient_audit_report():
     return FileResponse(
         ingredient_audit.REPORT_PATH, media_type="application/json",
         filename="ingredient_audit.json",
+    )
+
+
+# ─── Čitelný export receptů ke kontrole ─────────────────────────────────────
+
+@router.post("/recipe-export/run")
+def recipe_export_run(
+    limit: int = Query(100, ge=1, le=2000),
+    seed: int = Query(42),
+    pick: str = Query("random"),
+    domain: str | None = Query(None),
+    include_raw: bool = Query(True),
+):
+    """Vyexportuje vzorek receptů do HTML + XML pro ruční kontrolu."""
+    from ..modules import recipe_export
+
+    if pick not in recipe_export.PICKS:
+        raise HTTPException(
+            400, f"Neznámý výběr {pick!r}. Možnosti: "
+                 f"{', '.join(sorted(recipe_export.PICKS))}.")
+    started = recipe_export.run_async(limit=limit, seed=seed, pick=pick,
+                                      domain=domain, include_raw=include_raw)
+    return {"started": started, "status": recipe_export.status()}
+
+
+@router.get("/recipe-export/status")
+def recipe_export_status():
+    from ..modules import recipe_export
+
+    return recipe_export.status()
+
+
+@router.get("/recipe-export/html")
+def recipe_export_html():
+    from ..modules import recipe_export
+
+    if not recipe_export.HTML_PATH.exists():
+        raise HTTPException(404, "Export ještě neproběhl – spusť ho.")
+    return FileResponse(
+        recipe_export.HTML_PATH, media_type="text/html",
+        filename="recipe_export.html",
+    )
+
+
+@router.get("/recipe-export/xml")
+def recipe_export_xml():
+    from ..modules import recipe_export
+
+    if not recipe_export.XML_PATH.exists():
+        raise HTTPException(404, "Export ještě neproběhl – spusť ho.")
+    return FileResponse(
+        recipe_export.XML_PATH, media_type="application/xml",
+        filename="recipe_export.xml",
     )
 
 

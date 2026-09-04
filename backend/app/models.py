@@ -470,3 +470,34 @@ class LlmCall(Base):
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     ok: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class RecipeReview(Base):
+    """Ruční kontrola receptu – co u něj člověk viděl a rozhodl.
+
+    Vzniklo z potřeby projít korpus očima: metriky z `corpus_audit` řeknou,
+    KOLIK receptů je podezřelých, ale co s konkrétním receptem je, pozná až
+    člověk. Kontrola se dělá v appce (záložka Kontrola) a tady se drží její
+    výsledek, aby se stejný recept nemusel posuzovat dvakrát.
+
+    Štítky jsou z pevné nabídky (viz modules/review.LABELS) a ukládají se jako
+    seznam oddělený čárkami – recept jich může mít víc najednou („zkontrolováno"
+    plus „špatný překlad"). Vlastní tabulka místo `Tag`: tamty tagy popisují
+    JÍDLO (chod, technika, dieta) a přepisuje je automatické tagování, kdežto
+    tohle je poznámka o zpracování dat a nesmí ji nic přepsat.
+    """
+
+    __tablename__ = "recipe_review"
+    __table_args__ = (UniqueConstraint("recipe_id", name="uq_review_recipe"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    recipe_id: Mapped[int] = mapped_column(
+        ForeignKey("recipe.id", ondelete="CASCADE"), index=True
+    )
+    labels: Mapped[str] = mapped_column(String(300), server_default="")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    recipe: Mapped[Recipe] = relationship()

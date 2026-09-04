@@ -338,6 +338,27 @@ export const api = {
     afetch(`/api/admin/ingredient-merge/run?dry_run=${dryRun ? "true" : "false"}`, {
       method: "POST",
     }).then(J),
+  reviewLabels: () => afetch("/api/review/labels").then(J),
+  reviewStats: () => afetch("/api/review/stats").then(J),
+  reviewRecipes: ({ pick, domain, onlyUnreviewed, page, perPage }) =>
+    afetch(
+      `/api/review/recipes?pick=${pick}&page=${page}&per_page=${perPage}` +
+        `&only_unreviewed=${onlyUnreviewed ? "true" : "false"}` +
+        (domain ? `&domain=${encodeURIComponent(domain)}` : ""),
+    ).then(J),
+  reviewSave: (id, labels, note) =>
+    afetch(`/api/review/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ labels, note: note || "" }),
+    }).then(J),
+  recipeExportStatus: () => afetch("/api/admin/recipe-export/status").then(J),
+  recipeExportRun: ({ limit, pick, domain, seed }) =>
+    afetch(
+      `/api/admin/recipe-export/run?limit=${limit}&pick=${pick}&seed=${seed}` +
+        (domain ? `&domain=${encodeURIComponent(domain)}` : ""),
+      { method: "POST" },
+    ).then(J),
   feedStatus: () => afetch("/api/admin/feed/status").then(J),
   feedRecompute: () =>
     afetch("/api/admin/feed/recompute", { method: "POST" }).then(J),
