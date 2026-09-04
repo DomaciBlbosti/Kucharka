@@ -40,8 +40,10 @@ services:
     volumes:
       - app_code:/app
   db:
+    # Viz docker-compose.yml: s 256 MB se korpus do paměti nevejde a přestavby
+    # tabulky jedou z disku (přidání sloupce do `recipe` = přes hodina).
     command:
-      - '--innodb-buffer-pool-size=256M'
+      - '--innodb-buffer-pool-size=${DB_BUFFER_POOL:-4G}'
     environment:
       MARIADB_DATABASE: kucharka
       MARIADB_PASSWORD: ${DB_PASSWORD:-kucharkaVychoziHeslo}

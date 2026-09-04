@@ -12,7 +12,12 @@ services:
       MARIADB_USER: kucharka
       MARIADB_PASSWORD: ${DB_PASSWORD:-kucharkaVychoziHeslo}
       MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-kucharkaVychoziHesloRoot}
-    command: ["--innodb-buffer-pool-size=256M"]
+    # Buffer pool = kolik dat drží MariaDB v paměti. S 256 MB se korpus
+    # (171k receptů, dva fulltexty) do paměti nevejde a každý větší ALTER
+    # nebo přestavba indexu jede z disku: přidání sloupce do `recipe` takhle
+    # trvalo přes hodinu při 3 % CPU a 6,8 GB přečtených z disku. Po zvětšení
+    # na 4 GB šestkrát rychleji. Sniž přes DB_BUFFER_POOL, když je NAS těsný.
+    command: ["--innodb-buffer-pool-size=${DB_BUFFER_POOL:-4G}"]
     volumes:
       - db_data:/var/lib/mysql
     healthcheck:
