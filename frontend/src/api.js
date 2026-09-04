@@ -314,6 +314,12 @@ export const api = {
     afetch("/api/admin/ingredient-audit/status").then(J),
   ingredientAuditRun: () =>
     afetch("/api/admin/ingredient-audit/run", { method: "POST" }).then(J),
+  ingredientMergeStatus: () =>
+    afetch("/api/admin/ingredient-merge/status").then(J),
+  ingredientMergeRun: (dryRun) =>
+    afetch(`/api/admin/ingredient-merge/run?dry_run=${dryRun ? "true" : "false"}`, {
+      method: "POST",
+    }).then(J),
   reparseInstructionsStatus: () =>
     afetch("/api/admin/reparse-instructions/status").then(J),
   reparseInstructionsRun: () =>

@@ -331,6 +331,43 @@ def ingredient_audit_report():
     )
 
 
+# ─── Slučování duplicitních surovin ─────────────────────────────────────────
+
+class MergeManual(BaseModel):
+    keep_id: int
+    loser_ids: list[int]
+
+
+@router.post("/ingredient-merge/run")
+def ingredient_merge_run(dry_run: bool = True):
+    """Sloučí shluky se SHODNÝM názvem. Ostatní třídy z auditu se automaticky
+    neslučují – tam se musí rozhodovat po jednom (viz /ingredient-merge/cluster)."""
+    from ..modules import ingredient_merge
+
+    started = ingredient_merge.merge_exact_names_async(dry_run=dry_run)
+    return {"started": started, "status": ingredient_merge.status()}
+
+
+@router.get("/ingredient-merge/status")
+def ingredient_merge_status():
+    from ..modules import ingredient_merge
+
+    return ingredient_merge.status()
+
+
+@router.post("/ingredient-merge/cluster")
+def ingredient_merge_cluster(req: MergeManual):
+    """Ruční sloučení konkrétních surovin do jedné (z reportu auditu)."""
+    from ..modules import ingredient_merge
+
+    if ingredient_merge.is_running():
+        raise HTTPException(409, "Právě běží dávkové slučování, zkus to za chvíli.")
+    try:
+        return ingredient_merge.merge_manual(req.keep_id, req.loser_ids)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 # ─── Přeparsování postupů podle doménových pravidel ─────────────────────────
 
 @router.post("/reparse-instructions/run")
