@@ -338,6 +338,9 @@ export const api = {
     afetch(`/api/admin/ingredient-merge/run?dry_run=${dryRun ? "true" : "false"}`, {
       method: "POST",
     }).then(J),
+  feedStatus: () => afetch("/api/admin/feed/status").then(J),
+  feedRecompute: () =>
+    afetch("/api/admin/feed/recompute", { method: "POST" }).then(J),
   reparseInstructionsStatus: () =>
     afetch("/api/admin/reparse-instructions/status").then(J),
   reparseInstructionsRun: () =>

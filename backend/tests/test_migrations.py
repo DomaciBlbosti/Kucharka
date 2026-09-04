@@ -72,19 +72,23 @@ class FakeEngine:
     verze MariaDB i vliv fulltextu.
     """
 
-    def __init__(self, *, columns, indexes, dialect="mysql", refuse=()):
+    def __init__(self, *, columns, indexes, dialect="mysql", refuse=(), fail_on=()):
         self.columns = {t: list(c) for t, c in columns.items()}
         self.indexes = {t: dict(i) for t, i in indexes.items()}  # name -> fulltext?
         self.dialect = FakeDialect(dialect)
         self.refuse = set(refuse)
+        self.fail_on = tuple(fail_on)  # podřetězce SQL, které mají selhat
         self.sql: list[str] = []
 
     # -- chování serveru --
     def run(self, sql: str) -> None:
         self.sql.append(sql)
+        for pattern in self.fail_on:
+            if pattern in sql:
+                raise FakeError(f"simulované selhání: {pattern}")
         m = re.match(r"ALTER TABLE (\w+) (.+)", sql, re.S)
         if not m:
-            raise FakeError(f"neznámý příkaz: {sql}")
+            return  # UPDATE / INSERT / CREATE INDEX – stačí zaznamenat
         table, rest = m.group(1), m.group(2)
 
         drop = re.fullmatch(r"DROP INDEX (\w+)", rest)
@@ -265,6 +269,71 @@ def test_drop_failure_does_not_block():
     check("fulltexty zůstaly", len(e.indexes["recipe"]) == 2, str(e.indexes["recipe"]))
 
 
+# ─── feed_score na pozadí ────────────────────────────────────────────────────
+
+@contextmanager
+def spy_recompute():
+    """Podstrčí feed.recompute_all a hlásí, jestli se zavolalo."""
+    from app.modules import feed
+
+    calls = []
+    orig = feed.recompute_all
+    feed.recompute_all = lambda: (calls.append(1), {"updated": 7})[1]
+    try:
+        yield calls
+    finally:
+        feed.recompute_all = orig
+
+
+def perf_engine(**kw):
+    return FakeEngine(columns={"recipe": ["id"]}, indexes={"recipe": {}}, **kw)
+
+
+def test_feed_score_backfill_runs():
+    """Nový sloupec feed_score je u všech receptů NULL; dokud se nespočítá,
+    řadí se úvodní stránka jen podle stáří a dorty se derou nahoru zpátky."""
+    e = perf_engine()
+    with spy_recompute() as calls:
+        migrations._perf_bg(e, [], ing_total_done=False, feed_done=False)
+    check("ing_total i feed_score se naplní", len(calls) == 1, str(calls))
+    check("marker se zapíše, podruhé se to nepočítá",
+          any("mig_feed_score_v1" in s for s in e.sql), str(e.sql))
+    order = [i for i, s in enumerate(e.sql) if "ing_total" in s or "feed" in s]
+    check("ing_total jde PŘED feed_score",
+          e.sql.index([s for s in e.sql if "SET ing_total" in s][0])
+          < e.sql.index([s for s in e.sql if "mig_feed_score_v1" in s][0]),
+          str(order))
+
+
+def test_feed_score_waits_for_ing_total():
+    """Klíčová pojistka: skóre strhává body za recept bez napárovaných surovin.
+    Spočítat ho dřív, než se naplní ing_total, znamená potrestat úplně všechno
+    a zapsat si marker, takže by se to samo už nikdy neopravilo."""
+    e = perf_engine(fail_on=("SET ing_total",))
+    with spy_recompute() as calls:
+        migrations._perf_bg(e, [], ing_total_done=False, feed_done=False)
+    check("po selhání ing_total se skóre NEPOČÍTÁ", not calls, str(calls))
+    check("a marker se nezapíše – zopakuje se při dalším startu",
+          not any("mig_feed_score_v1" in s for s in e.sql), str(e.sql))
+
+
+def test_feed_score_alone_on_later_start():
+    """ing_total naplnil dřívější deploy – dopočítá se jen skóre."""
+    e = perf_engine()
+    with spy_recompute() as calls:
+        migrations._perf_bg(e, [], ing_total_done=True, feed_done=False)
+    check("skóre se spočítá i bez ing_total kroku", len(calls) == 1, str(calls))
+    check("ing_total se nepřepisuje",
+          not any("SET ing_total" in s for s in e.sql), str(e.sql))
+
+
+def test_feed_score_not_recomputed_when_done():
+    e = perf_engine()
+    with spy_recompute() as calls:
+        migrations._perf_bg(e, [], ing_total_done=True, feed_done=True)
+    check("hotová migrace nic nedělá", not calls and not e.sql, str(e.sql))
+
+
 def main():
     for fn in (
         test_one_alter_per_table,
@@ -276,6 +345,10 @@ def main():
         test_search_text_fulltext_waits_for_backfill,
         test_sqlite_adds_one_by_one,
         test_drop_failure_does_not_block,
+        test_feed_score_backfill_runs,
+        test_feed_score_waits_for_ing_total,
+        test_feed_score_alone_on_later_start,
+        test_feed_score_not_recomputed_when_done,
     ):
         print(f"\n{fn.__name__}:")
         fn()

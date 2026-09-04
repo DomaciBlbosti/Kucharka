@@ -216,15 +216,14 @@ def run_all(engine: Engine) -> None:
             if spec.background and not spec.fulltext and spec.table in existing_tables
             and spec.name not in {ix["name"] for ix in insp.get_indexes(spec.table)}
         ]
-        with engine.begin() as conn:
-            ing_total_done = conn.execute(text(
-                "SELECT value FROM app_setting WHERE `key` = 'mig_ing_total_v1'"
-            )).first() is not None
-        if pending_idx or not ing_total_done:
+        ing_total_done = _marker_set(engine, "mig_ing_total_v1")
+        feed_done = _marker_set(engine, "mig_feed_score_v1")
+        if pending_idx or not ing_total_done or not feed_done:
             import threading
 
             threading.Thread(
-                target=_perf_bg, args=(engine, pending_idx, ing_total_done),
+                target=_perf_bg,
+                args=(engine, pending_idx, ing_total_done, feed_done),
                 daemon=True, name="migrations-perf",
             ).start()
 
@@ -376,11 +375,17 @@ def _add_fulltext_bg(engine: Engine, specs: list[IndexAdd]) -> None:
                         spec.name, exc)
 
 
-def _perf_bg(engine: Engine, specs: list[IndexAdd], ing_total_done: bool) -> None:
+def _perf_bg(engine: Engine, specs: list[IndexAdd], ing_total_done: bool,
+             feed_done: bool = True) -> None:
     """Výkonnostní migrace na pozadí, v pořadí: (1) velké indexy (ALTER na
     milionové tabulce = desítky sekund, nesmí blokovat start), (2) jednorázové
     naplnění recipe.ing_total (jeden korelovaný UPDATE, index z kroku 1 mu
-    pomáhá). Výpis receptů do té doby ukazuje dostupnost 0/0 – srovná se sám."""
+    pomáhá), (3) první výpočet recipe.feed_score. Výpis receptů do té doby
+    ukazuje dostupnost 0/0 – srovná se sám.
+
+    Pořadí 2 → 3 je závazné: skóre strhává body za recept bez napárovaných
+    surovin, takže spuštěné před naplněním ing_total by potrestalo úplně
+    všechno."""
     for spec in specs:
         cols = ", ".join(spec.cols)
         try:
@@ -411,9 +416,31 @@ def _perf_bg(engine: Engine, specs: list[IndexAdd], ing_total_done: bool) -> Non
                     "INSERT INTO app_setting (`key`, value) VALUES ('mig_ing_total_v1', '1')"
                 ))
             log.info("Migrace: recipe.ing_total naplněno.")
+            ing_total_done = True
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "Migrace ing_total selhala (zopakuje se při dalším startu): %s", exc
+            )
+
+    # První naplnění feed_score. Bez něj je sloupec u všech receptů NULL,
+    # řazení úvodní stránky spadne na `coalesce(feed_score, -999)` → jen
+    # „nejnovější první" a návody na zdobení dortů se pořád derou nahoru.
+    # Přepočet jinak jede jako pátý krok úlohy „match" – ta ale nemusí být
+    # zapnutá a čekat na ni znamená mít úvodní stránku rozbitou.
+    if not feed_done and ing_total_done:
+        try:
+            from .modules import feed
+
+            log.info("Migrace: počítám recipe.feed_score NA POZADÍ…")
+            res = feed.recompute_all()
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "INSERT INTO app_setting (`key`, value) VALUES ('mig_feed_score_v1', '1')"
+                ))
+            log.info("Migrace: feed_score naplněno u %s receptů.", res.get("updated"))
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "Migrace feed_score selhala (zopakuje se při dalším startu): %s", exc
             )
 
 
