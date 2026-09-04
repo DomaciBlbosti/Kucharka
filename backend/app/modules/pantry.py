@@ -4,10 +4,18 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..models import PantryItem, Recipe
 
 
 def pantry_ingredient_ids(db: Session) -> set[int]:
+    """Suroviny, které mám doma. Prázdná množina, když je spíž vypnutá.
+
+    Vypnutá spíž se chová jako prázdná, ale bez dotazu do DB – volající tak
+    nemusí nikde větvit a dostupnost vyjde 0/N všude stejně.
+    """
+    if not settings.pantry_enabled:
+        return set()
     return set(db.scalars(select(PantryItem.ingredient_id)).all())
 
 

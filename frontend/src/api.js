@@ -41,6 +41,7 @@ const J = async (r) => {
 };
 
 let _settingsCache = null; // sdílený promise GET /api/admin/settings
+let _configCache = null; // sdílený promise GET /api/health (přepínače pro UI)
 
 const qs = (params) => {
   const u = new URLSearchParams();
@@ -58,6 +59,17 @@ const qs = (params) => {
 
 export const api = {
   health: () => afetch("/api/health").then(J),
+  // Přepínače, podle kterých se skládá UI (zatím jen zapnutá/vypnutá spíž).
+  // Memoizované – volá to skoro každá obrazovka a mění se to jen z administrace.
+  appConfig: () => {
+    if (!_configCache) {
+      _configCache = afetch("/api/health").then(J).catch((e) => {
+        _configCache = null; // neúspěch necachovat
+        throw e;
+      });
+    }
+    return _configCache.then((c) => ({ pantry: c.pantry !== false }));
+  },
   searchStatus: () => afetch("/api/search/status").then(J),
   ollamaStatus: () => afetch("/api/search/ollama").then(J),
 
@@ -166,6 +178,12 @@ export const api = {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+    }).then(J),
+  setRecipeHidden: (id, hidden) =>
+    afetch(`/api/recipes/${id}/hidden`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hidden }),
     }).then(J),
   markCooked: (id) =>
     afetch(`/api/recipes/${id}/cooked`, { method: "POST" }).then(J),
@@ -369,6 +387,7 @@ export const api = {
     }).then(J),
   adminSaveSettings: (values) => {
     _settingsCache = null; // po uložení ať si karty načtou čerstvý stav
+    _configCache = null; // …a UI se dozví o přepnutí spíže
     return afetch("/api/admin/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

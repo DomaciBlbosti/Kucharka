@@ -7,6 +7,8 @@ export default function RecipeDetail() {
   const { id } = useParams();
   const nav = useNavigate();
   const [r, setR] = useState(null);
+  // Vypnutá spíž: „mám/chybí" u surovin nemá o co se opřít, tak se neukazuje.
+  const [pantryOn, setPantryOn] = useState(true);
   const [added, setAdded] = useState(null);
   const [addedIds, setAddedIds] = useState(() => new Set());
   const [editing, setEditing] = useState(false);
@@ -23,6 +25,7 @@ export default function RecipeDetail() {
     setEditing(false);
     setShowOriginal(false);
     reload();
+    api.appConfig().then((c) => setPantryOn(c.pantry)).catch(() => {});
     api.hmiCooking()
       .then((r2) => setOnDisplay(r2.recipe?.id === Number(id)))
       .catch(() => setOnDisplay(false));
@@ -156,13 +159,15 @@ export default function RecipeDetail() {
             )}
           </div>
 
-          <div className="mt-5 max-w-sm"><CookMeter have={r.have} total={r.total} /></div>
+          {pantryOn && (
+            <div className="mt-5 max-w-sm"><CookMeter have={r.have} total={r.total} /></div>
+          )}
 
           <div className="mt-8 grid gap-8 md:grid-cols-[1fr_1.3fr]">
             <section>
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-xl font-bold">Suroviny</h2>
-                {r.missing_count > 0 && (
+                {pantryOn && r.missing_count > 0 && (
                   <Button variant="ghost" onClick={addMissing}>+ Chybějící do nákupu</Button>
                 )}
               </div>
@@ -173,8 +178,8 @@ export default function RecipeDetail() {
               )}
               <ul className="space-y-1.5">
                 {r.ingredients.map((ri) => {
-                  const isMissing = ri.ingredient_id && missing.has(ri.ingredient_id);
-                  const isHave = ri.ingredient_id && !missing.has(ri.ingredient_id);
+                  const isMissing = pantryOn && ri.ingredient_id && missing.has(ri.ingredient_id);
+                  const isHave = pantryOn && ri.ingredient_id && !missing.has(ri.ingredient_id);
                   return (
                     <li key={ri.id} className="flex items-center justify-between gap-3 rounded-lg border border-line/70 px-3 py-2 text-sm">
                       <span className="flex items-center gap-2">
@@ -217,10 +222,23 @@ export default function RecipeDetail() {
             </section>
           </div>
 
-          <div className="mt-8 border-t border-line pt-4">
+          <div className="mt-8 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+            {/* Skrytí místo mazání: smazaný recept by crawler při dalším
+                průchodu stáhl znovu jako nový. */}
+            <Button
+              variant="ghost"
+              onClick={async () => setR(await api.setRecipeHidden(r.id, !r.hidden))}
+            >
+              {r.hidden ? "Vrátit mezi recepty" : "Skrýt z výpisů"}
+            </Button>
             <Button variant="danger" onClick={async () => { await api.deleteRecipe(r.id); nav("/"); }}>
               Smazat recept
             </Button>
+            {r.hidden && (
+              <span className="text-sm text-ink/55">
+                Skryto — ve výpisech ani v návrzích se neukazuje.
+              </span>
+            )}
           </div>
         </div>
       </div>

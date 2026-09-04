@@ -331,6 +331,24 @@ def ingredient_audit_report():
     )
 
 
+# ─── Pořadí na úvodní stránce ───────────────────────────────────────────────
+
+@router.post("/feed/recompute")
+def feed_recompute():
+    """Přepočítá skóre, podle kterého se řadí úvodní stránka."""
+    from ..modules import feed
+
+    started = feed.recompute_all_async()
+    return {"started": started, "status": feed.status()}
+
+
+@router.get("/feed/status")
+def feed_status():
+    from ..modules import feed
+
+    return feed.status()
+
+
 # ─── Slučování duplicitních surovin ─────────────────────────────────────────
 
 class MergeManual(BaseModel):

@@ -159,17 +159,29 @@ def list_recipes(
     min_rating: float | None = Query(None, ge=0, le=5),
     category: str | None = Query(None, description="recepty se surovinou z kategorie"),
     tags: list[str] = Query(default=[], description="filtr 'namespace:slug' – víc namespace = AND, víc tagů v jednom = OR"),
-    sort: str = Query("smart", pattern="^(smart|rating|time|kcal|newest)$"),
+    sort: str = Query("feed", pattern="^(feed|smart|rating|time|kcal|newest)$"),
     group: bool = Query(False, description="sloučit varianty téhož jídla do kategorie"),
+    show_hidden: bool = Query(False, description="ukázat i ručně skryté recepty"),
     limit: int = Query(30, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
     have = pantry_ingredient_ids(db)
     _sub, total_col, have_col, missing_col = _availability_cols(have)
 
+    # Vypnutá spíž: dostupnost není o co opřít, takže filtry i řazení podle
+    # ní nedávají smysl. Místo prázdného výsledku se prostě ignorují a
+    # „Nejblíž uvaření" spadne na doporučené pořadí.
+    if not settings.pantry_enabled:
+        only_have = False
+        max_missing = None
+        if sort == "smart":
+            sort = "feed"
+
     # Obyčejné filtry (bez dostupnosti) – aplikují se na hlavní dotaz i na
     # levný COUNT, který díky tomu nemusí joinovat agregaci spíže.
     conds = []
+    if not show_hidden:
+        conds.append(Recipe.hidden.is_(False))
     if q:
         conds.append(_search_clause(db, q))
     if max_kcal is not None:
@@ -200,11 +212,16 @@ def list_recipes(
             )
             conds.append(Recipe.id.in_(sub))
 
+    # Recept bez JEDINÉ napárované suroviny má missing = 0, což ale neznamená
+    # „můžeš vařit" – znamená to „nevíme, z čeho je". Do filtrů dostupnosti
+    # proto nesmí; jinak úvodní stránku obsadily návody na zdobení dortů.
+    cookable = total_col > 0
+
     avail_conds = []
     if only_have:
-        avail_conds.append(missing_col == 0)
+        avail_conds.extend([cookable, missing_col == 0])
     if max_missing is not None:
-        avail_conds.append(missing_col <= max_missing)
+        avail_conds.extend([cookable, missing_col <= max_missing])
 
     base = select(
         Recipe, total_col.label("total"), have_col.label("have"),
@@ -231,7 +248,13 @@ def list_recipes(
             select(func.count()).select_from(Recipe).where(*conds)
         ) or 0
 
-    if sort == "rating":
+    if sort == "feed":
+        # Předpočítané skóre (viz modules/feed.py) – čte se přes index,
+        # netřídí se celá tabulka a nezávisí to na spíži.
+        base = base.order_by(
+            func.coalesce(Recipe.feed_score, -999).desc(), Recipe.id.desc()
+        )
+    elif sort == "rating":
         base = base.order_by(func.coalesce(Recipe.rating, 0).desc())
     elif sort == "time":
         base = base.order_by(func.coalesce(Recipe.total_time, 9999).asc())
@@ -239,8 +262,13 @@ def list_recipes(
         base = base.order_by(func.coalesce(Recipe.kcal_per_serving, 1_000_000_000).asc())
     elif sort == "newest":
         base = base.order_by(Recipe.id.desc())
-    else:  # smart: nejmíň chybějících, pak nejlepší hodnocení
-        base = base.order_by(missing_col.asc(), func.coalesce(Recipe.rating, 0).desc())
+    else:  # smart: nejdřív ty, u kterých vůbec víme z čeho jsou, pak nejmíň
+        # chybějících surovin a nakonec hodnocení
+        base = base.order_by(
+            case((cookable, 0), else_=1).asc(),
+            missing_col.asc(),
+            func.coalesce(Recipe.rating, 0).desc(),
+        )
 
     rows = db.execute(base.limit(limit).offset(offset)).all()
     tags_map = _tags_by_recipe(db, [r.Recipe.id for r in rows])
@@ -296,7 +324,9 @@ def _grouped_page(db: Session, conds, avail_conds, avail_sub, base, *,
         keys_q = keys_q.outerjoin(avail_sub, avail_sub.c.recipe_id == Recipe.id)
     keys_q = keys_q.where(*conds).where(*avail_conds).group_by(key_col)
 
-    if sort == "rating":
+    if sort == "feed":
+        keys_q = keys_q.order_by(func.max(func.coalesce(Recipe.feed_score, -999)).desc())
+    elif sort == "rating":
         keys_q = keys_q.order_by(func.max(func.coalesce(Recipe.rating, 0)).desc())
     elif sort == "time":
         keys_q = keys_q.order_by(func.min(func.coalesce(Recipe.total_time, 9999)).asc())
@@ -307,6 +337,7 @@ def _grouped_page(db: Session, conds, avail_conds, avail_sub, base, *,
         keys_q = keys_q.order_by(func.max(Recipe.id).desc())
     else:  # smart: kategorie, kde chybí nejmíň surovin, pak nejlíp hodnocené
         keys_q = keys_q.order_by(
+            func.min(case((func.coalesce(Recipe.ing_total, 0) > 0, 0), else_=1)).asc(),
             func.min(missing_col).asc(),
             func.max(func.coalesce(Recipe.rating, 0)).desc(),
         )
@@ -342,6 +373,25 @@ def _grouped_page(db: Session, conds, avail_conds, avail_sub, base, *,
         for k in keys if k in best
     ]
     return RecipeListOut(items=items, total=total_count, limit=limit, offset=offset)
+
+
+class HiddenSet(BaseModel):
+    hidden: bool = True
+
+
+@router.patch("/{recipe_id}/hidden", response_model=RecipeDetail)
+def set_hidden(recipe_id: int, req: HiddenSet, db: Session = Depends(get_db)):
+    """Skryj (nebo vrať) recept. Nemaže se – jen zmizí z výpisů a z návrhů.
+
+    Mazání by nepomohlo: crawler by recept při dalším průchodu stáhl znovu
+    jako nový. Skrytí je trvalé a vratné.
+    """
+    r = db.get(Recipe, recipe_id)
+    if r is None:
+        raise HTTPException(404, "Recept nenalezen.")
+    r.hidden = bool(req.hidden)
+    db.commit()
+    return get_recipe(recipe_id, db)
 
 
 @router.get("/groups/{key}", response_model=RecipeListOut)

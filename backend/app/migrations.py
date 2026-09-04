@@ -95,6 +95,10 @@ _COLUMNS: tuple[ColumnAdd, ...] = (
     ColumnAdd("recipe", "search_text", "TEXT NULL"),
     # Recipe – klíč pro seskupení variant téhož jídla (viz textnorm.title_key)
     ColumnAdd("recipe", "title_key", "VARCHAR(200) NULL"),
+    # Recipe – ručně skrytý recept (nezobrazovat ve výpisech ani v návrzích)
+    ColumnAdd("recipe", "hidden", "TINYINT(1) NOT NULL DEFAULT 0"),
+    # Recipe – skóre pro úvodní stránku; plní úloha na pozadí (modules/feed.py)
+    ColumnAdd("recipe", "feed_score", "FLOAT NULL"),
 )
 
 # Změny existujících sloupců (pouze nezbytné).
@@ -140,6 +144,10 @@ _INDEXES: tuple[IndexAdd, ...] = (
     IndexAdd("recipe", "ft_recipe_search_text", ("search_text",), fulltext=True),
     # Seskupení variant ve výpisu jede přes GROUP BY title_key.
     IndexAdd("recipe", "ix_recipe_title_key", ("title_key",)),
+    # Úvodní stránka čte prvních N receptů podle skóre – bez indexu by to
+    # znamenalo setřídit celou tabulku při každém načtení.
+    IndexAdd("recipe", "ix_recipe_feed_score", ("feed_score",)),
+    IndexAdd("recipe", "ix_recipe_hidden", ("hidden",)),
 )
 
 

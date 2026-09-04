@@ -5,6 +5,7 @@ import { IngredientPicker } from "../components/IngredientPicker";
 import { CookMeter, EmptyState, Meta, ReadyStamp, Spinner, Stars } from "../components/ui";
 
 const SORTS = [
+  ["feed", "Doporučené"],
   ["smart", "Nejblíž uvaření"],
   ["rating", "Hodnocení"],
   ["time", "Nejrychlejší"],
@@ -22,7 +23,7 @@ export default function Recipes() {
   const [onlyHave, setOnlyHave] = useState(false);
   const [maxMissing, setMaxMissing] = useState("");
   const [maxTime, setMaxTime] = useState("");
-  const [sort, setSort] = useState("smart");
+  const [sort, setSort] = useState("feed");
   const [category, setCategory] = useState("");
   const [cats, setCats] = useState([]);
   const [tagGroups, setTagGroups] = useState([]);
@@ -34,9 +35,13 @@ export default function Recipes() {
     () => localStorage.getItem("recipes.group") !== "0",
   );
 
+  // Vypnutá spíž: dostupnost ani filtry na ni navázané nemá cenu ukazovat.
+  const [pantryOn, setPantryOn] = useState(true);
+
   useEffect(() => {
     api.ingredientCategories().then(setCats).catch(() => setCats([]));
     api.recipeTags().then(setTagGroups).catch(() => setTagGroups([]));
+    api.appConfig().then((c) => setPantryOn(c.pantry)).catch(() => {});
   }, []);
 
   const toggleTag = (key) =>
@@ -158,7 +163,7 @@ export default function Recipes() {
               onChange={(e) => setSort(e.target.value)}
               className="rounded-full border border-line bg-white px-3 py-2.5 text-sm outline-none focus:border-basil"
             >
-              {SORTS.map(([v, l]) => (
+              {SORTS.filter(([v]) => pantryOn || v !== "smart").map(([v, l]) => (
                 <option key={v} value={v}>
                   {l}
                 </option>
@@ -235,6 +240,7 @@ export default function Recipes() {
           )}
 
           <div className="mb-6 flex flex-wrap items-center gap-2 text-sm">
+            {pantryOn && (
             <button
               onClick={() => setOnlyHave((v) => !v)}
               className={`rounded-full px-3 py-1.5 font-medium transition ${
@@ -245,6 +251,7 @@ export default function Recipes() {
             >
               Můžu uvařit teď
             </button>
+            )}
             <button
               onClick={() =>
                 setGroupVariants((v) => {
@@ -261,6 +268,7 @@ export default function Recipes() {
             >
               Sloučit varianty
             </button>
+            {pantryOn && (
             <label className="flex items-center gap-1.5 rounded-full border border-line bg-white px-3 py-1.5 text-ink/70">
               max chybí
               <input
@@ -272,6 +280,7 @@ export default function Recipes() {
                 placeholder="–"
               />
             </label>
+            )}
             <label className="flex items-center gap-1.5 rounded-full border border-line bg-white px-3 py-1.5 text-ink/70">
               do
               <input
@@ -311,7 +320,7 @@ export default function Recipes() {
         <>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {recipes.map((r) => (
-              <RecipeCard key={r.id} r={r} cookMode={cookMode} />
+              <RecipeCard key={r.id} r={r} cookMode={cookMode} pantryOn={pantryOn} />
             ))}
           </div>
           {!cookMode && (
@@ -336,7 +345,7 @@ export default function Recipes() {
   );
 }
 
-function RecipeCard({ r, cookMode }) {
+function RecipeCard({ r, cookMode, pantryOn = true }) {
   // Karta s víc variantami vede na seznam variant, ne rovnou na jeden recept –
   // jinak by se ostatní zdroje téhož jídla nedaly proklikat.
   const grouped = r.variants > 1 && r.group_key;
@@ -358,9 +367,11 @@ function RecipeCard({ r, cookMode }) {
             🍽️
           </div>
         )}
-        <div className="absolute left-2 top-2">
-          <ReadyStamp missing={r.missing_count} />
-        </div>
+        {pantryOn && (
+          <div className="absolute left-2 top-2">
+            <ReadyStamp missing={r.missing_count} total={r.total} />
+          </div>
+        )}
         {cookMode ? (
           <div className="absolute right-2 top-2 rounded-full bg-white/90 px-2 py-0.5 text-xs font-semibold text-basil-dark shadow-card">
             {r.have}/{r.total} z výběru
@@ -391,9 +402,11 @@ function RecipeCard({ r, cookMode }) {
             ))}
           </div>
         )}
-        <div className="mt-auto">
-          <CookMeter have={r.have} total={r.total} size="sm" />
-        </div>
+        {pantryOn && (
+          <div className="mt-auto">
+            <CookMeter have={r.have} total={r.total} size="sm" />
+          </div>
+        )}
       </div>
     </Link>
   );
