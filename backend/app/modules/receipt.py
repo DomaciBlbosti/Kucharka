@@ -21,7 +21,6 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from .normalizer import match_ingredient
-from .ollamachat import chat_json
 from .textmerge import merge_lists
 
 log = logging.getLogger("kucharka.receipt")
@@ -56,15 +55,17 @@ _PROMPT = (
 
 
 def extract_items_from_image(image_bytes: bytes) -> list[str]:
-    if not settings.ocr_model:
-        raise RuntimeError("OCR model není nastaven (Admin → Nástroje → OCR model).")
+    from . import llmclient
+
+    err = llmclient.vision_error()
+    if err:
+        raise RuntimeError(err)
     b64 = base64.b64encode(preprocess_image(image_bytes)).decode()
-    out = chat_json(
-        settings.ollama_url,
-        settings.ocr_model,
+    out, _raw = llmclient.vision_json(
         _PROMPT,
         images=[b64],
         timeout=max(settings.http_timeout, 120),
+        component="OCR účtenky",
     )
     if out is None:
         log.warning("OCR účtenky: volání modelu selhalo nebo odpověď nešla naparsovat.")

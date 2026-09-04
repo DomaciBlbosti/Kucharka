@@ -112,6 +112,14 @@ class Settings:
         self.llm_api_url: str = _env("LLM_API_URL", "https://api.openai.com/v1")
         self.llm_api_key: str = _env("LLM_API_KEY", "")
         self.llm_api_model: str = _env("LLM_API_MODEL", "gpt-4o-mini")
+        # OCR (účtenky, recepty z fotky) a embeddingy mají VLASTNÍ přepínač:
+        # ne každý textový model umí obrázky (DeepSeek ne) a embeddingy jsou
+        # levné lokálně, takže dává smysl je nechat na GPU i při zapnutém API.
+        # Výchozí "ollama" = beze změny chování, dokud se to ručně nepřepne.
+        self.llm_vision_provider: str = _env("LLM_VISION_PROVIDER", "ollama").lower() or "ollama"
+        self.llm_api_vision_model: str = _env("LLM_API_VISION_MODEL", "gpt-4o-mini")
+        self.llm_embed_provider: str = _env("LLM_EMBED_PROVIDER", "ollama").lower() or "ollama"
+        self.llm_api_embed_model: str = _env("LLM_API_EMBED_MODEL", "text-embedding-3-small")
 
         # --- Služby na pozadí (překlad / párování) ---------------------
         self.auto_translate_enabled: bool = _truthy(_env("AUTO_TRANSLATE_ENABLED", "false"))
@@ -214,12 +222,30 @@ class Settings:
         return self._fast_model or self.ollama_model
 
     @property
+    def _api_configured(self) -> bool:
+        return bool(self.llm_api_key) and bool(self.llm_api_url)
+
+    @property
     def llm_api_enabled(self) -> bool:
-        """Komerční API je zvolené A nakonfigurované."""
+        """Komerční API je zvolené A nakonfigurované (textové úlohy)."""
+        return self.llm_provider == "api" and self._api_configured
+
+    @property
+    def llm_vision_api_enabled(self) -> bool:
+        """OCR (obrázky) má jít přes komerční API."""
         return (
-            self.llm_provider == "api"
-            and bool(self.llm_api_key)
-            and bool(self.llm_api_url)
+            self.llm_vision_provider == "api"
+            and self._api_configured
+            and bool(self.llm_api_vision_model)
+        )
+
+    @property
+    def llm_embed_api_enabled(self) -> bool:
+        """Embeddingy (RAG) mají jít přes komerční API."""
+        return (
+            self.llm_embed_provider == "api"
+            and self._api_configured
+            and bool(self.llm_api_embed_model)
         )
 
     ADMIN_KEYS = (
@@ -238,6 +264,8 @@ class Settings:
         "llm_match_timeout_s", "translate_model",
         "llm_provider", "llm_api_url", "llm_api_key", "llm_api_model",
         "llm_price_in_usd", "llm_price_out_usd", "usd_rate",
+        "llm_vision_provider", "llm_api_vision_model",
+        "llm_embed_provider", "llm_api_embed_model",
     )
 
     CRAWLER_KEYS = ("crawler_enabled", "crawler_interval_min", "crawler_max_per_run")
@@ -287,6 +315,12 @@ class Settings:
             # klíč se NIKDY nevrací ven, jen příznak, že je nastavený
             "llm_api_key_set": bool(self.llm_api_key),
             "llm_api_model": self.llm_api_model,
+            "llm_vision_provider": self.llm_vision_provider,
+            "llm_api_vision_model": self.llm_api_vision_model,
+            "llm_vision_api_enabled": self.llm_vision_api_enabled,
+            "llm_embed_provider": self.llm_embed_provider,
+            "llm_api_embed_model": self.llm_api_embed_model,
+            "llm_embed_api_enabled": self.llm_embed_api_enabled,
             "llm_price_in_usd": self.llm_price_in_usd,
             "llm_price_out_usd": self.llm_price_out_usd,
             "usd_rate": self.usd_rate,
@@ -300,11 +334,12 @@ class Settings:
         if key not in self.ADMIN_KEYS:
             return False
         if key in ("ollama_url", "ollama_model", "embed_model", "searxng_url", "ocr_model", "hmi_token",
-                   "llm_match_model", "translate_model", "llm_api_url", "llm_api_model"):
+                   "llm_match_model", "translate_model", "llm_api_url", "llm_api_model",
+                   "llm_api_vision_model", "llm_api_embed_model"):
             setattr(self, key, str(value or "").strip())
-        elif key == "llm_provider":
+        elif key in ("llm_provider", "llm_vision_provider", "llm_embed_provider"):
             v = str(value or "").strip().lower()
-            self.llm_provider = v if v in ("ollama", "api") else "ollama"
+            setattr(self, key, v if v in ("ollama", "api") else "ollama")
         elif key == "llm_api_key":
             # Prázdná hodnota klíč NEMAŽE (formulář ho z bezpečnostních důvodů
             # nikdy nedostane zpět, takže by se jinak smazal při každém uložení).
@@ -341,6 +376,8 @@ class Settings:
         elif key in (
             "llm_match_min_confidence", "llm_match_temperature",
             "llm_price_in_usd", "llm_price_out_usd", "usd_rate",
+        "llm_vision_provider", "llm_api_vision_model",
+        "llm_embed_provider", "llm_api_embed_model",
         ):
             try:
                 setattr(self, key, max(0.0, float(value)))

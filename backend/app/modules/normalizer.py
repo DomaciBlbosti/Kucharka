@@ -22,7 +22,6 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..models import Ingredient, IngredientAlias
 from .nutrition import PIECE_GRAMS, UNIT_TO_G, UNIT_TO_ML, find_unit
-from .ollamachat import chat_json
 
 log = logging.getLogger("kucharka.normalizer")
 
@@ -114,7 +113,9 @@ def parse_lines_ollama(
     Vrací None, když Ollama není dostupná / odpověď nesedí → volající spadne
     na regex fallback.
     """
-    if not settings.ollama_enabled or not lines:
+    from . import llmclient
+
+    if not llmclient.is_available() or not lines:
         return None
     numbered = "\n".join(f"{i}. {ln}" for i, ln in enumerate(lines))
     prompt = (
@@ -125,12 +126,12 @@ def parse_lines_ollama(
         '{"items":[{"amount":number|null,"unit":string|null,"name":string}]}.\n\n'
         f"Řádky:\n{numbered}"
     )
-    out = chat_json(
-        settings.ollama_url,
-        settings.ollama_fast_model,
+    from . import llmclient
+
+    out = llmclient.structured_json(
         prompt,
-        keep_alive=settings.ollama_keep_alive,
         timeout=max(settings.http_timeout, 60),
+        component="parsování",
     )
     if out is None:
         return None
@@ -239,7 +240,9 @@ def create_ingredient_via_llm(db: Session, name: str) -> Ingredient | None:
     Použije se při dorůstání DB, když se název nenapáruje na existující surovinu.
     Zdroj se označí 'ollama', takže pozdější import z NutriDatabaze data zpřesní.
     """
-    if not settings.ollama_enabled:
+    from . import llmclient
+
+    if not llmclient.is_available():
         return None
     clean = _clean_name(name)
     if not _is_plausible_ingredient_name(clean):
@@ -256,12 +259,12 @@ def create_ingredient_via_llm(db: Session, name: str) -> Ingredient | None:
         '"fat_100g": number, "density": number|null (g na 1 ml, jinak null)}. '
         "Pokud to není jedlá surovina, vrať name_cs prázdné."
     )
-    data = chat_json(
-        settings.ollama_url,
-        settings.ollama_fast_model,
+    from . import llmclient
+
+    data = llmclient.structured_json(
         prompt,
-        keep_alive=settings.ollama_keep_alive,
         timeout=max(settings.http_timeout, 60),
+        component="nová surovina",
     )
     if data is None:
         return None
@@ -339,7 +342,9 @@ def normalize_lines(
     need_llm_idx = [i for i, (_a, _u, name) in enumerate(regex_parsed) if not name]
 
     # LLM jen na zbytek (typicky prázdný seznam → žádné LLM volání)
-    if need_llm_idx and settings.ollama_enabled:
+    from . import llmclient
+
+    if need_llm_idx and llmclient.is_available():
         llm_parsed = parse_lines_ollama([lines[i] for i in need_llm_idx])
         if llm_parsed is not None:
             for pos, idx in enumerate(need_llm_idx):

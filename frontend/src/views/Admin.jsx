@@ -126,7 +126,10 @@ function ToolsCard() {
       "llm_match_enabled", "llm_match_model", "llm_match_batch_size",
       "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
       "llm_match_timeout_s", "translate_model",
-      "llm_provider", "llm_api_url", "llm_api_model"];
+      "llm_provider", "llm_api_url", "llm_api_model",
+      "llm_vision_provider", "llm_api_vision_model",
+      "llm_embed_provider", "llm_api_embed_model",
+      "llm_price_in_usd", "llm_price_out_usd", "usd_rate"];
     const vals = Object.fromEntries(keys.map((k) => [k, s[k]]));
     if (apiKey.trim()) vals.llm_api_key = apiKey.trim();
     const r = await api.adminSaveSettings(vals);
@@ -233,6 +236,64 @@ function ToolsCard() {
           )}
         </div>
       )}
+
+      <h3 className="mb-3 mt-6 text-sm font-bold text-ink/70">
+        OCR a embeddingy (vlastní přepínače)
+      </h3>
+      <p className="mb-3 text-sm text-ink/60">
+        Nejedou podle hlavního přepínače výš: ne každý textový model umí
+        obrázky (DeepSeek ne) a embeddingy jsou lokálně levné, takže je často
+        rozumné nechat je na GPU i při zapnutém API.
+      </p>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="OCR (účtenky, recept z fotky)"
+          hint="obrázky umí např. gpt-4o-mini; lokálně vision model z Ollamy">
+          <select className={input} value={s.llm_vision_provider || "ollama"}
+            onChange={(e) => set("llm_vision_provider", e.target.value)}>
+            <option value="ollama">Ollama (lokální OCR model)</option>
+            <option value="api">Komerční API</option>
+          </select>
+        </Field>
+        <Field label="Model pro OCR přes API">
+          <input className={input} value={s.llm_api_vision_model || ""}
+            onChange={(e) => set("llm_api_vision_model", e.target.value)}
+            placeholder="gpt-4o-mini" />
+        </Field>
+        <Field label="Embeddingy (RAG, nápověda k párování)"
+          hint="POZOR: jiný model = jiný rozměr vektorů → nutné přeindexovat">
+          <select className={input} value={s.llm_embed_provider || "ollama"}
+            onChange={(e) => set("llm_embed_provider", e.target.value)}>
+            <option value="ollama">Ollama (lokální, zdarma)</option>
+            <option value="api">Komerční API</option>
+          </select>
+        </Field>
+        <Field label="Model pro embeddingy přes API">
+          <input className={input} value={s.llm_api_embed_model || ""}
+            onChange={(e) => set("llm_api_embed_model", e.target.value)}
+            placeholder="text-embedding-3-small" />
+        </Field>
+      </div>
+
+      <h3 className="mb-3 mt-6 text-sm font-bold text-ink/70">
+        Odhad ceny (jen pro statistiku spotřeby)
+      </h3>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Field label="Vstupní tokeny (USD / 1M)">
+          <input type="number" step="0.01" min="0" className={input}
+            value={s.llm_price_in_usd ?? 0.15}
+            onChange={(e) => set("llm_price_in_usd", Number(e.target.value))} />
+        </Field>
+        <Field label="Výstupní tokeny (USD / 1M)">
+          <input type="number" step="0.01" min="0" className={input}
+            value={s.llm_price_out_usd ?? 0.6}
+            onChange={(e) => set("llm_price_out_usd", Number(e.target.value))} />
+        </Field>
+        <Field label="Kurz USD → Kč">
+          <input type="number" step="0.5" min="0" className={input}
+            value={s.usd_rate ?? 23}
+            onChange={(e) => set("usd_rate", Number(e.target.value))} />
+        </Field>
+      </div>
 
       <h3 className="mb-3 mt-6 text-sm font-bold text-ink/70">
         Dávkové dopárování surovin (LLM)
