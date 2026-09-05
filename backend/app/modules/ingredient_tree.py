@@ -24,6 +24,7 @@ import time
 
 from sqlalchemy import select, update
 
+from ..config import settings
 from ..db import SessionLocal
 from ..models import Ingredient
 from . import textnorm
@@ -163,4 +164,193 @@ def build_async(dry_run: bool = False) -> bool:
     threading.Thread(
         target=build, args=(dry_run,), daemon=True, name="ingredient-tree",
     ).start()
+    return True
+
+
+# ─── Doplnění vazeb modelem ──────────────────────────────────────────────────
+#
+# Odvození z názvu nechytne vazby, které v názvu nejsou: „kuřecí křidélka"
+# nemá „maso" ve jméně, takže se pod „kuřecí maso" samo nedostane. Tohle je
+# doplňuje modelem – ale jen tam, kde deterministický krok nic nenašel, a jen
+# uvnitř jedné kategorie z číselníku. Model tak nevybírá z 12 tisíc surovin,
+# ale z pár desítek, které k sobě opravdu patří.
+
+_LLM_BATCH = 20        # kolik surovin se ptá naráz
+_LLM_CANDIDATES = 40   # kolik nejobecnějších surovin se nabídne jako rodiče
+
+_LLM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"i": {"type": "integer"}, "p": {"type": "integer"}},
+                "required": ["i", "p"],
+            },
+        }
+    },
+    "required": ["items"],
+}
+
+_llm_lock = threading.Lock()
+_llm_state: dict = {
+    "running": False, "done": 0, "total": 0, "linked": 0, "errors": 0,
+    "finished_at": None, "error": None,
+}
+
+
+def llm_status() -> dict:
+    with _llm_lock:
+        return dict(_llm_state)
+
+
+def _llm_set(**kw):
+    with _llm_lock:
+        _llm_state.update(kw)
+
+
+def _llm_inc(key: str, by: int = 1):
+    with _llm_lock:
+        _llm_state[key] = _llm_state.get(key, 0) + by
+
+
+def _ask_group(category: str, candidates: list[tuple[int, str]],
+               items: list[tuple[int, str]]) -> dict[int, int]:
+    """Zeptej se modelu na rodiče pro jednu dávku. Vrací {id potomka: id rodiče}."""
+    from . import llmclient
+
+    cand_txt = "\n".join(f"{n}. {name}" for n, (_id, name) in enumerate(candidates))
+    item_txt = "\n".join(f"{n}. {name}" for n, (_id, name) in enumerate(items))
+    prompt = (
+        f"Suroviny z kategorie „{category}“. U každé potraviny ze seznamu B urči, "
+        "která potravina ze seznamu A je její OBECNĚJŠÍ nadřazená surovina.\n"
+        "Příklad: „kuřecí křidélka“ patří pod „kuřecí maso“; „lučina“ patří pod "
+        "„tvarohový sýr“.\n"
+        "Odpověz -1, když žádná ze seznamu A nadřazená není, nebo když by šlo "
+        "o totéž. Nadřazená surovina musí být OBECNĚJŠÍ, ne jiný druh téhož.\n\n"
+        f"SEZNAM A (možní rodiče):\n{cand_txt}\n\n"
+        f"SEZNAM B (co zařadit):\n{item_txt}\n\n"
+        "Odpověz POUZE JSON {\"items\":[{\"i\":<číslo z B>,\"p\":<číslo z A nebo -1>}]}."
+    )
+    out = llmclient.structured_json(
+        prompt, schema=_LLM_SCHEMA,
+        timeout=max(settings.http_timeout, settings.llm_match_timeout_s),
+        num_ctx=8192, component="strom surovin",
+    )
+    if out is None:
+        _llm_inc("errors")
+        return {}
+
+    pairs: dict[int, int] = {}
+    for it in out.get("items", []):
+        try:
+            i = int(it.get("i"))
+            pcand = int(it.get("p"))
+        except Exception:  # noqa: BLE001 – model vrátil nečíslo
+            continue
+        if not (0 <= i < len(items)) or pcand < 0:
+            continue
+        if not (0 <= pcand < len(candidates)):
+            continue  # vymyšlený index – radši nic
+        child_id, parent_id = items[i][0], candidates[pcand][0]
+        if child_id != parent_id:
+            pairs[child_id] = parent_id
+    return pairs
+
+
+def llm_link(limit_categories: int | None = None) -> dict:
+    """Doplň chybějící rodiče modelem, kategorii po kategorii.
+
+    Nesahá na vazby z `build()` – ty jsou odvozené z názvu a spolehlivé.
+    Řeší jen suroviny, které po něm zůstaly bez rodiče.
+    """
+    from . import llmclient
+
+    if not llmclient.is_available():
+        return {"skipped": "LLM není dostupné"}
+
+    _llm_set(running=True, done=0, total=0, linked=0, errors=0, error=None,
+             finished_at=None)
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            select(Ingredient.id, Ingredient.name_cs, Ingredient.category_path,
+                   Ingredient.parent_id)
+        ).all()
+        by_cat: dict[str, list] = {}
+        for r in rows:
+            cat = (r.category_path or "").strip()
+            if cat:
+                by_cat.setdefault(cat, []).append(r)
+
+        # Kategorie s jedinou surovinou nemají co řešit.
+        groups = [(c, rs) for c, rs in by_cat.items() if len(rs) > 1]
+        groups.sort(key=lambda x: -len(x[1]))
+        if limit_categories:
+            groups = groups[:limit_categories]
+        _llm_set(total=sum(len(rs) for _c, rs in groups))
+
+        linked_total = 0
+        for category, rs in groups:
+            # Kandidáti na rodiče = nejobecnější názvy, tedy ty s nejmíň
+            # slovy. „kuřecí maso" je lepší rodič než „kuřecí maso mleté".
+            ranked = sorted(rs, key=lambda r: (len(_stems(r.name_cs)), len(r.name_cs)))
+            candidates = [(r.id, r.name_cs) for r in ranked[:_LLM_CANDIDATES]]
+            items = [(r.id, r.name_cs) for r in rs if r.parent_id is None]
+            if not items or len(candidates) < 2:
+                _llm_inc("done", len(rs))
+                continue
+
+            found: dict[int, int] = {}
+            for start in range(0, len(items), _LLM_BATCH):
+                batch = items[start:start + _LLM_BATCH]
+                found.update(_ask_group(category, candidates, batch))
+                _llm_inc("done", len(batch))
+
+            if not found:
+                continue
+            # Cyklus musí padnout dřív, než se to uloží – rozbalování výběru
+            # by se na něm zaseklo.
+            merged = {r.id: r.parent_id for r in rows}
+            merged.update(found)
+            merged = _break_cycles(merged)
+            updates = [
+                {"id": cid, "parent_id": merged.get(cid)}
+                for cid in found
+                if merged.get(cid) is not None
+            ]
+            if updates:
+                db.execute(update(Ingredient), updates)
+                db.commit()
+                linked_total += len(updates)
+                _llm_set(linked=linked_total)
+
+        log.info("Strom surovin (model): doplněno %s vazeb v %s kategoriích.",
+                 linked_total, len(groups))
+        return {"linked": linked_total, "categories": len(groups),
+                "errors": _llm_state["errors"]}
+    except Exception as exc:  # noqa: BLE001
+        _llm_set(error=f"{type(exc).__name__}: {exc}"[:500])
+        raise
+    finally:
+        db.close()
+        _llm_set(running=False, finished_at=time.time())
+
+
+def llm_link_async(limit_categories: int | None = None) -> bool:
+    with _llm_lock:
+        if _llm_state["running"]:
+            return False
+        _llm_state["running"] = True
+
+    def _worker():
+        try:
+            llm_link(limit_categories=limit_categories)
+        except Exception as exc:  # noqa: BLE001 – vlákno nesmí umřít potichu
+            log.error("doplnění stromu surovin modelem selhalo: %s", exc)
+        finally:
+            _llm_set(running=False, finished_at=time.time())
+
+    threading.Thread(target=_worker, daemon=True, name="ingredient-tree-llm").start()
     return True

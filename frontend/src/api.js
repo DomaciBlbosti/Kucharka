@@ -343,6 +343,12 @@ export const api = {
       method: "POST",
     }).then(J),
   taxonomy: () => afetch("/api/admin/taxonomy").then(J),
+  ingredientTreeBuild: () =>
+    afetch("/api/admin/ingredient-tree/build", { method: "POST" }).then(J),
+  ingredientTreeLlm: () =>
+    afetch("/api/admin/ingredient-tree/llm", { method: "POST" }).then(J),
+  ingredientTreeLlmStatus: () =>
+    afetch("/api/admin/ingredient-tree/llm-status").then(J),
   categoriesRenormalize: () =>
     afetch("/api/admin/categories/renormalize", { method: "POST" }).then(J),
   dietTagsCleanup: (dryRun) =>

@@ -1929,6 +1929,8 @@ function MetadataCleanupCard() {
   const [tax, setTax] = useState(null);
   const [cats, setCats] = useState(null);
   const [diet, setDiet] = useState(null);
+  const [tree, setTree] = useState(null);
+  const [treeLlm, setTreeLlm] = useState(null);
   const [busy, setBusy] = useState(null);
   const [err, setErr] = useState(null);
 
@@ -1977,6 +1979,44 @@ function MetadataCleanupCard() {
             Vymazané zařadí model při nejbližším běhu kategorizace surovin.
           </p>
         )}
+
+        <hr className="border-line" />
+        <p className="text-sm text-ink/60">
+          Strom surovin: &bdquo;arborio rýže&ldquo; patří pod &bdquo;rýže&ldquo;,
+          takže vybrání obecné suroviny ve &bdquo;Vařím z&ldquo; najde i recepty
+          s konkrétnější variantou. Odvození z názvů je okamžité; model doplní
+          jen to, co z názvu vyčíst nejde (&bdquo;kuřecí křidélka&ldquo; pod
+          &bdquo;kuřecí maso&ldquo;) a běží na pozadí.
+        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            onClick={() => run("tree", api.ingredientTreeBuild, setTree)}
+            disabled={busy !== null}
+          >
+            {busy === "tree" ? "Počítám…" : "Přepočítat z názvů"}
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => run("treeLlm", api.ingredientTreeLlm, setTreeLlm)}
+            disabled={busy !== null}
+          >
+            {busy === "treeLlm" ? "Spouštím…" : "Doplnit modelem"}
+          </Button>
+          {tree && (
+            <span className="text-sm text-ink/60">
+              {tree.linked} z {tree.total} surovin má rodiče
+              {tree.changed ? ` · ${tree.changed} změn` : ""}
+            </span>
+          )}
+          {treeLlm?.started === false && (
+            <span className="text-sm text-miss">Doplňování už běží.</span>
+          )}
+          {treeLlm?.started && (
+            <span className="text-sm text-ink/60">
+              Běží na pozadí, průběh je vidět v logu.
+            </span>
+          )}
+        </div>
 
         <hr className="border-line" />
         <p className="text-sm text-ink/60">

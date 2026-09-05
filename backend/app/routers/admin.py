@@ -363,10 +363,29 @@ def diet_tags_cleanup(dry_run: bool = Query(False)):
 
 @router.post("/ingredient-tree/build")
 def ingredient_tree_build(dry_run: bool = Query(False)):
-    """Přepočítá rodičovské vazby surovin („arborio rýže" → „rýže")."""
+    """Přepočítá rodičovské vazby surovin („arborio rýže" → „rýže").
+
+    Odvozuje z názvů, bez modelu – vteřiny."""
     from ..modules import ingredient_tree
 
     return ingredient_tree.build(dry_run=dry_run)
+
+
+@router.post("/ingredient-tree/llm")
+def ingredient_tree_llm(limit_categories: int | None = Query(None, ge=1)):
+    """Doplní modelem vazby, které z názvu nejdou vyčíst („kuřecí křidélka"
+    pod „kuřecí maso"). Běží na pozadí, jen pro suroviny bez rodiče."""
+    from ..modules import ingredient_tree
+
+    started = ingredient_tree.llm_link_async(limit_categories=limit_categories)
+    return {"started": started, "status": ingredient_tree.llm_status()}
+
+
+@router.get("/ingredient-tree/llm-status")
+def ingredient_tree_llm_status():
+    from ..modules import ingredient_tree
+
+    return ingredient_tree.llm_status()
 
 
 # ─── Čitelný export receptů ke kontrole ─────────────────────────────────────

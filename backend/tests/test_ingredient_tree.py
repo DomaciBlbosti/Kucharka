@@ -211,8 +211,145 @@ def main():
         check("ručně skrytý recept se ve „Vařím z“ neukáže",
               "Rizoto" not in {x["title"] for x in r}, str(r))
 
+    llm_checks()
+
     print(f"\n{PASSED} OK, {FAILED} FAIL")
     return 1 if FAILED else 0
+
+
+def llm_checks():
+    """Doplnění vazeb modelem – to, co z názvu nejde vyčíst.
+
+    Model se stubuje: zajímá nás, že se ptáme na správné suroviny, že
+    výsledek projde kontrolou (vymyšlený index, cyklus, sám na sebe) a že
+    se nepřepisují spolehlivé vazby odvozené z názvu.
+    """
+    from sqlalchemy import select as sel
+
+    from app.modules import ingredient_tree as tree
+
+    print("\ndoplnění modelem:")
+    db = SessionLocal()
+    kure = Ingredient(name_cs="kuřecí maso", category_path="maso > drůbež")
+    kridla = Ingredient(name_cs="kuřecí křidélka", category_path="maso > drůbež")
+    stehna = Ingredient(name_cs="stehna", category_path="maso > drůbež")
+    db.add_all([kure, kridla, stehna])
+    db.commit()
+    ids = {"kure": kure.id, "kridla": kridla.id, "stehna": stehna.id}
+    db.close()
+
+    tree.build()  # název tyhle tři nespojí
+    db = SessionLocal()
+    check("z názvu se „kuřecí křidélka“ pod „kuřecí maso“ nedostanou",
+          db.get(Ingredient, ids["kridla"]).parent_id is None)
+    db.close()
+
+    calls = []
+
+    def fake(category, candidates, items):
+        calls.append((category, [c[1] for c in candidates], [i[1] for i in items]))
+        idx = {name: n for n, (_id, name) in enumerate(candidates)}
+        out = {}
+        for i, (iid, name) in enumerate(items):
+            if name in ("kuřecí křidélka", "stehna") and "kuřecí maso" in idx:
+                out[iid] = candidates[idx["kuřecí maso"]][0]
+        return out
+
+    orig_ask, orig_avail = tree._ask_group, None
+    from app.modules import llmclient
+    orig_avail = llmclient.is_available
+    tree._ask_group = fake
+    llmclient.is_available = lambda: True
+    try:
+        res = tree.llm_link()
+    finally:
+        tree._ask_group = orig_ask
+        llmclient.is_available = orig_avail
+
+    check("model se ptá jen na suroviny bez rodiče",
+          any("kuřecí křidélka" in c[2] for c in calls), str(calls))
+    check("obecná surovina je mezi nabízenými rodiči",
+          any("kuřecí maso" in c[1] for c in calls), str(calls))
+    check("vazba se uloží", res["linked"] >= 2, str(res))
+
+    db = SessionLocal()
+    check("„kuřecí křidélka“ jsou teď pod „kuřecí maso“",
+          db.get(Ingredient, ids["kridla"]).parent_id == ids["kure"])
+    check("„stehna“ taky", db.get(Ingredient, ids["stehna"]).parent_id == ids["kure"])
+    exp = tree.expand(db, [ids["kure"]])
+    check("„Vařím z kuřecího masa“ teď najde i křidélka",
+          {ids["kridla"], ids["stehna"]} <= exp, str(sorted(exp)))
+    db.close()
+
+    print("\nmodel nesmí rozbít data:")
+    # Vymyšlený index a odkaz sám na sebe – model to občas udělá.
+    db = SessionLocal()
+    a = Ingredient(name_cs="pomazánkové máslo", category_path="mléčné výrobky > sýry")
+    b = Ingredient(name_cs="lučina", category_path="mléčné výrobky > sýry")
+    db.add_all([a, b])
+    db.commit()
+    ids2 = {"a": a.id, "b": b.id}
+    db.close()
+
+    # Nejdřív kontrola PŘÍMO v _ask_group, tedy na úrovni odpovědi modelu.
+    # Stubovat až za ní by znamenalo, že se ten filtr vůbec neotestuje.
+    from app.modules import llmclient as lc
+
+    cands = [(ids2["a"], "pomazánkové máslo")]
+    itms = [(ids2["b"], "lučina")]
+    bad_answers = [
+        ({"items": [{"i": 0, "p": 99}]}, "vymyšlený index rodiče"),
+        ({"items": [{"i": 99, "p": 0}]}, "vymyšlený index potomka"),
+        ({"items": [{"i": 0, "p": -1}]}, "„žádný rodič“ (-1)"),
+        ({"items": [{"i": "x", "p": "y"}]}, "nečíselná odpověď"),
+        ({"items": []}, "prázdná odpověď"),
+        (None, "model vůbec neodpověděl"),
+    ]
+    orig_sj = lc.structured_json
+    for answer, label in bad_answers:
+        lc.structured_json = lambda *a, **k: answer
+        try:
+            got = tree._ask_group("maso", cands, itms)
+        finally:
+            lc.structured_json = orig_sj
+        check(f"{label} se zahodí", got == {}, str(got))
+
+    lc.structured_json = lambda *a, **k: {"items": [{"i": 0, "p": 0}]}
+    try:
+        got = tree._ask_group("maso", [(ids2["b"], "lučina")], itms)
+    finally:
+        lc.structured_json = orig_sj
+    check("odkaz sám na sebe se zahodí", got == {}, str(got))
+
+    def evil(category, candidates, items):
+        # Kdyby se přes filtr přece jen něco protlouklo, nesmí to skončit
+        # v databázi jako cyklus – rozbalování výběru by se na něm zaseklo.
+        return {items[0][0]: items[0][0]} if items else {}
+
+    tree._ask_group = evil
+    llmclient.is_available = lambda: True
+    try:
+        tree.llm_link()
+    finally:
+        tree._ask_group = orig_ask
+        llmclient.is_available = orig_avail
+
+    db = SessionLocal()
+    selfref = [r for r in db.execute(
+        sel(Ingredient.id, Ingredient.parent_id)
+    ).all() if r.parent_id == r.id]
+    check("žádná surovina není rodičem sama sobě", not selfref, str(selfref))
+    # Rozbalování se nesmí zaseknout ani kdyby se něco protlouklo.
+    check("rozbalení výběru doběhne", isinstance(tree.expand(db, [ids2["a"]]), set))
+    db.close()
+
+    print("\nbez modelu:")
+    llmclient.is_available = lambda: False
+    try:
+        res = tree.llm_link()
+    finally:
+        llmclient.is_available = orig_avail
+    check("vypnuté LLM se ohlásí, nespadne", "skipped" in res, str(res))
 
 
 if __name__ == "__main__":
