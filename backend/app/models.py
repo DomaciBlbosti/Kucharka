@@ -39,6 +39,12 @@ class Ingredient(Base):
     category: Mapped[str | None] = mapped_column(String(120), nullable=True)
     # Hierarchická kategorie, např. "maso > drůbeží > kuřecí" (plní kategorizace).
     category_path: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    # Obecnější surovina: "arborio rýže" → "rýže", "olivový olej" → "olej".
+    # Díky tomu vybrání „rýže" ve „Vařím z" najde i recept s jasmínovou rýží.
+    # Plní jednorázová úloha podle názvů (viz modules/ingredient_tree).
+    parent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ingredient.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # Výživa na 100 g
     kcal_100g: Mapped[float | None] = mapped_column(Float, nullable=True)

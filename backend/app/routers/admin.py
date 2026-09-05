@@ -361,6 +361,14 @@ def diet_tags_cleanup(dry_run: bool = Query(False)):
     return tagging.strip_wrong_diet_tags(dry_run=dry_run)
 
 
+@router.post("/ingredient-tree/build")
+def ingredient_tree_build(dry_run: bool = Query(False)):
+    """Přepočítá rodičovské vazby surovin („arborio rýže" → „rýže")."""
+    from ..modules import ingredient_tree
+
+    return ingredient_tree.build(dry_run=dry_run)
+
+
 # ─── Čitelný export receptů ke kontrole ─────────────────────────────────────
 
 @router.post("/recipe-export/run")

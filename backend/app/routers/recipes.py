@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from ..config import settings
 from ..db import get_db
 from ..models import Ingredient, PantryItem, Recipe, RecipeIngredient, RecipeTag, Tag
+from ..modules import ingredient_tree
 from ..modules.pantry import pantry_ingredient_ids, recipe_availability
 from ..modules.nutrition import recompute_recipe_kcal
 from ..modules import photo_recipe, textnorm
@@ -133,6 +134,31 @@ def _search_clause(db: Session, q: str):
                by_title)
 
 
+def _tag_conditions(tags: list[str]) -> list:
+    """Podmínky pro filtr tagů: víc tagů v jednom jmenném prostoru = NEBO,
+    víc prostorů = ZÁROVEŇ (vegetariánské A indické).
+
+    Vytažené zvlášť, protože stejný filtr potřebuje i „Vařím z" – bez něj
+    tam nešlo zúžit výběr na vegetariánské indické jídlo z rýže."""
+    if not tags:
+        return []
+    by_ns: dict[str, list[str]] = {}
+    for t in tags:
+        if ":" not in t:
+            continue
+        ns, slug = t.split(":", 1)
+        by_ns.setdefault(ns, []).append(slug)
+    out = []
+    for ns, slugs in by_ns.items():
+        sub = (
+            select(RecipeTag.recipe_id)
+            .join(Tag, RecipeTag.tag_id == Tag.id)
+            .where(Tag.namespace == ns, Tag.slug.in_(slugs))
+        )
+        out.append(Recipe.id.in_(sub))
+    return out
+
+
 def _tags_by_recipe(db: Session, recipe_ids: list[int]) -> dict[int, list[Tag]]:
     """Tagy jen pro danou stránku receptů (ne pro celou DB)."""
     if not recipe_ids:
@@ -197,20 +223,7 @@ def list_recipes(
             .where(Ingredient.category_path.ilike(f"{category}%"))
         )
         conds.append(Recipe.id.in_(sub))
-    if tags:
-        by_ns: dict[str, list[str]] = {}
-        for t in tags:
-            if ":" not in t:
-                continue
-            ns, slug = t.split(":", 1)
-            by_ns.setdefault(ns, []).append(slug)
-        for ns, slugs in by_ns.items():
-            sub = (
-                select(RecipeTag.recipe_id)
-                .join(Tag, RecipeTag.tag_id == Tag.id)
-                .where(Tag.namespace == ns, Tag.slug.in_(slugs))
-            )
-            conds.append(Recipe.id.in_(sub))
+    conds.extend(_tag_conditions(tags))
 
     # Recept bez JEDINÉ napárované suroviny má missing = 0, což ale neznamená
     # „můžeš vařit" – znamená to „nevíme, z čeho je". Do filtrů dostupnosti
@@ -471,6 +484,8 @@ def set_recipe_tags(recipe_id: int, req: TagsSet, db: Session = Depends(get_db))
 @router.get("/cook-from", response_model=list[RecipeCard])
 def cook_from(
     ingredient_ids: list[int] = Query(default=[], description="suroviny, ze kterých chci vařit"),
+    q: str | None = Query(None, description="text v názvu/postupu"),
+    tags: list[str] = Query(default=[], description="filtr 'namespace:slug'"),
     limit: int = Query(60, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
@@ -479,10 +494,15 @@ def cook_from(
     Skóre se počítá stejně jako dostupnost vůči spíži, jen místo spíže
     bereme vybrané suroviny: have = kolik klíčových surovin receptu pokrývá
     výběr, missing_count = kolik by ještě bylo třeba dokoupit.
+
+    Bere i text a tagy, aby šlo výběr zúžit („z rýže, vegetariánské, indické").
+    Bez toho se v tomhle režimu nedalo filtrovat vůbec.
     """
     if not ingredient_ids:
         return []
-    sel = set(ingredient_ids)
+    # Vybraná surovina zastupuje i své konkrétnější varianty: kdo má doma
+    # „rýži", má vidět i rizoto s „arborio rýží".
+    sel = ingredient_tree.expand(db, ingredient_ids)
 
     # Nejdřív v SQL zúžit na recepty, co aspoň JEDNU vybranou surovinu vůbec
     # obsahují – dřív se tahalo úplně všech ~150k receptů se všemi
@@ -497,9 +517,14 @@ def cook_from(
         .outerjoin(_sub, _sub.c.recipe_id == Recipe.id)
         .where(Recipe.id.in_(candidate_ids))
         .where(have_col > 0)
+        .where(Recipe.hidden.is_(False))
         .order_by(missing_col.asc(), have_col.desc(), func.coalesce(Recipe.rating, 0).desc())
         .limit(limit)
     )
+    if q:
+        stmt = stmt.where(_search_clause(db, q))
+    for cond in _tag_conditions(tags):
+        stmt = stmt.where(cond)
     rows = db.execute(stmt).all()
     recipe_ids = [r.Recipe.id for r in rows]
     tags_map = _tags_by_recipe(db, recipe_ids)
