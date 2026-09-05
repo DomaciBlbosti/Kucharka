@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { IngredientPicker } from "../components/IngredientPicker";
@@ -54,7 +54,16 @@ export default function Recipes() {
   const setSort = (v) => setPar({ sort: v === "feed" ? "" : v });
   const category = par("category");
   const setCategory = (v) => setPar({ category: v });
-  const selectedTags = params.getAll("tags"); // ["namespace:slug", ...]
+  // POZOR: `params.getAll()` vrací POKAŽDÉ NOVÉ pole. Kdyby šlo rovnou do
+  // závislostí useEffectu, React by ho podle identity považoval za změněné
+  // při každém renderu → načtení receptů → render → načtení… Nekonečná
+  // smyčka, při které recepty jen problikávaly a výpis se nikdy neustálil.
+  // Proto se z URL bere řetězec (stabilní hodnota) a pole se z něj odvodí.
+  const tagsKey = params.getAll("tags").join(",");
+  const selectedTags = useMemo(
+    () => (tagsKey ? tagsKey.split(",") : []),
+    [tagsKey],
+  ); // ["namespace:slug", ...]
   const setSelectedTags = (v) => setPar({ tags: v });
 
   const [cats, setCats] = useState([]);
@@ -79,15 +88,26 @@ export default function Recipes() {
     api.appConfig().then((c) => setPantryOn(c.pantry)).catch(() => {});
   }, []);
 
+  // Settery nad URL berou HODNOTU, ne funkci (na rozdíl od useState) –
+  // aktuální stav se čte z URL, takže ho není z čeho odvozovat.
   const toggleTag = (key) =>
-    setSelectedTags((cur) => (cur.includes(key) ? cur.filter((t) => t !== key) : [...cur, key]));
+    setSelectedTags(
+      selectedTags.includes(key)
+        ? selectedTags.filter((t) => t !== key)
+        : [...selectedTags, key],
+    );
 
   // "Vařím z" – vybrané suroviny
   // Vybrané suroviny jsou v URL taky – jinak by se po návratu z receptu
   // ztratily stejně jako filtry. Názvy se drží ve stavu jen kvůli popiskům
   // na štítcích; zdrojem pravdy jsou id v URL.
   const [pickedNames, setPickedNames] = useState({});
-  const pickedIds = params.getAll("ing").map(Number).filter(Boolean);
+  // Stejná past jako u tagů výš – z URL se bere řetězec, pole se odvodí.
+  const pickedKeyRaw = params.getAll("ing").join(",");
+  const pickedIds = useMemo(
+    () => pickedKeyRaw.split(",").map(Number).filter(Boolean),
+    [pickedKeyRaw],
+  );
   const picked = pickedIds.map((id) => ({ id, name_cs: pickedNames[id] || `#${id}` }));
   const cookMode = pickedIds.length > 0;
   const pickedKey = pickedIds.join(",");
@@ -181,7 +201,7 @@ export default function Recipes() {
               </button>
             ))}
             <button
-              onClick={() => setPicked([])}
+              onClick={() => setPar({ ing: [] })}
               className="rounded-full px-3 py-1 text-sm text-ink/45 hover:text-miss"
             >
               vyčistit
