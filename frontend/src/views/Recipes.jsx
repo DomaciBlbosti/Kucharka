@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { IngredientPicker } from "../components/IngredientPicker";
 import { CookMeter, EmptyState, Meta, ReadyStamp, Spinner, Stars } from "../components/ui";
@@ -19,21 +19,56 @@ export default function Recipes() {
   const [recipes, setRecipes] = useState(null);
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [q, setQ] = useState("");
-  const [onlyHave, setOnlyHave] = useState(false);
-  const [maxMissing, setMaxMissing] = useState("");
-  const [maxTime, setMaxTime] = useState("");
-  const [sort, setSort] = useState("feed");
-  const [category, setCategory] = useState("");
+
+  // Filtry žijí v URL, ne ve stavu komponenty. Bez toho se po otevření
+  // receptu a návratu zpět nastavení ztratilo – prohlížeč sice vrátil
+  // stránku, ale komponenta se namountovala znovu s prázdnými filtry.
+  // V URL je navíc výběr sdílitelný odkazem.
+  const [params, setParams] = useSearchParams();
+  const par = (key, def = "") => params.get(key) ?? def;
+  const setPar = (patch) =>
+    setParams(
+      (cur) => {
+        const next = new URLSearchParams(cur);
+        Object.entries(patch).forEach(([k, v]) => {
+          if (v === "" || v === false || v === null || v === undefined) next.delete(k);
+          else if (Array.isArray(v)) {
+            next.delete(k);
+            v.forEach((x) => next.append(k, x));
+          } else next.set(k, String(v));
+        });
+        return next;
+      },
+      { replace: true },
+    );
+
+  const q = par("q");
+  const setQ = (v) => setPar({ q: v });
+  const onlyHave = par("only_have") === "1";
+  const setOnlyHave = (v) => setPar({ only_have: v ? "1" : "" });
+  const maxMissing = par("max_missing");
+  const setMaxMissing = (v) => setPar({ max_missing: v });
+  const maxTime = par("max_time");
+  const setMaxTime = (v) => setPar({ max_time: v });
+  const sort = par("sort", "feed");
+  const setSort = (v) => setPar({ sort: v === "feed" ? "" : v });
+  const category = par("category");
+  const setCategory = (v) => setPar({ category: v });
+  const selectedTags = params.getAll("tags"); // ["namespace:slug", ...]
+  const setSelectedTags = (v) => setPar({ tags: v });
+
   const [cats, setCats] = useState([]);
   const [tagGroups, setTagGroups] = useState([]);
-  const [selectedTags, setSelectedTags] = useState([]); // ["namespace:slug", ...]
   const [tagsOpen, setTagsOpen] = useState(false);
   // Sloučit varianty téhož jídla do jedné karty (12 tisíc názvů v korpusu
   // má dvě a víc variant). Volba se pamatuje mezi návštěvami.
-  const [groupVariants, setGroupVariants] = useState(
-    () => localStorage.getItem("recipes.group") !== "0",
-  );
+  const groupVariants = params.has("group")
+    ? params.get("group") === "1"
+    : localStorage.getItem("recipes.group") !== "0";
+  const setGroupVariants = (v) => {
+    localStorage.setItem("recipes.group", v ? "1" : "0");
+    setPar({ group: v ? "1" : "0" });
+  };
 
   // Vypnutá spíž: dostupnost ani filtry na ni navázané nemá cenu ukazovat.
   const [pantryOn, setPantryOn] = useState(true);
@@ -48,13 +83,20 @@ export default function Recipes() {
     setSelectedTags((cur) => (cur.includes(key) ? cur.filter((t) => t !== key) : [...cur, key]));
 
   // "Vařím z" – vybrané suroviny
-  const [picked, setPicked] = useState([]);
-  const cookMode = picked.length > 0;
-  const pickedKey = picked.map((p) => p.id).join(",");
+  // Vybrané suroviny jsou v URL taky – jinak by se po návratu z receptu
+  // ztratily stejně jako filtry. Názvy se drží ve stavu jen kvůli popiskům
+  // na štítcích; zdrojem pravdy jsou id v URL.
+  const [pickedNames, setPickedNames] = useState({});
+  const pickedIds = params.getAll("ing").map(Number).filter(Boolean);
+  const picked = pickedIds.map((id) => ({ id, name_cs: pickedNames[id] || `#${id}` }));
+  const cookMode = pickedIds.length > 0;
+  const pickedKey = pickedIds.join(",");
 
-  const addPick = (o) =>
-    setPicked((cur) => (cur.some((p) => p.id === o.id) ? cur : [...cur, o]));
-  const removePick = (id) => setPicked((cur) => cur.filter((p) => p.id !== id));
+  const addPick = (o) => {
+    setPickedNames((cur) => ({ ...cur, [o.id]: o.name_cs || o.name }));
+    if (!pickedIds.includes(o.id)) setPar({ ing: [...pickedIds, o.id] });
+  };
+  const removePick = (id) => setPar({ ing: pickedIds.filter((p) => p !== id) });
 
   const filters = {
     q,
@@ -74,7 +116,7 @@ export default function Recipes() {
     const t = setTimeout(() => {
       if (cookMode) {
         api
-          .cookFrom(picked.map((p) => p.id))
+          .cookFrom(pickedIds, { q, tags: selectedTags })
           .then((r) => {
             if (!live) return;
             setRecipes(r);
@@ -148,28 +190,31 @@ export default function Recipes() {
         )}
       </div>
 
-      {/* Filtry – jen mimo režim Vařím z */}
-      {!cookMode && (
-        <>
-          <div className="mb-5 flex flex-wrap items-center gap-2">
+      {/* Filtry. V režimu „Vařím z" se dřív schovávaly úplně, takže nešlo
+          chtít „z rýže, vegetariánské a indické". Skryje se jen to, co tam
+          nemá význam: řazení (řadí se podle nejmenšího doplnění), filtry na
+          spíž a slučování variant. */}
+      <div className="mb-5 flex flex-wrap items-center gap-2">
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Hledat recept…"
               className="min-w-[12rem] flex-1 rounded-full border border-line bg-white px-4 py-2.5 text-sm outline-none focus:border-basil focus:ring-2 focus:ring-basil/20"
             />
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value)}
-              className="rounded-full border border-line bg-white px-3 py-2.5 text-sm outline-none focus:border-basil"
-            >
-              {SORTS.filter(([v]) => pantryOn || v !== "smart").map(([v, l]) => (
-                <option key={v} value={v}>
-                  {l}
-                </option>
-              ))}
-            </select>
-            {cats.length > 0 && (
+            {!cookMode && (
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value)}
+                className="rounded-full border border-line bg-white px-3 py-2.5 text-sm outline-none focus:border-basil"
+              >
+                {SORTS.filter(([v]) => pantryOn || v !== "smart").map(([v, l]) => (
+                  <option key={v} value={v}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+            )}
+            {cats.length > 0 && !cookMode && (
               <select
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
@@ -239,10 +284,11 @@ export default function Recipes() {
             </div>
           )}
 
+          {!cookMode && (
           <div className="mb-6 flex flex-wrap items-center gap-2 text-sm">
             {pantryOn && (
             <button
-              onClick={() => setOnlyHave((v) => !v)}
+              onClick={() => setOnlyHave(!onlyHave)}
               className={`rounded-full px-3 py-1.5 font-medium transition ${
                 onlyHave
                   ? "bg-basil text-white"
@@ -253,12 +299,7 @@ export default function Recipes() {
             </button>
             )}
             <button
-              onClick={() =>
-                setGroupVariants((v) => {
-                  localStorage.setItem("recipes.group", v ? "0" : "1");
-                  return !v;
-                })
-              }
+              onClick={() => setGroupVariants(!groupVariants)}
               title="Recepty se stejným názvem se ukážou jako jedna položka"
               className={`rounded-full px-3 py-1.5 font-medium transition ${
                 groupVariants
@@ -294,7 +335,6 @@ export default function Recipes() {
               min
             </label>
           </div>
-        </>
       )}
 
       {cookMode && (

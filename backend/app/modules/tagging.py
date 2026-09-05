@@ -18,7 +18,7 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Recipe, RecipeTag, Tag
 from ..seed.starter_tags import NAMESPACE_LABELS
-from . import llmclient
+from . import diet, llmclient
 
 log = logging.getLogger("kucharka.tagging")
 
@@ -140,7 +140,16 @@ def _tag_batch(recipe_ids: list[int]) -> None:
             if not (0 <= idx < len(recipes)):
                 continue
             recipe = recipes[idx]
-            tag_ids = {valid[key] for key in (it.get("tags") or []) if key in valid}
+            keys = [key for key in (it.get("tags") or []) if key in valid]
+            # Dietní tvrzení modelu se ověřuje proti surovinám. Model vidí jen
+            # prvních osm surovin (viz `items` výš), takže maso na devátém
+            # řádku nemá jak poznat – recept „Kořeněné mleté maso s kuskusem"
+            # tak vycházel jako vegetariánský.
+            kept = diet.allowed_tag_keys(recipe.title, recipe.ingredients, keys)
+            if len(kept) != len(keys):
+                log.info("Recept %s: zahozen dietní tag odporující surovinám (%s).",
+                         recipe.id, ", ".join(sorted(set(keys) - kept)))
+            tag_ids = {valid[key] for key in kept}
             existing = {
                 tid
                 for tid in db.scalars(
@@ -191,3 +200,72 @@ def tag_async(only_missing: bool = True) -> bool:
         _state["running"] = True
     threading.Thread(target=tag_all, args=(only_missing,), daemon=True).start()
     return True
+
+
+def strip_wrong_diet_tags(dry_run: bool = False) -> dict:
+    """Odeber už uložené dietní tagy, které odporují surovinám receptu.
+
+    Jednorázový úklid po tom, co se dietní tvrzení modelu začala ověřovat
+    (viz modules/diet). Bez modelu, čistě nad daty. Tagy jen odebírá –
+    z nepřítomnosti masa mezi surovinami se nedá spolehlivě usoudit, že
+    recept vegetariánský JE, takže se nic nedoplňuje.
+    """
+    from sqlalchemy import delete
+
+    from ..models import RecipeIngredient
+
+    db = SessionLocal()
+    try:
+        diet_tags = {
+            t.id: t.slug
+            for t in db.scalars(select(Tag).where(Tag.namespace == "dieta"))
+            if t.slug in (diet.VEGETARIAN, diet.VEGAN)
+        }
+        if not diet_tags:
+            return {"checked": 0, "removed": 0, "recipes": 0, "dry_run": dry_run}
+
+        # Jen recepty, které některý z těch tagů opravdu mají – projít kvůli
+        # tomuhle celý korpus by bylo zbytečných 171 tisíc načtení.
+        recipe_ids = list(db.scalars(
+            select(RecipeTag.recipe_id).where(RecipeTag.tag_id.in_(diet_tags)).distinct()
+        ))
+        removed = touched = 0
+        for start in range(0, len(recipe_ids), 200):
+            chunk = recipe_ids[start:start + 200]
+            recipes = db.scalars(
+                select(Recipe).where(Recipe.id.in_(chunk)).options(
+                    selectinload(Recipe.ingredients)
+                    .selectinload(RecipeIngredient.ingredient)
+                )
+            ).all()
+            for r in recipes:
+                bad = diet.conflicts(r.title, r.ingredients)
+                if not bad:
+                    continue
+                bad_ids = [tid for tid, slug in diet_tags.items() if slug in bad]
+                if not bad_ids:
+                    continue
+                have = set(db.scalars(
+                    select(RecipeTag.tag_id).where(RecipeTag.recipe_id == r.id)
+                    .where(RecipeTag.tag_id.in_(bad_ids))
+                ))
+                if not have:
+                    continue
+                touched += 1
+                removed += len(have)
+                if not dry_run:
+                    db.execute(
+                        delete(RecipeTag).where(RecipeTag.recipe_id == r.id)
+                        .where(RecipeTag.tag_id.in_(have))
+                    )
+        if dry_run:
+            db.rollback()
+        else:
+            db.commit()
+        log.info("Dietní tagy: %s receptů zkontrolováno, %s tagů %s u %s receptů.",
+                 len(recipe_ids), removed,
+                 "by se odebralo" if dry_run else "odebráno", touched)
+        return {"checked": len(recipe_ids), "removed": removed,
+                "recipes": touched, "dry_run": dry_run}
+    finally:
+        db.close()

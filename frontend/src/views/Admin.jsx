@@ -1923,6 +1923,136 @@ function MergeDuplicates() {
   );
 }
 
+/** Úklid metadat, která zapsal model: kategorie surovin a dietní tagy.
+ *  Obojí je stejná nemoc – model něco napsal a nikdo to neověřil proti datům. */
+function MetadataCleanupCard() {
+  const [tax, setTax] = useState(null);
+  const [cats, setCats] = useState(null);
+  const [diet, setDiet] = useState(null);
+  const [tree, setTree] = useState(null);
+  const [treeLlm, setTreeLlm] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    api.taxonomy().then(setTax).catch(() => {});
+  }, []);
+
+  const run = async (what, fn, setter) => {
+    setBusy(what);
+    setErr(null);
+    try {
+      setter(await fn());
+    } catch (e) {
+      setErr(e?.message || String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <Section title="Úklid kategorií a dietních tagů">
+      <p className="mb-4 text-sm text-ink/60">
+        Kategorie surovin měly pevnou jen první úroveň, podúrovně si model
+        dopisoval volným textem &ndash; odtud &bdquo;maso &gt; prasine&ldquo;,
+        &bdquo;ryby &gt; sladkoviny&ldquo; nebo dvojice
+        &bdquo;přísady&ldquo;/&bdquo;aditiva&ldquo;. Teď je číselník uzavřený
+        {tax ? ` (${tax.count} kategorií)` : ""} a model z něj jen vybírá.
+      </p>
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            onClick={() => run("cats", api.categoriesRenormalize, setCats)}
+            disabled={busy !== null}
+          >
+            {busy === "cats" ? "Srovnávám…" : "Srovnat kategorie s číselníkem"}
+          </Button>
+          {cats && (
+            <span className="text-sm text-ink/60">
+              {cats.kept} beze změny · {cats.changed} přepsáno ·{" "}
+              {cats.cleared} vymazáno k překategorizování
+            </span>
+          )}
+        </div>
+        {cats?.cleared > 0 && (
+          <p className="text-sm text-ink/60">
+            Vymazané zařadí model při nejbližším běhu kategorizace surovin.
+          </p>
+        )}
+
+        <hr className="border-line" />
+        <p className="text-sm text-ink/60">
+          Strom surovin: &bdquo;arborio rýže&ldquo; patří pod &bdquo;rýže&ldquo;,
+          takže vybrání obecné suroviny ve &bdquo;Vařím z&ldquo; najde i recepty
+          s konkrétnější variantou. Odvození z názvů je okamžité; model doplní
+          jen to, co z názvu vyčíst nejde (&bdquo;kuřecí křidélka&ldquo; pod
+          &bdquo;kuřecí maso&ldquo;) a běží na pozadí.
+        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            onClick={() => run("tree", api.ingredientTreeBuild, setTree)}
+            disabled={busy !== null}
+          >
+            {busy === "tree" ? "Počítám…" : "Přepočítat z názvů"}
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => run("treeLlm", api.ingredientTreeLlm, setTreeLlm)}
+            disabled={busy !== null}
+          >
+            {busy === "treeLlm" ? "Spouštím…" : "Doplnit modelem"}
+          </Button>
+          {tree && (
+            <span className="text-sm text-ink/60">
+              {tree.linked} z {tree.total} surovin má rodiče
+              {tree.changed ? ` · ${tree.changed} změn` : ""}
+            </span>
+          )}
+          {treeLlm?.started === false && (
+            <span className="text-sm text-miss">Doplňování už běží.</span>
+          )}
+          {treeLlm?.started && (
+            <span className="text-sm text-ink/60">
+              Běží na pozadí, průběh je vidět v logu.
+            </span>
+          )}
+        </div>
+
+        <hr className="border-line" />
+        <p className="text-sm text-ink/60">
+          Dietní tagy model přiděloval bez kontroly, takže recept
+          &bdquo;Kořeněné mleté maso&ldquo; vycházel jako vegetariánský. Tohle
+          projde uložené tagy a rozporné odebere &ndash; tagy jen ubírá, nikdy
+          nedoplňuje.
+        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            variant="ghost"
+            onClick={() => run("dry", () => api.dietTagsCleanup(true), setDiet)}
+            disabled={busy !== null}
+          >
+            {busy === "dry" ? "Počítám…" : "Nanečisto"}
+          </Button>
+          <Button
+            onClick={() => run("diet", () => api.dietTagsCleanup(false), setDiet)}
+            disabled={busy !== null}
+          >
+            {busy === "diet" ? "Uklízím…" : "Odebrat rozporné tagy"}
+          </Button>
+          {diet && (
+            <span className="text-sm text-ink/60">
+              {diet.checked} receptů zkontrolováno ·{" "}
+              {diet.removed} tagů {diet.dry_run ? "by se odebralo" : "odebráno"}{" "}
+              u {diet.recipes} receptů
+            </span>
+          )}
+        </div>
+        {err && <p className="text-sm text-miss">{err}</p>}
+      </div>
+    </Section>
+  );
+}
+
 /** Export receptů ke kontrole. Profil z auditu korpusu říká, KOLIK receptů
  *  je podezřelých; tenhle export ukazuje PROČ – originál vedle zobrazené
  *  verze, výsledek párování surovin, metriky a tagy. */
@@ -2628,6 +2758,7 @@ export default function Admin() {
       </Section>
       <CorpusAuditCard />
       <IngredientAuditCard />
+      <MetadataCleanupCard />
       <RecipeExportCard />
       <FeedScoreCard />
       <ReparseInstructionsCard />

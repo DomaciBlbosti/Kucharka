@@ -54,6 +54,8 @@ class IndexAdd:
 _COLUMNS: tuple[ColumnAdd, ...] = (
     # Ingredient
     ColumnAdd("ingredient", "category_path", "VARCHAR(200) NULL"),
+    # Obecnější surovina (arborio rýže → rýže); plní modules/ingredient_tree
+    ColumnAdd("ingredient", "parent_id", "INT NULL"),
     # IngredientAlias — slovníkové rozšíření
     ColumnAdd("ingredient_alias", "lookup_key",   "VARCHAR(200) NULL"),
     ColumnAdd("ingredient_alias", "kind",         "VARCHAR(20) NOT NULL DEFAULT 'food'"),
@@ -111,6 +113,7 @@ _MODIFY: tuple[ColumnModify, ...] = (
 # u existujících je třeba přidat ručně).
 _INDEXES: tuple[IndexAdd, ...] = (
     IndexAdd("ingredient_alias", "uq_lookup_key", ("lookup_key",), unique=True),
+    IndexAdd("ingredient", "ix_ingredient_parent", ("parent_id",)),
     IndexAdd("recipe", "ix_recipe_crawl_status",      ("crawl_status",)),
     IndexAdd("recipe", "ix_recipe_enrichment_status", ("enrichment_status",)),
     IndexAdd("recipe", "ix_recipe_image_status",      ("image_status",)),
@@ -266,6 +269,18 @@ def run_all(engine: Engine) -> None:
                     name="migrations-search-text",
                 ).start()
 
+    # Rodičovské vazby surovin („arborio rýže" → „rýže"). Bez nich vybrání
+    # obecné suroviny ve „Vařím z" nenajde recepty s konkrétnější variantou.
+    # Počítá se z názvů, bez modelu, takže je to otázka vteřin.
+    if "ingredient" in existing_tables and "app_setting" in existing_tables:
+        if not _marker_set(engine, "mig_ingredient_tree_v1"):
+            import threading
+
+            threading.Thread(
+                target=_ingredient_tree_bg, args=(engine,), daemon=True,
+                name="migrations-ingredient-tree",
+            ).start()
+
     # UNIQUE na názvu suroviny – přidá se, jakmile jsou duplicity uklizené.
     # Na SQLite se přeskakuje: testy zakládají suroviny volně a index by jim
     # padal na tvrdém omezení, které produkce dostane až po sloučení.
@@ -282,6 +297,21 @@ def run_all(engine: Engine) -> None:
             target=_unique_ingredient_name_bg, args=(engine,), daemon=True,
             name="migrations-uq-ingredient",
         ).start()
+
+
+def _ingredient_tree_bg(engine: Engine) -> None:
+    try:
+        from .modules import ingredient_tree
+
+        ingredient_tree.build()
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO app_setting (`key`, value) "
+                "VALUES ('mig_ingredient_tree_v1', '1')"
+            ))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Migrace stromu surovin selhala "
+                    "(zopakuje se při dalším startu): %s", exc)
 
 
 def _missing_fulltext(engine: Engine, insp, existing_tables: set[str]) -> list[IndexAdd]:

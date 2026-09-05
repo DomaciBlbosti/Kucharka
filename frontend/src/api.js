@@ -117,8 +117,12 @@ export const api = {
   recipe: (id) => afetch(`/api/recipes/${id}`).then(J),
   recipeGroup: (key) =>
     afetch(`/api/recipes/groups/${encodeURIComponent(key)}`).then(J),
-  cookFrom: (ids) =>
-    afetch(`/api/recipes/cook-from?${ids.map((i) => `ingredient_ids=${i}`).join("&")}`).then(J),
+  cookFrom: (ids, { q, tags } = {}) =>
+    afetch(
+      `/api/recipes/cook-from?${ids.map((i) => `ingredient_ids=${i}`).join("&")}` +
+        (q ? `&q=${encodeURIComponent(q)}` : "") +
+        (tags || []).map((t) => `&tags=${encodeURIComponent(t)}`).join(""),
+    ).then(J),
 
   mealplan: (start, days = 7) =>
     afetch(`/api/mealplan?start=${start}&days=${days}`).then(J),
@@ -336,6 +340,19 @@ export const api = {
     afetch("/api/admin/ingredient-merge/status").then(J),
   ingredientMergeRun: (dryRun) =>
     afetch(`/api/admin/ingredient-merge/run?dry_run=${dryRun ? "true" : "false"}`, {
+      method: "POST",
+    }).then(J),
+  taxonomy: () => afetch("/api/admin/taxonomy").then(J),
+  ingredientTreeBuild: () =>
+    afetch("/api/admin/ingredient-tree/build", { method: "POST" }).then(J),
+  ingredientTreeLlm: () =>
+    afetch("/api/admin/ingredient-tree/llm", { method: "POST" }).then(J),
+  ingredientTreeLlmStatus: () =>
+    afetch("/api/admin/ingredient-tree/llm-status").then(J),
+  categoriesRenormalize: () =>
+    afetch("/api/admin/categories/renormalize", { method: "POST" }).then(J),
+  dietTagsCleanup: (dryRun) =>
+    afetch(`/api/admin/diet-tags/cleanup?dry_run=${dryRun ? "true" : "false"}`, {
       method: "POST",
     }).then(J),
   reviewLabels: () => afetch("/api/review/labels").then(J),
