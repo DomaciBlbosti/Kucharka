@@ -338,6 +338,13 @@ export const api = {
     afetch(`/api/admin/ingredient-merge/run?dry_run=${dryRun ? "true" : "false"}`, {
       method: "POST",
     }).then(J),
+  taxonomy: () => afetch("/api/admin/taxonomy").then(J),
+  categoriesRenormalize: () =>
+    afetch("/api/admin/categories/renormalize", { method: "POST" }).then(J),
+  dietTagsCleanup: (dryRun) =>
+    afetch(`/api/admin/diet-tags/cleanup?dry_run=${dryRun ? "true" : "false"}`, {
+      method: "POST",
+    }).then(J),
   reviewLabels: () => afetch("/api/review/labels").then(J),
   reviewStats: () => afetch("/api/review/stats").then(J),
   reviewRecipes: ({ pick, domain, onlyUnreviewed, page, perPage }) =>

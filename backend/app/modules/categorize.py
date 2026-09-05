@@ -16,15 +16,15 @@ from sqlalchemy import func, or_, select
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Ingredient
-from . import llmclient
+from . import llmclient, taxonomy
 
 log = logging.getLogger("kucharka.categorize")
 
-TOP = [
-    "maso", "ryby a mořské plody", "mléčné výrobky", "vejce", "zelenina",
-    "ovoce", "obiloviny a pečivo", "luštěniny", "ořechy a semínka",
-    "tuky a oleje", "koření a bylinky", "sladidla", "nápoje", "ostatní",
-]
+# Kategorie jsou UZAVŘENÝ číselník (viz modules/taxonomy). Dřív byla pevná
+# jen tahle první úroveň a podúrovně si model dopisoval volným textem –
+# vznikaly duplicity („přísady"/„aditiva") i nesmysly z pokaženého překladu
+# („maso > prasine", „ryby > sladkoviny"). Teď model vybírá číslo z nabídky.
+TOP = taxonomy.TOP
 
 _BATCH = 25
 _lock = threading.Lock()
@@ -39,9 +39,9 @@ _SCHEMA = {
                 "type": "object",
                 "properties": {
                     "i": {"type": "integer"},
-                    "category_path": {"type": "string"},
+                    "c": {"type": "integer"},
                 },
-                "required": ["i", "category_path"],
+                "required": ["i", "c"],
             },
         }
     },
@@ -86,13 +86,17 @@ def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
     if not llmclient.is_available() or not pairs:
         return
     listing = "\n".join(f"{i}. {name}" for i, (_id, name) in enumerate(pairs))
+    # Nabídka kategorií jako číslovaný seznam. Model vrací ČÍSLO, ne text –
+    # jinak si vymýšlí vlastní názvy a číselník se rozpadne.
+    menu = "\n".join(f"{n}. {path}" for n, path in enumerate(taxonomy.PATHS))
     prompt = (
-        "Zařaď každou potravinu do hierarchické kategorie. Oddělovač úrovní je "
-        "' > ', nejvýš 3 úrovně, první úroveň MUSÍ být jedna z: "
-        f"{', '.join(TOP)}. Příklady: 'kuřecí prsa' → 'maso > drůbeží > kuřecí'; "
-        "'cibule' → 'zelenina > cibulová'; 'hladká mouka' → 'obiloviny a pečivo > mouka'. "
-        "Odpověz POUZE JSON {\"items\":[{\"i\":<index>,\"category_path\":\"...\"}]}.\n"
-        f"Potraviny:\n{listing}"
+        "Zařaď každou potravinu do JEDNÉ kategorie ze seznamu níže. "
+        "Odpověz číslem kategorie, nevymýšlej si vlastní názvy. "
+        "Když si nejsi jistý, vyber nejbližší obecnější kategorii.\n"
+        f"KATEGORIE:\n{menu}\n\n"
+        f"POTRAVINY:\n{listing}\n\n"
+        "Odpověz POUZE JSON {\"items\":[{\"i\":<číslo potraviny>,"
+        "\"c\":<číslo kategorie>}]}."
     )
     out = llmclient.structured_json(
         prompt,
@@ -114,13 +118,13 @@ def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
     for it in items:
         try:
             idx = int(it.get("i"))
-            path = str(it.get("category_path") or "").strip()
-        except Exception:  # noqa: BLE001
+            cat = int(it.get("c"))
+        except Exception:  # noqa: BLE001 – model vrátil nečíslo
             continue
-        if 0 <= idx < len(pairs) and path:
-            first = path.split(">")[0].strip().lower()
-            if first in TOP:
-                paths[pairs[idx][0]] = path
+        # Mimo rozsah = model si vymyslel kategorii, která neexistuje.
+        # Radši surovinu nechat nezařazenou, než ji zařadit náhodně.
+        if 0 <= idx < len(pairs) and 0 <= cat < len(taxonomy.PATHS):
+            paths[pairs[idx][0]] = taxonomy.PATHS[cat]
 
     db = SessionLocal()
     try:
@@ -159,6 +163,52 @@ def categorize_all(only_missing: bool = True) -> None:
             list(ex.map(_categorize_batch, batches))
     finally:
         _set(running=False, finished_at=time.time())
+
+
+def renormalize_all() -> dict:
+    """Převeď už uložené kategorie na číselník (viz modules/taxonomy).
+
+    Co se s uloženou cestou stane:
+      * sedí na číselník (i po synonymech) → přepíše se na kanonický tvar,
+      * nesedí a nedá se rozhodnout → cesta se VYMAŽE, takže surovinu při
+        nejbližším běhu zařadí model, teď už z uzavřené nabídky.
+
+    Mazat je schválně lepší než hádat: zařadit „sladidla > dezerty" odhadem
+    znamená vyrobit tichou chybu místo hlučné, které si člověk všimne. Běží
+    bez modelu, takže je to otázka vteřin.
+    """
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            select(Ingredient.id, Ingredient.category_path)
+            .where(Ingredient.category_path.isnot(None))
+            .where(Ingredient.category_path != "")
+        ).all()
+        changed = cleared = kept = 0
+        for ing_id, path in rows:
+            target = taxonomy.normalize_path(path)
+            if target == path:
+                kept += 1
+                continue
+            ing = db.get(Ingredient, ing_id)
+            if ing is None:
+                continue
+            if target is None:
+                ing.category_path = None
+                cleared += 1
+            else:
+                ing.category_path = target
+                ing.category = target.split(">")[0].strip()
+                changed += 1
+        db.commit()
+        log.info(
+            "Kategorie srovnány s číselníkem: %s beze změny, %s přepsáno, "
+            "%s vymazáno k překategorizování.", kept, changed, cleared,
+        )
+        return {"total": len(rows), "kept": kept, "changed": changed,
+                "cleared": cleared}
+    finally:
+        db.close()
 
 
 def _effective_workers() -> int:

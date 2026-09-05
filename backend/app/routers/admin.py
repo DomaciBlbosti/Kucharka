@@ -333,6 +333,34 @@ def ingredient_audit_report():
     )
 
 
+# ─── Úklid kategorií a dietních tagů ────────────────────────────────────────
+
+@router.get("/taxonomy")
+def taxonomy_list():
+    """Číselník kategorií surovin – uzavřený seznam, ze kterého vybírá model."""
+    from ..modules import taxonomy
+
+    return {"taxonomy": taxonomy.TAXONOMY, "paths": taxonomy.PATHS,
+            "count": len(taxonomy.PATHS)}
+
+
+@router.post("/categories/renormalize")
+def categories_renormalize():
+    """Srovná uložené kategorie surovin s číselníkem. Co se nedá rozhodnout,
+    se vymaže a zařadí model při nejbližším běhu kategorizace."""
+    from ..modules import categorize
+
+    return categorize.renormalize_all()
+
+
+@router.post("/diet-tags/cleanup")
+def diet_tags_cleanup(dry_run: bool = Query(False)):
+    """Odebere dietní tagy, které odporují surovinám receptu."""
+    from ..modules import tagging
+
+    return tagging.strip_wrong_diet_tags(dry_run=dry_run)
+
+
 # ─── Čitelný export receptů ke kontrole ─────────────────────────────────────
 
 @router.post("/recipe-export/run")
