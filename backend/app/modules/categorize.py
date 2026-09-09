@@ -27,6 +27,8 @@ log = logging.getLogger("kucharka.categorize")
 TOP = taxonomy.TOP
 
 _BATCH = 25
+# Kolik dávek se pošle na frontu jedním voláním (viz _run_batches).
+_JOBS_CHUNK = 20
 _lock = threading.Lock()
 _state: dict = {"running": False, "done": 0, "total": 0, "errors": 0, "finished_at": None}
 
@@ -81,10 +83,9 @@ def status() -> dict:
     return s
 
 
-def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
-    """pairs = [(id, name)]; přiřadí category_path a uloží."""
-    if not llmclient.is_available() or not pairs:
-        return
+def _prompt_for(pairs: list[tuple[int, str]]) -> str:
+    """Dotaz pro jednu dávku surovin. Vytažené zvlášť, ať se dá poskládat
+    celá dávka dopředu a poslat na frontu proxy najednou."""
     listing = "\n".join(f"{i}. {name}" for i, (_id, name) in enumerate(pairs))
     # Nabídka kategorií jako číslovaný seznam. Model vrací ČÍSLO, ne text –
     # jinak si vymýšlí vlastní názvy a číselník se rozpadne.
@@ -98,24 +99,19 @@ def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
         "Odpověz POUZE JSON {\"items\":[{\"i\":<číslo potraviny>,"
         "\"c\":<číslo kategorie>}]}."
     )
-    out = llmclient.structured_json(
-        prompt,
-        schema=_SCHEMA,
-        # stejný timeout jako dávkové párování – lokální model s plnou GPU
-        # frontou 120s nestíhal a padaly VŠECHNY dávky
-        timeout=max(settings.http_timeout, settings.llm_match_timeout_s),
-        num_ctx=8192,
-        component="kategorie",
-    )
+    return prompt
+
+
+def _apply(pairs: list[tuple[int, str]], out: dict | None) -> None:
+    """Zapiš odpověď modelu na jednu dávku surovin."""
     if out is None:
         log.warning("kategorizace dávky selhala (volání modelu nebo parsování).")
         _inc("errors")
         _inc("done", len(pairs))
         return
-    items = out.get("items", [])
 
     paths: dict[int, str] = {}
-    for it in items:
+    for it in out.get("items", []):
         try:
             idx = int(it.get("i"))
             cat = int(it.get("c"))
@@ -143,6 +139,22 @@ def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
     _inc("done", len(pairs))
 
 
+def _timeout() -> float:
+    # Stejný timeout jako dávkové párování – lokální model s plnou GPU
+    # frontou 120 s nestíhal a padaly VŠECHNY dávky.
+    return max(settings.http_timeout, settings.llm_match_timeout_s)
+
+
+def _categorize_batch(pairs: list[tuple[int, str]]) -> None:
+    """Jedna dávka přímým voláním (bez fronty)."""
+    if not llmclient.is_available() or not pairs:
+        return
+    _apply(pairs, llmclient.structured_json(
+        _prompt_for(pairs), schema=_SCHEMA, timeout=_timeout(),
+        num_ctx=8192, component="kategorie",
+    ))
+
+
 def categorize_all(only_missing: bool = True) -> None:
     _set(running=True, done=0, total=0, errors=0, finished_at=None)
     db = SessionLocal()
@@ -157,12 +169,40 @@ def categorize_all(only_missing: bool = True) -> None:
         db.close()
     _set(total=len(rows))
     batches = [rows[i : i + _BATCH] for i in range(0, len(rows), _BATCH)]
-    workers = _effective_workers()
     try:
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            list(ex.map(_categorize_batch, batches))
+        _run_batches(batches)
     finally:
         _set(running=False, finished_at=time.time())
+
+
+def _run_batches(batches: list[list[tuple[int, str]]]) -> None:
+    """Zpracuj dávky – frontou proxy, když je zapnutá, jinak přímo.
+
+    Přes frontu jde všech N dotazů jedním voláním, takže si je proxy může
+    seskupit podle modelu a nahrát ho jednou. Posílat je po jednom by
+    přednost interaktivních dotazů zařídilo taky, ale o seskupení bychom
+    přišli – a přesně kvůli němu se to sem tahalo.
+
+    Odesílá se po částech: 12 tisíc surovin naráz je 480 úloh v jednom
+    dotazu, což je zbytečně velké sousto a při výpadku by se ztratilo všechno.
+    """
+    from . import llmjobs
+
+    if not batches:
+        return
+    if not llmjobs.enabled():
+        with ThreadPoolExecutor(max_workers=_effective_workers()) as ex:
+            list(ex.map(_categorize_batch, batches))
+        return
+
+    for start in range(0, len(batches), _JOBS_CHUNK):
+        chunk = batches[start:start + _JOBS_CHUNK]
+        outs = llmclient.structured_json_many(
+            [_prompt_for(b) for b in chunk], schema=_SCHEMA, timeout=_timeout(),
+            num_ctx=8192, component="kategorie",
+        )
+        for pairs, out in zip(chunk, outs):
+            _apply(pairs, out)
 
 
 def renormalize_all() -> dict:

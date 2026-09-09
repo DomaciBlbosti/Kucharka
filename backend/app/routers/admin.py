@@ -334,6 +334,14 @@ def ingredient_audit_report():
     )
 
 
+@router.get("/llm-jobs/status")
+def llm_jobs_status():
+    """Je fronta odložených úloh dosažitelná? Pro kartu v administraci."""
+    from ..modules import llmjobs
+
+    return llmjobs.health()
+
+
 # ─── Úklid kategorií a dietních tagů ────────────────────────────────────────
 
 @router.get("/taxonomy")

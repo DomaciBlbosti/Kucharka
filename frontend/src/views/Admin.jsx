@@ -218,6 +218,27 @@ function ToolsCard() {
       <h3 className="mb-3 mt-6 text-sm font-bold text-ink/70">
         LLM pro dávkové úlohy (párování / tagy / kategorie)
       </h3>
+      <div className="mb-4 grid gap-4 sm:grid-cols-2">
+        <Field
+          label="Fronta úloh na proxy"
+          hint="dávky se odešlou a výsledky vyzvednou · proxy je seskupí podle modelu a pustí napřed interaktivní dotazy (recept z fotky, OCR)">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={!!s.llm_jobs_enabled}
+              disabled={!s.llm_proxy_key_set}
+              onChange={(e) => set("llm_jobs_enabled", e.target.checked)} />
+            {s.llm_proxy_key_set
+              ? "posílat dávky na frontu"
+              : "vyžaduje klíč proxy (výš)"}
+          </label>
+        </Field>
+        {s.llm_jobs_enabled && (
+          <Field label="Priorita dávek" hint="0 = nejvyšší, 9 = nejnižší · dávky patří dozadu">
+            <input type="number" min="0" max="9" className={input}
+              value={s.llm_jobs_priority ?? 7}
+              onChange={(e) => set("llm_jobs_priority", Number(e.target.value))} />
+          </Field>
+        )}
+      </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Poskytovatel" hint="Ollama = lokální GPU · API = komerční služba (přesnější a rychlejší, platí se za tokeny)">
           <select className={input} value={s.llm_provider || "ollama"}

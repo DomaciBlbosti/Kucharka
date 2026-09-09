@@ -22,7 +22,7 @@ import httpx
 
 from ..config import settings
 from .llmjson import parse_json_response
-from .ollamachat import chat_json_raw
+from .ollamachat import chat_json_raw, chat_payload, parse_chat_response
 
 log = logging.getLogger("kucharka.llmclient")
 
@@ -115,6 +115,42 @@ def _finish(
     )
 
 
+def _jobs_usable() -> bool:
+    from . import llmjobs
+
+    return llmjobs.enabled()
+
+
+def _via_jobs(bodies: list[dict], *, timeout: float
+              ) -> list[tuple[dict | None, str | None, dict]]:
+    """Pošli dotazy frontou a vrať (parsed, raw, usage) pro každý.
+
+    `raw is None` znamená, že fronta selhala jako celek – volající pak spadne
+    na přímé volání. Prázdný řetězec naopak znamená, že fronta odpověděla,
+    ale úloha nedopadla; to už je normální neúspěch jako u přímého volání.
+    """
+    from . import llmjobs
+
+    try:
+        batch = llmjobs.submit(bodies)
+        results = llmjobs.collect(
+            batch, count=len(bodies),
+            wait_s=max(settings.llm_jobs_wait_s, timeout),
+        )
+    except llmjobs.JobsUnavailable as exc:
+        log.warning("Fronta úloh nedostupná (%s), volám přímo.", exc)
+        return [(None, None, {})] * len(bodies)
+
+    out = []
+    for res in results:
+        if res is None:
+            out.append((None, "", {}))
+            continue
+        parsed, raw, usage = parse_chat_response(res)
+        out.append((parsed, raw, usage))
+    return out
+
+
 def structured_json(
     prompt: str,
     *,
@@ -149,6 +185,29 @@ def structured_json(
     if not settings.ollama_enabled:
         _set_error("Ollama není nakonfigurovaná (OLLAMA_URL).")
         return None
+
+    # Fronta odložených úloh na proxy. Dávka se odešle a výsledek vyzvedne,
+    # takže interaktivní dotazy (recept z fotky, OCR) se nemusí prokousávat
+    # za dávkou. Vlastní zámek se tu ZÁMĚRNĚ nebere: fronta pořadí řeší sama
+    # a držet k tomu ještě lokální zámek by jen bránilo souběžnému odesílání.
+    if _jobs_usable():
+        parsed, raw, jusage = _via_jobs(
+            [chat_payload(
+                ollama_model or settings.ollama_fast_model, prompt,
+                keep_alive=settings.ollama_keep_alive, temperature=temperature,
+                format_schema=schema, num_ctx=num_ctx,
+            )], timeout=timeout,
+        )[0]
+        if raw is not None:          # fronta odpověděla (i když třeba nesmyslem)
+            usage.update(jusage)
+            _set_error(None if parsed is not None else (raw or "prázdná odpověď modelu"))
+            _finish(component=component, provider="jobs", model=model, t0=t0,
+                    out=parsed, usage=usage,
+                    fail_detail=raw or "prázdná odpověď modelu")
+            return parsed
+        # Fronta nedostupná → pokračuje se přímým voláním níž. Dávková úloha
+        # kvůli výpadku proxy neskončí, jen si chvíli počká na GPU sama.
+
     with _ollama_gate:
         parsed, raw = chat_json_raw(
             settings.ollama_url,
@@ -169,6 +228,77 @@ def structured_json(
     _finish(component=component, provider="ollama", model=model, t0=t0, out=parsed,
             usage=usage, fail_detail=raw or "prázdná odpověď modelu")
     return parsed
+
+
+def structured_json_many(
+    prompts: list[str],
+    *,
+    schema: dict | None = None,
+    timeout: float = 120,
+    temperature: float = 0,
+    num_ctx: int | None = None,
+    ollama_model: str | None = None,
+    component: str = "ostatní",
+) -> list[dict | None]:
+    """Celá dávka dotazů najednou. Výsledky V POŘADÍ VSTUPŮ, neúspěch = None.
+
+    Tohle je ten důvod, proč fronta existuje: proxy dostane všechny dotazy
+    naráz, seskupí je podle modelu a nahraje ho jednou místo pro každý dotaz
+    zvlášť. Posílat je po jednom (což `structured_json` dělá) přednost
+    interaktivních dotazů zařídí taky, ale o seskupení přijde.
+
+    Bez zapnuté fronty spadne na `structured_json` v cyklu, takže volající
+    nemusí řešit, jestli je proxy k dispozici.
+    """
+    if not prompts:
+        return []
+    model = active_model(ollama_model)
+
+    if not _jobs_usable():
+        return [
+            structured_json(p, schema=schema, timeout=timeout,
+                            temperature=temperature, num_ctx=num_ctx,
+                            ollama_model=ollama_model, component=component)
+            for p in prompts
+        ]
+
+    _trace.info("→ %s | dávka %s dotazů | %s", model, len(prompts),
+                _one_line(prompts[0]))
+    t0 = time.monotonic()
+    bodies = [
+        chat_payload(ollama_model or settings.ollama_fast_model, p,
+                     keep_alive=settings.ollama_keep_alive, temperature=temperature,
+                     format_schema=schema, num_ctx=num_ctx)
+        for p in prompts
+    ]
+    results = _via_jobs(bodies, timeout=timeout)
+
+    # Fronta selhala jako celek → přímá volání, ať dávková úloha nezůstane
+    # viset kvůli výpadku proxy.
+    if results and results[0][1] is None:
+        log.warning("Fronta úloh nedostupná, dávku %s dotazů volám přímo.",
+                    len(prompts))
+        return [
+            structured_json(p, schema=schema, timeout=timeout,
+                            temperature=temperature, num_ctx=num_ctx,
+                            ollama_model=ollama_model, component=component)
+            for p in prompts
+        ]
+
+    out: list[dict | None] = []
+    for parsed, raw, usage in results:
+        # Telemetrie po jednotlivých dotazech, ať Spotřeba LLM sedí i pro
+        # dávku. Čas se dělí rovnoměrně – přesnější údaj fronta nedává.
+        _finish(component=component, provider="jobs", model=model,
+                t0=t0 if len(results) == 1 else time.monotonic() - (
+                    (time.monotonic() - t0) / len(results)),
+                out=parsed, usage=usage,
+                fail_detail=raw or "prázdná odpověď modelu")
+        out.append(parsed)
+    ok = sum(1 for x in out if x is not None)
+    log.info("Fronta: dávka %s dotazů hotová, %s úspěšných (%.1f s)",
+             len(prompts), ok, time.monotonic() - t0)
+    return out
 
 
 # ─── OCR / obrázky ───────────────────────────────────────────────────────────

@@ -120,6 +120,17 @@ class Settings:
         # dnes, takže se jen LLM_API_URL nastaví na …/v1 a LLM_API_KEY na
         # tentýž `opx_…` klíč.
         self.llm_proxy_key: str = _env("LLM_PROXY_KEY", "")
+        # Fronta odložených úloh na proxy (POST /mgmt/v1/jobs). Dávkové úlohy
+        # místo čekání na odpověď pošlou dávku a výsledky si vyzvednou. Proxy
+        # je seskupí podle modelu (méně nahrávání) a pustí napřed interaktivní
+        # dotazy, které uživatel čeká teď hned. Vyžaduje LLM_PROXY_KEY.
+        self.llm_jobs_enabled: bool = _truthy(_env("LLM_JOBS_ENABLED", "false"))
+        # 0 = nejvyšší, 9 = nejnižší. Dávky patří dozadu; smysl fronty je,
+        # aby se nemotaly interaktivním dotazům do cesty.
+        self.llm_jobs_priority: int = int(_env("LLM_JOBS_PRIORITY", "7") or 7)
+        # Jak dlouho čekat na dokončení dávky, než se to vzdá a spadne na
+        # přímé volání. Dávka desítek dotazů na pomalé GPU trvá minuty.
+        self.llm_jobs_wait_s: float = float(_env("LLM_JOBS_WAIT_S", "900") or 900)
         self.llm_provider: str = _env("LLM_PROVIDER", "ollama").lower() or "ollama"
         self.llm_api_url: str = _env("LLM_API_URL", "https://api.openai.com/v1")
         self.llm_api_key: str = _env("LLM_API_KEY", "")
@@ -294,7 +305,8 @@ class Settings:
         "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
         "llm_match_timeout_s", "translate_model",
         "llm_provider", "llm_api_url", "llm_api_key", "llm_api_model",
-        "llm_proxy_key",
+        "llm_proxy_key", "llm_jobs_enabled", "llm_jobs_priority",
+        "llm_jobs_wait_s",
         "llm_price_in_usd", "llm_price_out_usd", "usd_rate",
         "llm_vision_provider", "llm_api_vision_model",
         "llm_embed_provider", "llm_api_embed_model",
@@ -348,6 +360,9 @@ class Settings:
             # klíč se NIKDY nevrací ven, jen příznak, že je nastavený
             "llm_api_key_set": bool(self.llm_api_key),
             "llm_proxy_key_set": bool(self.llm_proxy_key),
+            "llm_jobs_enabled": self.llm_jobs_enabled,
+            "llm_jobs_priority": self.llm_jobs_priority,
+            "llm_jobs_wait_s": self.llm_jobs_wait_s,
             "llm_api_model": self.llm_api_model,
             "llm_vision_provider": self.llm_vision_provider,
             "llm_api_vision_model": self.llm_api_vision_model,
@@ -393,9 +408,14 @@ class Settings:
         elif key in (
             "translate_to_cs", "auto_ingredients", "pantry_enabled", "crawler_enabled",
             "auto_translate_enabled", "auto_match_enabled", "lidl_sync_enabled",
-            "llm_match_enabled",
+            "llm_match_enabled", "llm_jobs_enabled",
         ):
             setattr(self, key, _truthy(value))
+        elif key == "llm_jobs_priority":
+            # 0 = nejvyšší, 9 = nejnižší; mimo rozsah proxy odmítne
+            self.llm_jobs_priority = max(0, min(9, int(value or 7)))
+        elif key == "llm_jobs_wait_s":
+            self.llm_jobs_wait_s = max(30.0, float(value or 900))
         elif key == "scraper_verify_ssl":
             if not _truthy(value):
                 self.scraper_verify = False
