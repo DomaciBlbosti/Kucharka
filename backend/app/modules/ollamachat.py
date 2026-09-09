@@ -13,6 +13,8 @@ import logging
 
 import httpx
 
+from ..config import settings
+
 from .llmjson import parse_json_response
 
 log = logging.getLogger("kucharka.ollamachat")
@@ -85,7 +87,8 @@ def chat_json_raw(
     if keep_alive:
         payload["keep_alive"] = keep_alive
     try:
-        r = httpx.post(f"{base_url.rstrip('/')}/api/chat", json=payload, timeout=timeout)
+        r = httpx.post(f"{base_url.rstrip('/')}/api/chat", json=payload,
+                       headers=settings.ollama_headers(), timeout=timeout)
         r.raise_for_status()
         body = r.json()
         raw = body.get("message", {}).get("content", "")

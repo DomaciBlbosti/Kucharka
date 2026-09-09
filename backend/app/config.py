@@ -108,6 +108,18 @@ class Settings:
         # Ollamy použít levné komerční API (OpenAI, DeepSeek, Groq, Mistral…
         # cokoliv s /chat/completions). Lokální GPU pak zůstává jen na
         # embeddingy/OCR/RAG. Přepíná se přes LLM_PROVIDER=api.
+        # Klíč proxy (ollamaproxy) pro NATIVNÍ Ollama volání – /api/chat,
+        # /api/embed, /api/tags. Proxy stojí před Ollamou i před komerčními
+        # API, sjednocuje je pod jednu adresu a loguje tokeny a výkon.
+        # Stačí přesměrovat OLLAMA_URL na proxy a doplnit tenhle klíč
+        # (`opx_…` z /ui/keys); protokol zůstává nativní, takže se nic
+        # neztrácí – `num_ctx`, `keep_alive` ani `format` (JSON schéma)
+        # OpenAI-kompatibilní vrstva neumí.
+        #
+        # Komerční cesta žádný nový kód nepotřebuje: posílá bearer token už
+        # dnes, takže se jen LLM_API_URL nastaví na …/v1 a LLM_API_KEY na
+        # tentýž `opx_…` klíč.
+        self.llm_proxy_key: str = _env("LLM_PROXY_KEY", "")
         self.llm_provider: str = _env("LLM_PROVIDER", "ollama").lower() or "ollama"
         self.llm_api_url: str = _env("LLM_API_URL", "https://api.openai.com/v1")
         self.llm_api_key: str = _env("LLM_API_KEY", "")
@@ -228,6 +240,17 @@ class Settings:
     def ollama_fast_model(self) -> str:
         return self._fast_model or self.ollama_model
 
+    def ollama_headers(self) -> dict[str, str]:
+        """Hlavičky pro nativní Ollama volání.
+
+        Prázdné, když se mluví přímo s Ollamou; s klíčem, když je mezi ní
+        a appkou proxy. Ta klíč zatím u inference nevyžaduje, ale má na to
+        přepínač (`ollama_require_key`) – posílat ho rovnou znamená, že se
+        jeho zapnutím nic nerozbije.
+        """
+        return ({"Authorization": f"Bearer {self.llm_proxy_key}"}
+                if self.llm_proxy_key else {})
+
     @property
     def _api_configured(self) -> bool:
         return bool(self.llm_api_key) and bool(self.llm_api_url)
@@ -271,6 +294,7 @@ class Settings:
         "llm_match_min_confidence", "llm_match_num_ctx", "llm_match_temperature",
         "llm_match_timeout_s", "translate_model",
         "llm_provider", "llm_api_url", "llm_api_key", "llm_api_model",
+        "llm_proxy_key",
         "llm_price_in_usd", "llm_price_out_usd", "usd_rate",
         "llm_vision_provider", "llm_api_vision_model",
         "llm_embed_provider", "llm_api_embed_model",
@@ -323,6 +347,7 @@ class Settings:
             "llm_api_url": self.llm_api_url,
             # klíč se NIKDY nevrací ven, jen příznak, že je nastavený
             "llm_api_key_set": bool(self.llm_api_key),
+            "llm_proxy_key_set": bool(self.llm_proxy_key),
             "llm_api_model": self.llm_api_model,
             "llm_vision_provider": self.llm_vision_provider,
             "llm_api_vision_model": self.llm_api_vision_model,
@@ -349,12 +374,12 @@ class Settings:
         elif key in ("llm_provider", "llm_vision_provider", "llm_embed_provider"):
             v = str(value or "").strip().lower()
             setattr(self, key, v if v in ("ollama", "api") else "ollama")
-        elif key == "llm_api_key":
+        elif key in ("llm_api_key", "llm_proxy_key"):
             # Prázdná hodnota klíč NEMAŽE (formulář ho z bezpečnostních důvodů
             # nikdy nedostane zpět, takže by se jinak smazal při každém uložení).
             v = str(value or "").strip()
             if v:
-                self.llm_api_key = v
+                setattr(self, key, v)
         elif key == "ollama_fast_model":
             self._fast_model = str(value or "").strip()
         elif key == "ollama_keep_alive":

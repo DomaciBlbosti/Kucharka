@@ -57,7 +57,7 @@ def test_ollama():
     if not url:
         return {"reachable": False, "error": "OLLAMA_URL není nastaveno."}
     try:
-        r = httpx.get(f"{url}/api/tags", timeout=5)
+        r = httpx.get(f"{url}/api/tags", headers=settings.ollama_headers(), timeout=5)
         r.raise_for_status()
         models = [m.get("name", "") for m in r.json().get("models", [])]
     except Exception as exc:  # noqa: BLE001
@@ -103,17 +103,18 @@ def put_settings(req: SettingsUpdate, db: Session = Depends(get_db)):
     crawler_changed = False
     service_changed = False
     for key, value in req.values.items():
-        if key == "llm_api_key_clear" and value:
-            # explicitní zapomenutí API klíče (prázdná hodnota klíč nemaže)
-            settings.llm_api_key = ""
-            row = db.get(AppSetting, "llm_api_key")
+        if key in ("llm_api_key_clear", "llm_proxy_key_clear") and value:
+            # explicitní zapomenutí klíče (prázdná hodnota klíč nemaže)
+            target = key.removesuffix("_clear")
+            setattr(settings, target, "")
+            row = db.get(AppSetting, target)
             if row is not None:
                 db.delete(row)
             applied[key] = True
             continue
         if key not in settings.ADMIN_KEYS:
             continue
-        if key == "llm_api_key" and not str(value or "").strip():
+        if key in ("llm_api_key", "llm_proxy_key") and not str(value or "").strip():
             continue  # prázdný klíč z formuláře = beze změny, nepřepisovat v DB
         settings.set_admin(key, value)
         if key in settings.CRAWLER_KEYS:

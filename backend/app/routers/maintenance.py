@@ -47,7 +47,8 @@ def _fast_model_error() -> str | None:
 
     model = settings.ollama_fast_model
     try:
-        r = httpx.get(f"{settings.ollama_url}/api/tags", timeout=5)
+        r = httpx.get(f"{settings.ollama_url}/api/tags",
+                     headers=settings.ollama_headers(), timeout=5)
         r.raise_for_status()
         names = [m.get("name", "") for m in r.json().get("models", [])]
     except Exception as exc:  # noqa: BLE001

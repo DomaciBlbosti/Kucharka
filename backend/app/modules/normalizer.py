@@ -208,7 +208,8 @@ def ollama_check() -> dict:
     if not settings.ollama_enabled:
         return {"enabled": False, "reachable": False, "models": [], "model_ok": False}
     try:
-        r = httpx.get(f"{settings.ollama_url}/api/tags", timeout=8)
+        r = httpx.get(f"{settings.ollama_url}/api/tags",
+                        headers=settings.ollama_headers(), timeout=8)
         r.raise_for_status()
         models = [m.get("name", "") for m in r.json().get("models", [])]
         model_ok = any(

@@ -307,6 +307,7 @@ def embed_texts(texts: list[str], *, timeout: float = 60) -> list[list[float]]:
             r = httpx.post(
                 f"{settings.ollama_url}/api/embed",
                 json={"model": settings.embed_model, "input": texts},
+                headers=settings.ollama_headers(),
                 timeout=timeout,
             )
             r.raise_for_status()

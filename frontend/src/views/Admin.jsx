@@ -85,6 +85,7 @@ function ToolsCard() {
   const [test, setTest] = useState(null);
   const [testing, setTesting] = useState(false);
   const [apiKey, setApiKey] = useState(""); // klíč se z API nikdy nevrací, drží se zvlášť
+  const [proxyKey, setProxyKey] = useState(""); // totéž pro klíč proxy
   const [apiTest, setApiTest] = useState(null);
   const [apiTesting, setApiTesting] = useState(false);
   useEffect(() => {
@@ -119,6 +120,11 @@ function ToolsCard() {
     setS({ ...s, ...r.settings });
     setApiKey("");
   };
+  const clearProxyKey = async () => {
+    const r = await api.adminSaveSettings({ llm_proxy_key_clear: true });
+    setS({ ...s, ...r.settings });
+    setProxyKey("");
+  };
   const save = async () => {
     const keys = ["ollama_url", "ollama_model", "ollama_fast_model", "embed_model",
       "ocr_model", "searxng_url", "translate_to_cs", "auto_ingredients", "scraper_verify_ssl",
@@ -133,6 +139,7 @@ function ToolsCard() {
       "llm_price_in_usd", "llm_price_out_usd", "usd_rate"];
     const vals = Object.fromEntries(keys.map((k) => [k, s[k]]));
     if (apiKey.trim()) vals.llm_api_key = apiKey.trim();
+    if (proxyKey.trim()) vals.llm_proxy_key = proxyKey.trim();
     const r = await api.adminSaveSettings(vals);
     setS({ ...s, ...r.settings });
     if (apiKey.trim()) setApiKey("");
@@ -188,6 +195,23 @@ function ToolsCard() {
         <Field label="Souběžných workerů na pozadí" hint="vyžaduje OLLAMA_NUM_PARALLEL">
           <input type="number" min="1" className={input} value={s.bg_workers ?? 2}
             onChange={(e) => set("bg_workers", Number(e.target.value))} />
+        </Field>
+        <Field
+          label="Klíč proxy"
+          hint={
+            s.llm_proxy_key_set
+              ? "klíč je uložený – vyplň jen pro změnu"
+              : "nepovinné · vyplň, když OLLAMA_URL míří na ollamaproxy (klíč z /ui/keys)"
+          }>
+          <input className={input} type="password" value={proxyKey}
+            onChange={(e) => setProxyKey(e.target.value)}
+            placeholder={s.llm_proxy_key_set ? "•••••••• (uloženo)" : "opx_…"} />
+          {s.llm_proxy_key_set && (
+            <button type="button" onClick={clearProxyKey}
+              className="mt-1 text-xs text-ink/45 hover:text-miss">
+              zapomenout klíč
+            </button>
+          )}
         </Field>
       </div>
 
