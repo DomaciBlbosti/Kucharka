@@ -13,6 +13,8 @@ import logging
 
 import httpx
 
+from ..config import settings
+
 from .llmjson import parse_json_response
 
 log = logging.getLogger("kucharka.ollamachat")
@@ -49,6 +51,40 @@ def chat_json(
     return parsed
 
 
+def chat_payload(
+    model: str,
+    prompt: str,
+    *,
+    images: list[str] | None = None,
+    keep_alive: str | None = None,
+    temperature: float = 0,
+    format_schema: dict | None = None,
+    num_ctx: int | None = None,
+) -> dict:
+    """Tělo dotazu na /api/chat.
+
+    Vytažené zvlášť, protože totéž tělo posílá i fronta odložených úloh
+    (modules/llmjobs). Kdyby si ho skládala sama, rozešlo by se to při první
+    změně a nikdo by si toho nevšiml – fronta jede na pozadí.
+    """
+    message: dict = {"role": "user", "content": prompt}
+    if images:
+        message["images"] = images
+    payload = {
+        "model": model,
+        "messages": [message],
+        "stream": False,
+        "format": format_schema if format_schema is not None else "json",
+        "think": False,
+        "options": {"temperature": temperature},
+    }
+    if num_ctx:
+        payload["options"]["num_ctx"] = num_ctx
+    if keep_alive:
+        payload["keep_alive"] = keep_alive
+    return payload
+
+
 def chat_json_raw(
     base_url: str,
     model: str,
@@ -69,23 +105,13 @@ def chat_json_raw(
     Ollamy – slouží telemetrii v llm_stats. Slovník patří volajícímu, takže
     je to bezpečné i při souběžných voláních.
     """
-    message: dict = {"role": "user", "content": prompt}
-    if images:
-        message["images"] = images
-    payload = {
-        "model": model,
-        "messages": [message],
-        "stream": False,
-        "format": format_schema if format_schema is not None else "json",
-        "think": False,
-        "options": {"temperature": temperature},
-    }
-    if num_ctx:
-        payload["options"]["num_ctx"] = num_ctx
-    if keep_alive:
-        payload["keep_alive"] = keep_alive
+    payload = chat_payload(
+        model, prompt, images=images, keep_alive=keep_alive,
+        temperature=temperature, format_schema=format_schema, num_ctx=num_ctx,
+    )
     try:
-        r = httpx.post(f"{base_url.rstrip('/')}/api/chat", json=payload, timeout=timeout)
+        r = httpx.post(f"{base_url.rstrip('/')}/api/chat", json=payload,
+                       headers=settings.ollama_headers(), timeout=timeout)
         r.raise_for_status()
         body = r.json()
         raw = body.get("message", {}).get("content", "")
@@ -103,3 +129,24 @@ def chat_json_raw(
             model, exc, raw[:500],
         )
         return None, raw
+
+
+def parse_chat_response(body: dict, model: str = "") -> tuple[dict | None, str, dict]:
+    """Odpověď /api/chat → (naparsovaný JSON, syrový text, spotřeba tokenů).
+
+    Sdílené s frontou úloh: ta dostane tutéž odpověď upstreamu, jen s
+    odstupem, takže ji musí rozebrat úplně stejně.
+    """
+    raw = (body or {}).get("message", {}).get("content", "")
+    usage = {
+        "prompt_tokens": int((body or {}).get("prompt_eval_count") or 0),
+        "completion_tokens": int((body or {}).get("eval_count") or 0),
+    }
+    try:
+        return parse_json_response(raw), raw, usage
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "Ollama chat odpověď (model %s) se nepodařilo naparsovat (%s): %r",
+            model, exc, raw[:500],
+        )
+        return None, raw, usage

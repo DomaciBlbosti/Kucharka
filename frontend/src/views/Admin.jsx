@@ -85,6 +85,7 @@ function ToolsCard() {
   const [test, setTest] = useState(null);
   const [testing, setTesting] = useState(false);
   const [apiKey, setApiKey] = useState(""); // klíč se z API nikdy nevrací, drží se zvlášť
+  const [proxyKey, setProxyKey] = useState(""); // totéž pro klíč proxy
   const [apiTest, setApiTest] = useState(null);
   const [apiTesting, setApiTesting] = useState(false);
   useEffect(() => {
@@ -119,6 +120,11 @@ function ToolsCard() {
     setS({ ...s, ...r.settings });
     setApiKey("");
   };
+  const clearProxyKey = async () => {
+    const r = await api.adminSaveSettings({ llm_proxy_key_clear: true });
+    setS({ ...s, ...r.settings });
+    setProxyKey("");
+  };
   const save = async () => {
     const keys = ["ollama_url", "ollama_model", "ollama_fast_model", "embed_model",
       "ocr_model", "searxng_url", "translate_to_cs", "auto_ingredients", "scraper_verify_ssl",
@@ -133,6 +139,7 @@ function ToolsCard() {
       "llm_price_in_usd", "llm_price_out_usd", "usd_rate"];
     const vals = Object.fromEntries(keys.map((k) => [k, s[k]]));
     if (apiKey.trim()) vals.llm_api_key = apiKey.trim();
+    if (proxyKey.trim()) vals.llm_proxy_key = proxyKey.trim();
     const r = await api.adminSaveSettings(vals);
     setS({ ...s, ...r.settings });
     if (apiKey.trim()) setApiKey("");
@@ -189,11 +196,49 @@ function ToolsCard() {
           <input type="number" min="1" className={input} value={s.bg_workers ?? 2}
             onChange={(e) => set("bg_workers", Number(e.target.value))} />
         </Field>
+        <Field
+          label="Klíč proxy"
+          hint={
+            s.llm_proxy_key_set
+              ? "klíč je uložený – vyplň jen pro změnu"
+              : "nepovinné · vyplň, když OLLAMA_URL míří na ollamaproxy (klíč z /ui/keys)"
+          }>
+          <input className={input} type="password" value={proxyKey}
+            onChange={(e) => setProxyKey(e.target.value)}
+            placeholder={s.llm_proxy_key_set ? "•••••••• (uloženo)" : "opx_…"} />
+          {s.llm_proxy_key_set && (
+            <button type="button" onClick={clearProxyKey}
+              className="mt-1 text-xs text-ink/45 hover:text-miss">
+              zapomenout klíč
+            </button>
+          )}
+        </Field>
       </div>
 
       <h3 className="mb-3 mt-6 text-sm font-bold text-ink/70">
         LLM pro dávkové úlohy (párování / tagy / kategorie)
       </h3>
+      <div className="mb-4 grid gap-4 sm:grid-cols-2">
+        <Field
+          label="Fronta úloh na proxy"
+          hint="dávky se odešlou a výsledky vyzvednou · proxy je seskupí podle modelu a pustí napřed interaktivní dotazy (recept z fotky, OCR)">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={!!s.llm_jobs_enabled}
+              disabled={!s.llm_proxy_key_set}
+              onChange={(e) => set("llm_jobs_enabled", e.target.checked)} />
+            {s.llm_proxy_key_set
+              ? "posílat dávky na frontu"
+              : "vyžaduje klíč proxy (výš)"}
+          </label>
+        </Field>
+        {s.llm_jobs_enabled && (
+          <Field label="Priorita dávek" hint="0 = nejvyšší, 9 = nejnižší · dávky patří dozadu">
+            <input type="number" min="0" max="9" className={input}
+              value={s.llm_jobs_priority ?? 7}
+              onChange={(e) => set("llm_jobs_priority", Number(e.target.value))} />
+          </Field>
+        )}
+      </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Poskytovatel" hint="Ollama = lokální GPU · API = komerční služba (přesnější a rychlejší, platí se za tokeny)">
           <select className={input} value={s.llm_provider || "ollama"}

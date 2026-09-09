@@ -44,6 +44,7 @@ def _call(prompt: str, model: str, num_ctx: int, temperature: float) -> tuple[di
     try:
         r = httpx.post(
             f"{settings.ollama_url}/api/generate",
+        headers=settings.ollama_headers(),
             json={
                 "model": model,
                 "prompt": prompt,

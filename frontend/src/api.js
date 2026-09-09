@@ -342,6 +342,7 @@ export const api = {
     afetch(`/api/admin/ingredient-merge/run?dry_run=${dryRun ? "true" : "false"}`, {
       method: "POST",
     }).then(J),
+  llmJobsStatus: () => afetch("/api/admin/llm-jobs/status").then(J),
   taxonomy: () => afetch("/api/admin/taxonomy").then(J),
   ingredientTreeBuild: () =>
     afetch("/api/admin/ingredient-tree/build", { method: "POST" }).then(J),
