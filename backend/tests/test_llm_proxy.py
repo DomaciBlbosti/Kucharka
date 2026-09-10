@@ -142,6 +142,38 @@ def main():
               tags and tags[0]["headers"].get("Authorization") == f"Bearer {KEY}",
               str(tags[0]["headers"]) if tags else "žádné volání")
 
+        # ── seznam modelů pro výběr v administraci ──
+        # Formulář na něm staví nabídku modelů. Když se seznam nenačte, MUSÍ
+        # se to poznat: administrace se pak přepne na volný text, aby se
+        # nastavení dalo opravit i s nepojízdnou proxy.
+        print("\nseznam modelů pro nastavení:")
+        out = {}
+        rec = with_recorder(
+            lambda: out.update(c.get("/api/admin/models").json()),
+            payload={"models": [{"name": "qwen3:8b"}, {"name": "aya:8b"},
+                                {"name": "qwen3:8b"}, {"name": ""}]})
+        tags = [x for x in rec.calls if x["url"].endswith("/api/tags")]
+        check("seznam se ptá na /api/tags", bool(tags), str([x["url"] for x in rec.calls]))
+        check("seznam posílá klíč",
+              tags and tags[0]["headers"].get("Authorization") == f"Bearer {KEY}",
+              str(tags[0]["headers"]) if tags else "žádné volání")
+        check("jména jdou setříděná a bez duplicit",
+              out.get("models") == ["aya:8b", "qwen3:8b"], str(out.get("models")))
+        check("při úspěchu se nehlásí chyba", "error" not in out, str(out))
+
+        def boom(url, **kw):
+            raise httpx.ConnectError("proxy neodpovídá")
+
+        orig_get = httpx.get
+        httpx.get = boom
+        try:
+            out = c.get("/api/admin/models").json()
+        finally:
+            httpx.get = orig_get
+        check("nedostupná proxy neshodí administraci",
+              out.get("models") == [] and bool(out.get("error")), str(out))
+        check("chyba neprozradí klíč", KEY not in str(out), str(out))
+
         # ── klíč se nesmí dostat ven ──
         print("\nklíč se nedostane ven:")
         body = c.get("/api/admin/settings").json()

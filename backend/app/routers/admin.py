@@ -80,6 +80,30 @@ def test_ollama():
     }
 
 
+@router.get("/models")
+def list_models():
+    """Modely, které vidí proxy (nebo přímá Ollama) – pro výběr v nastavení.
+
+    Oproti /test-ollama nic neposuzuje, jen vrátí jména. Když se seznam
+    nepodaří načíst, vrací se prázdno a chyba: formulář pak nechá políčka
+    jako volný text, aby se dala nastavení opravit i s nepojízdnou proxy.
+    """
+    import httpx
+
+    url = settings.ollama_url
+    if not url:
+        return {"models": [], "error": "Není nastavená adresa (OLLAMA_URL)."}
+    try:
+        r = httpx.get(f"{url}/api/tags", headers=settings.ollama_headers(), timeout=8)
+        r.raise_for_status()
+        names = sorted(
+            {m.get("name", "") for m in r.json().get("models", []) if m.get("name")}
+        )
+        return {"models": names, "url": url}
+    except Exception as exc:  # noqa: BLE001
+        return {"models": [], "url": url, "error": str(exc)[:300]}
+
+
 @router.get("/test-llm-api")
 def test_llm_api():
     """Ověří komerční LLM API malým strukturovaným voláním (levné, pár tokenů)."""
