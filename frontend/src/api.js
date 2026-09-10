@@ -315,6 +315,13 @@ export const api = {
     return _settingsCache.then((s) => ({ ...s })); // každý volající vlastní kopii
   },
   testOllama: () => afetch("/api/admin/test-ollama").then(J),
+  // Seznam modelů, které vidí proxy (nebo přímá Ollama) – pro výběr
+  // v nastavení. Nikdy nevyhazuje: nepojízdná proxy se pozná podle `error`
+  // a formulář se přepne na volný text.
+  adminModels: () =>
+    afetch("/api/admin/models")
+      .then(J)
+      .catch((e) => ({ models: [], error: String(e?.message || e) })),
 
   lidlAccounts: () => afetch("/api/lidl/accounts").then(J),
   lidlAddAccount: (data) =>

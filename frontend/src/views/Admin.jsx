@@ -16,6 +16,64 @@ function Field({ label, children, hint }) {
 const input =
   "w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm outline-none focus:border-basil";
 
+const CUSTOM = "__vlastni__";
+
+/** Výběr modelu ze seznamu, který vidí proxy.
+ *
+ *  Tři věci, na kterých to stojí:
+ *
+ *  1. Když se seznam nepodařilo načíst (proxy neběží, chybí klíč), zůstane
+ *     obyčejné textové pole. Jinak by se s nepojízdnou proxy nedala
+ *     administrace opravit – vybíralo by se z prázdna.
+ *  2. Uložená hodnota, která v seznamu není (model zmizel, psalo se ručně),
+ *     se do nabídky přidá zvlášť. Bez toho by ji `select` tiše přepsal na
+ *     první položku a nastavení by se ztratilo pouhým otevřením stránky.
+ *  3. Volba „vlastní…" pustí zpátky volný text – pro modely, které proxy
+ *     nevidí (komerční API mimo proxy).
+ */
+function ModelSelect({ value, onChange, models, error, placeholder, allowEmpty }) {
+  const val = value || "";
+  const [custom, setCustom] = useState(false);
+
+  if (error || !models?.length || custom) {
+    return (
+      <div>
+        <input className={input} value={val} placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)} />
+        {models?.length > 0 && (
+          <button type="button" onClick={() => setCustom(false)}
+            className="mt-1 text-xs text-ink/45 hover:text-basil">
+            zpět na výběr ze seznamu
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // Uložená hodnota mimo seznam se nabídne taky, ať se nepřepíše.
+  const opts = models.includes(val) || !val ? models : [val, ...models];
+  return (
+    <select className={input} value={val}
+      onChange={(e) => {
+        if (e.target.value === CUSTOM) setCustom(true);
+        else onChange(e.target.value);
+      }}>
+      {/* Prázdná položka musí být i tam, kde prázdno není platné nastavení:
+          jinak by `select` ukazoval první model, ale uloženo by zůstalo
+          prázdno – vidět by bylo něco jiného, než co appka používá. */}
+      {(allowEmpty || !val) && (
+        <option value="">{allowEmpty ? "— nevyplněno —" : "— vyber model —"}</option>
+      )}
+      {opts.map((m) => (
+        <option key={m} value={m}>
+          {m}{models.includes(m) ? "" : " (proxy ho nevidí)"}
+        </option>
+      ))}
+      <option value={CUSTOM}>vlastní…</option>
+    </select>
+  );
+}
+
 // Sbalovací karta administrace. Ve sbaleném stavu je vidět jen nadpis –
 // stránka se tak dá projít pohledem místo dlouhého skrolování (obzvlášť
 // když čeká hodně položek k ručnímu rozhodnutí).
@@ -88,8 +146,12 @@ function ToolsCard() {
   const [proxyKey, setProxyKey] = useState(""); // totéž pro klíč proxy
   const [apiTest, setApiTest] = useState(null);
   const [apiTesting, setApiTesting] = useState(false);
+  // Seznam modelů z proxy. `loading` odlišuje „ještě se načítá" od „proxy
+  // opravdu žádný model nemá" – obojí je prázdné pole, ale radit se má jinak.
+  const [ml, setMl] = useState({ models: [], loading: true });
   useEffect(() => {
     api.adminSettings().then(setS).catch(() => {});
+    api.adminModels().then((r) => setMl({ models: [], ...r, loading: false }));
   }, []);
   if (!s) return <Spinner label="Načítám nastavení…" />;
 
@@ -144,7 +206,23 @@ function ToolsCard() {
     setS({ ...s, ...r.settings });
     if (apiKey.trim()) setApiKey("");
     setSaved(true);
+    // Adresa nebo klíč proxy se mohly právě změnit – seznam modelů se do té
+    // doby nemusel dát načíst vůbec. Zkusit znovu, ať se výběr rozjede hned
+    // po uložení a nemusí se kvůli tomu obnovovat stránka.
+    if (proxyKey.trim()) setProxyKey("");
+    api.adminModels().then((r) => setMl({ models: [], ...r, loading: false }));
   };
+
+  // Proč se u modelů někdy místo nabídky ukáže textové pole: ať se nehádá,
+  // jestli je seznam prázdný proto, že proxy nic nemá, nebo proto, že se
+  // nedala dovolat.
+  const modelsHint = ml.error
+    ? `seznam modelů se nepodařilo načíst (${ml.error}) – vyplň ručně`
+    : ml.models.length
+      ? `${ml.models.length} modelů z ${ml.url || "Ollamy"}`
+      : ml.loading
+        ? "načítám seznam modelů…"
+        : "Ollama nehlásí žádný model – vyplň ručně";
 
   return (
     <Section title="Nástroje (servery)">
@@ -159,26 +237,27 @@ function ToolsCard() {
             onChange={(e) => set("searxng_url", e.target.value)}
             placeholder="http://…:8088 (nepovinné)" />
         </Field>
-        <Field label="Model pro chat/generování">
-          <input className={input} value={s.ollama_model || ""}
-            onChange={(e) => set("ollama_model", e.target.value)} placeholder="qwen3:8b" />
+        <Field label="Model pro chat/generování" hint={modelsHint}>
+          <ModelSelect value={s.ollama_model} onChange={(v) => set("ollama_model", v)}
+            models={ml.models} error={ml.error} placeholder="qwen3:8b" />
         </Field>
         <Field label="Rychlý model (překlad/parsování/kategorie)" hint="prázdné = stejný jako hlavní">
-          <input className={input} value={s.ollama_fast_model || ""}
-            onChange={(e) => set("ollama_fast_model", e.target.value)} placeholder="qwen3:1.7b" />
+          <ModelSelect value={s.ollama_fast_model} onChange={(v) => set("ollama_fast_model", v)}
+            models={ml.models} error={ml.error} placeholder="qwen3:1.7b" allowEmpty />
         </Field>
         <Field label="Model jen pro překlad receptů"
           hint="prázdné = rychlý model · zkus multilingvální (aya-expanse:8b, mistral-nemo) · při komerčním API se nepoužije">
-          <input className={input} value={s.translate_model || ""}
-            onChange={(e) => set("translate_model", e.target.value)} placeholder="aya-expanse:8b" />
+          <ModelSelect value={s.translate_model} onChange={(v) => set("translate_model", v)}
+            models={ml.models} error={ml.error} placeholder="aya-expanse:8b" allowEmpty />
         </Field>
-        <Field label="Model pro embeddingy (RAG)">
-          <input className={input} value={s.embed_model || ""}
-            onChange={(e) => set("embed_model", e.target.value)} placeholder="nomic-embed-text" />
+        <Field label="Model pro embeddingy (RAG)"
+          hint="POZOR: jiný model = jiný rozměr vektorů → nutné přeindexovat">
+          <ModelSelect value={s.embed_model} onChange={(v) => set("embed_model", v)}
+            models={ml.models} error={ml.error} placeholder="nomic-embed-text" />
         </Field>
         <Field label="OCR model (skenování účtenek)" hint="vision model, např. qwen2.5vl, minicpm-v">
-          <input className={input} value={s.ocr_model || ""}
-            onChange={(e) => set("ocr_model", e.target.value)} placeholder="qwen2.5vl:7b" />
+          <ModelSelect value={s.ocr_model} onChange={(v) => set("ocr_model", v)}
+            models={ml.models} error={ml.error} placeholder="qwen2.5vl:7b" />
         </Field>
         <Field label="RAG – počet receptů jako kontext">
           <input type="number" className={input} value={s.rag_k ?? 6}
@@ -346,8 +425,8 @@ function ToolsCard() {
       </h3>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Model pro dávkové párování" hint="prázdné = rychlý model výše">
-          <input className={input} value={s.llm_match_model || ""}
-            onChange={(e) => set("llm_match_model", e.target.value)} placeholder="gemma4:12b" />
+          <ModelSelect value={s.llm_match_model} onChange={(v) => set("llm_match_model", v)}
+            models={ml.models} error={ml.error} placeholder="gemma4:12b" allowEmpty />
         </Field>
         <Field label="Velikost dávky" hint="surovin na jedno LLM volání">
           <input type="number" min="1" className={input} value={s.llm_match_batch_size ?? 40}
