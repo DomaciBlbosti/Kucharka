@@ -48,14 +48,18 @@ class FakeResp:
 
 
 def with_api(**over):
-    """Nastaví komerční API a vrátí funkci pro obnovení původního stavu."""
+    """Nastaví komerční API a vrátí funkci pro obnovení původního stavu.
+
+    Komerční cesta jde vždy přes proxy: adresa je OLLAMA_URL + /v1 a klíč
+    je klíč proxy (settings.api_url / settings.api_key).
+    """
     keys = ("llm_provider", "llm_vision_provider", "llm_embed_provider",
-            "llm_api_key", "llm_api_url", "llm_api_model",
+            "llm_proxy_key", "llm_api_model",
             "llm_api_vision_model", "llm_api_embed_model", "ocr_model",
             "embed_model", "ollama_url")
     old = {k: getattr(settings, k) for k in keys}
-    settings.llm_api_key = "sk-test"
-    settings.llm_api_url = "https://api.example.com/v1"
+    settings.llm_proxy_key = "sk-test"
+    settings.ollama_url = "https://api.example.com"
     for k, v in over.items():
         setattr(settings, k, v)
     return lambda: [setattr(settings, k, v) for k, v in old.items()]
