@@ -12,16 +12,17 @@ import time
 from datetime import date, datetime
 
 from fastapi import (
-    APIRouter, Depends, File, Form, HTTPException, Query, UploadFile,
+    APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile,
 )
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import Date, DateTime, delete, select
+from sqlalchemy import Date, DateTime, delete, func, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import SessionLocal, get_db
 from ..models import (
+    AppUser,
     AppSetting,
     Ingredient,
     IngredientAlias,
@@ -175,6 +176,115 @@ def set_password(req: PasswordUpdate):
 
     auth.set_password(req.password.strip() or None)
     return {"auth_enabled": settings.auth_enabled}
+
+
+# ----------------------------- UŽIVATELÉ ----------------------------------
+# Účty vedle sdíleného hesla. Jakmile existuje aspoň jeden aktivní účet,
+# přihlášení chce jméno; sdílené heslo dál funguje, dokud se nesmaže.
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+
+
+class UserUpdate(BaseModel):
+    password: str | None = None
+    role: str | None = None
+    active: bool | None = None
+
+
+def _user_out(u: AppUser) -> dict:
+    return {
+        "id": u.id, "username": u.username, "role": u.role, "active": u.active,
+        "created_at": u.created_at.isoformat() if u.created_at else None,
+        "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+    }
+
+
+def _check_role(role: str) -> str:
+    if role not in ("admin", "user"):
+        raise HTTPException(400, "Role musí být admin nebo user.")
+    return role
+
+
+def _ensure_admin_remains(db: Session, except_id: int) -> None:
+    """Poslední aktivní admin se nesmí smazat/deaktivovat/degradovat."""
+    n = db.scalar(
+        select(func.count(AppUser.id)).where(
+            AppUser.active.is_(True), AppUser.role == "admin", AppUser.id != except_id
+        )
+    )
+    if not n and not settings.auth_password_hash:
+        raise HTTPException(400, "Zůstal by systém bez správce – nejdřív vytvoř jiného admina nebo nastav sdílené heslo.")
+
+
+@router.get("/users")
+def list_users(db: Session = Depends(get_db)):
+    return [_user_out(u) for u in db.scalars(select(AppUser).order_by(AppUser.username)).all()]
+
+
+@router.post("/users")
+def create_user(req: UserCreate, db: Session = Depends(get_db)):
+    from .. import auth
+
+    name = req.username.strip()
+    if len(name) < 2:
+        raise HTTPException(400, "Jméno musí mít aspoň 2 znaky.")
+    if len(req.password) < 4:
+        raise HTTPException(400, "Heslo musí mít aspoň 4 znaky.")
+    if db.scalar(select(AppUser).where(AppUser.username == name)):
+        raise HTTPException(409, "Uživatel s tímhle jménem už existuje.")
+    u = AppUser(username=name, password_hash=auth.hash_password(req.password), role=_check_role(req.role))
+    db.add(u)
+    db.commit()
+    auth.refresh_users(db)
+    return _user_out(u)
+
+
+@router.put("/users/{uid}")
+def update_user(uid: int, req: UserUpdate, request: Request, db: Session = Depends(get_db)):
+    from .. import auth
+    from .auth import token_from_request
+
+    u = db.get(AppUser, uid)
+    if u is None:
+        raise HTTPException(404, "Uživatel nenalezen.")
+    me = auth.token_info(token_from_request(request)) or {}
+    demote = (req.role is not None and req.role != "admin") or req.active is False
+    if u.role == "admin" and u.active and demote:
+        _ensure_admin_remains(db, uid)
+    if req.role is not None:
+        u.role = _check_role(req.role)
+    if req.active is not None:
+        u.active = req.active
+        if not req.active:
+            u.token_version += 1
+    if req.password:
+        if len(req.password) < 4:
+            raise HTTPException(400, "Heslo musí mít aspoň 4 znaky.")
+        u.password_hash = auth.hash_password(req.password)
+        u.token_version += 1
+    db.commit()
+    auth.refresh_users(db)
+    out = _user_out(u)
+    # Změna vlastního hesla/stavu zneplatní i tenhle token – frontend se odhlásí.
+    out["self_affected"] = me.get("uid") == uid and bool(req.password or req.active is False)
+    return out
+
+
+@router.delete("/users/{uid}")
+def delete_user(uid: int, db: Session = Depends(get_db)):
+    from .. import auth
+
+    u = db.get(AppUser, uid)
+    if u is None:
+        raise HTTPException(404, "Uživatel nenalezen.")
+    if u.role == "admin" and u.active:
+        _ensure_admin_remains(db, uid)
+    db.delete(u)
+    db.commit()
+    auth.refresh_users(db)
+    return {"ok": True}
 
 
 # ----------------------------- RECIPE_DOMAINS -----------------------------

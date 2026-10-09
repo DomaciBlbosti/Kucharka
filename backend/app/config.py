@@ -234,6 +234,9 @@ class Settings:
         # Zabezpečení heslem (hash se načítá z app_setting při startu)
         self.auth_password_hash: str | None = None
         self.auth_secret: str = ""
+        # Aktivní uživatelské účty (id -> (role, token_version)); plní auth.py.
+        # Drží se v paměti, ať ověření tokenu nesahá do DB.
+        self.auth_users: dict[int, tuple[str, int]] = {}
 
     @property
     def ollama_enabled(self) -> bool:
@@ -245,7 +248,7 @@ class Settings:
 
     @property
     def auth_enabled(self) -> bool:
-        return bool(self.auth_password_hash)
+        return bool(self.auth_password_hash) or bool(self.auth_users)
 
     @property
     def ollama_fast_model(self) -> str:

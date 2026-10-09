@@ -463,12 +463,26 @@ export const api = {
   },
 
   authStatus: () => afetch("/api/auth/status").then(J),
-  login: (password) =>
+  login: (password, username) =>
     afetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, username: username || null }),
     }).then(J),
+  adminUsers: () => afetch("/api/admin/users").then(J),
+  adminCreateUser: (body) =>
+    afetch("/api/admin/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(J),
+  adminUpdateUser: (id, body) =>
+    afetch(`/api/admin/users/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(J),
+  adminDeleteUser: (id) => afetch(`/api/admin/users/${id}`, { method: "DELETE" }).then(J),
   setPassword: (password) =>
     afetch("/api/admin/password", {
       method: "PUT",

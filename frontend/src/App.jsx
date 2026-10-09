@@ -27,11 +27,11 @@ const MORE_NAV = [
   { to: "/admin", label: "Admin", icon: "⚙️" },
 ];
 
-function MoreMenu({ direction = "down", variant = "pill" }) {
+function MoreMenu({ direction = "down", variant = "pill", items = MORE_NAV, onLogout }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const location = useLocation();
-  const isActiveGroup = MORE_NAV.some((n) => location.pathname.startsWith(n.to));
+  const isActiveGroup = items.some((n) => location.pathname.startsWith(n.to));
 
   useEffect(() => {
     if (!open) return;
@@ -74,7 +74,7 @@ function MoreMenu({ direction = "down", variant = "pill" }) {
         <div
           className={`absolute right-0 z-40 w-48 overflow-hidden rounded-xl2 border border-line bg-white py-1.5 shadow-lg ${panelPos}`}
         >
-          {MORE_NAV.map((n) => (
+          {items.map((n) => (
             <NavLink
               key={n.to}
               to={n.to}
@@ -89,6 +89,15 @@ function MoreMenu({ direction = "down", variant = "pill" }) {
               {n.label}
             </NavLink>
           ))}
+          {onLogout && (
+            <button
+              onClick={() => { setOpen(false); onLogout(); }}
+              className="flex w-full items-center gap-2.5 border-t border-line px-4 py-2.5 text-left text-sm font-medium text-ink/70 hover:bg-paper"
+            >
+              <span aria-hidden>🚪</span>
+              Odhlásit
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -108,38 +117,54 @@ function Brand() {
   );
 }
 
-function Login({ onOk }) {
+function Login({ onOk, users }) {
+  const [name, setName] = useState("");
   const [pw, setPw] = useState("");
-  const [err, setErr] = useState(false);
+  const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
   const submit = async () => {
     setBusy(true);
-    setErr(false);
+    setErr(null);
     try {
-      const r = await api.login(pw);
+      const r = await api.login(pw, users ? name : "");
       auth.set(r.token);
       onOk();
-    } catch {
-      setErr(true);
+    } catch (e) {
+      setErr(e?.message || "Špatné heslo.");
     } finally {
       setBusy(false);
     }
   };
+  const cls = "w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm outline-none focus:border-basil";
   return (
     <div className="flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-sm rounded-xl2 border border-line bg-white p-6 shadow-card">
         <h1 className="font-display text-2xl font-extrabold text-basil-dark">Kuchařka</h1>
-        <p className="mb-4 mt-1 text-sm text-ink/55">Zadej heslo pro přístup.</p>
+        <p className="mb-4 mt-1 text-sm text-ink/55">
+          {users ? "Přihlas se svým účtem." : "Zadej heslo pro přístup."}
+        </p>
+        {users && (
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submit()}
+            placeholder="Jméno"
+            autoComplete="username"
+            className={`${cls} mb-2`}
+          />
+        )}
         <input
           type="password"
-          autoFocus
+          autoFocus={!users}
           value={pw}
           onChange={(e) => setPw(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && submit()}
           placeholder="Heslo"
-          className="w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm outline-none focus:border-basil"
+          autoComplete="current-password"
+          className={cls}
         />
-        {err && <p className="mt-2 text-sm text-miss">Špatné heslo.</p>}
+        {err && <p className="mt-2 text-sm text-miss">{err}</p>}
         <button
           onClick={submit}
           disabled={busy || !pw}
@@ -153,7 +178,7 @@ function Login({ onOk }) {
 }
 
 export default function App() {
-  const [gate, setGate] = useState({ loading: true, ok: false });
+  const [gate, setGate] = useState({ loading: true, ok: false, users: false, role: "admin" });
   // Vypnutá spíž (administrace → Nástroje) schová záložku Spíž i všechno,
   // co se o ni opírá. Než se stav načte, počítáme s ní – ať záložka
   // neproblikává.
@@ -162,12 +187,17 @@ export default function App() {
   const check = () =>
     api
       .authStatus()
-      .then((s) => setGate({ loading: false, ok: !s.required || s.authenticated }))
-      .catch(() => setGate({ loading: false, ok: true }));
+      .then((s) => setGate({
+        loading: false,
+        ok: !s.required || s.authenticated,
+        users: !!s.users,
+        role: s.me?.role || "admin",
+      }))
+      .catch(() => setGate({ loading: false, ok: true, users: false, role: "admin" }));
 
   useEffect(() => {
     check();
-    const onUnauth = () => setGate({ loading: false, ok: false });
+    const onUnauth = () => setGate((g) => ({ ...g, loading: false, ok: false }));
     window.addEventListener("kucharka-unauth", onUnauth);
     return () => window.removeEventListener("kucharka-unauth", onUnauth);
   }, []);
@@ -179,7 +209,17 @@ export default function App() {
   const nav = CORE_NAV.filter((n) => pantryOn || !n.needsPantry);
 
   if (gate.loading) return null;
-  if (!gate.ok) return <Login onOk={() => check()} />;
+  if (!gate.ok) return <Login onOk={() => check()} users={gate.users} />;
+  const isAdmin = gate.role === "admin";
+  const moreNav = MORE_NAV.filter((n) => isAdmin || n.to !== "/admin");
+  // Odhlášení v menu „Další": uživatel bez administrace jinak nemá kde.
+  const logout = gate.users
+    ? async () => {
+        try { await api.logout(); } catch { /* i při chybě pokračuj */ }
+        auth.clear();
+        window.location.reload();
+      }
+    : null;
 
   return (
     <div className="min-h-screen pb-20 md:pb-0">
@@ -204,7 +244,7 @@ export default function App() {
                 {n.label}
               </NavLink>
             ))}
-            <MoreMenu direction="down" variant="pill" />
+            <MoreMenu direction="down" variant="pill" items={moreNav} onLogout={logout} />
           </nav>
         </div>
       </header>
@@ -221,7 +261,7 @@ export default function App() {
           <Route path="/nakup" element={<Shopping />} />
           <Route path="/pridat" element={<AddRecipe />} />
           <Route path="/kontrola" element={<Review />} />
-          <Route path="/admin" element={<Admin />} />
+          {isAdmin && <Route path="/admin" element={<Admin />} />}
         </Routes>
       </main>
 
@@ -245,7 +285,7 @@ export default function App() {
               {n.label}
             </NavLink>
           ))}
-          <MoreMenu direction="up" variant="tab" />
+          <MoreMenu direction="up" variant="tab" items={moreNav} onLogout={logout} />
         </div>
       </nav>
     </div>

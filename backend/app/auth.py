@@ -17,7 +17,7 @@ import time
 
 from .config import settings
 from .db import SessionLocal
-from .models import AppSetting
+from .models import AppSetting, AppUser
 
 log = logging.getLogger("kucharka.auth")
 
@@ -42,6 +42,7 @@ def _put(db, key: str, val: str) -> None:
 def load(db) -> None:
     """Načti stav do settings při startu."""
     settings.auth_password_hash = _get(db, _PW_KEY)
+    refresh_users(db)
     sec = _get(db, _SECRET_KEY)
     if not sec:
         sec = secrets.token_hex(32)
@@ -52,6 +53,31 @@ def load(db) -> None:
 
 def _hash(password: str, salt: bytes) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _ITER).hex()
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    return salt.hex() + ":" + _hash(password, salt)
+
+
+def check_password(password: str, stored: str | None) -> bool:
+    if not stored:
+        return False
+    try:
+        salt_hex, h_hex = stored.split(":")
+        return hmac.compare_digest(_hash(password, bytes.fromhex(salt_hex)), h_hex)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def refresh_users(db) -> None:
+    """Přenačti aktivní účty do paměti (po každé změně v administraci)."""
+    from sqlalchemy import select
+
+    rows = db.execute(
+        select(AppUser.id, AppUser.role, AppUser.token_version).where(AppUser.active.is_(True))
+    ).all()
+    settings.auth_users = {uid: (role, tv) for uid, role, tv in rows}
 
 
 def set_password(password: str | None) -> None:
@@ -78,35 +104,51 @@ def set_password(password: str | None) -> None:
 
 
 def verify_password(password: str) -> bool:
+    """Sdílené heslo (záložní cesta bez účtu)."""
     stored = settings.auth_password_hash
     if not stored:
         return True
-    try:
-        salt_hex, h_hex = stored.split(":")
-        return hmac.compare_digest(_hash(password, bytes.fromhex(salt_hex)), h_hex)
-    except Exception:  # noqa: BLE001
-        return False
+    return check_password(password, stored)
 
 
-def make_token(days: int = 30) -> str:
-    payload = base64.urlsafe_b64encode(
-        json.dumps({"exp": int(time.time()) + days * 86400}).encode()
-    ).decode()
+def make_token(days: int = 30, *, user: AppUser | None = None) -> str:
+    data: dict = {"exp": int(time.time()) + days * 86400}
+    if user is not None:
+        data.update({"uid": user.id, "name": user.username, "role": user.role,
+                     "tv": user.token_version})
+    payload = base64.urlsafe_b64encode(json.dumps(data).encode()).decode()
     sig = hmac.new(settings.auth_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
 
 
-def valid_token(token: str | None) -> bool:
+def token_info(token: str | None) -> dict | None:
+    """Ověří podpis, expiraci a u účtu i to, že účet žije a heslo se nezměnilo.
+
+    Vrací {"uid", "name", "role"}; token sdíleného hesla (bez uid) má roli
+    admin – chová se jako dřív.
+    """
     if not token:
-        return False
+        return None
     try:
         payload, sig = token.split(".")
         expect = hmac.new(
             settings.auth_secret.encode(), payload.encode(), hashlib.sha256
         ).hexdigest()
         if not hmac.compare_digest(sig, expect):
-            return False
+            return None
         data = json.loads(base64.urlsafe_b64decode(payload))
-        return float(data.get("exp", 0)) > time.time()
+        if float(data.get("exp", 0)) <= time.time():
+            return None
     except Exception:  # noqa: BLE001
-        return False
+        return None
+    uid = data.get("uid")
+    if uid is None:
+        return {"uid": None, "name": "", "role": "admin"}
+    live = settings.auth_users.get(int(uid))
+    if live is None or live[1] != data.get("tv"):
+        return None
+    return {"uid": int(uid), "name": data.get("name", ""), "role": live[0]}
+
+
+def valid_token(token: str | None) -> bool:
+    return token_info(token) is not None
