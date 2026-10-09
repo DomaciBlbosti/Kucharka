@@ -302,6 +302,26 @@ class IngredientEmbedding(Base):
     )
 
 
+class AppUser(Base):
+    """Uživatelský účet. Role: admin (vše) / user (bez administrace).
+
+    Bez jediného účtu funguje appka postaru – jedno sdílené heslo (viz auth.py).
+    `token_version` se zvedne při změně hesla nebo deaktivaci → staré tokeny
+    toho uživatele přestanou platit, ostatní se neodhlásí.
+    """
+
+    __tablename__ = "app_user"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(160))
+    role: Mapped[str] = mapped_column(String(16), default="user")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    token_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class AppSetting(Base):
     """Runtime nastavení (override env), editovatelné z administrace."""
 

@@ -210,8 +210,17 @@ async def _auth_middleware(request, call_next):
     if path.startswith("/hmi"):
         protected = False
     if settings.auth_enabled and protected:
-        if not _auth.valid_token(token_from_request(request)):
+        info = _auth.token_info(token_from_request(request))
+        if info is None:
             return JSONResponse({"detail": "Neautorizováno"}, status_code=401)
+        # Běžný uživatel: bez administrace, údržby a crawleru.
+        admin_only = (
+            path.startswith("/api/admin/")
+            or path.startswith("/api/maintenance/")
+            or path.startswith("/api/crawl/")
+        )
+        if admin_only and info["role"] != "admin":
+            return JSONResponse({"detail": "Jen pro správce"}, status_code=403)
     return await call_next(request)
 
 

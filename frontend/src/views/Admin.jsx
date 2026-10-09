@@ -2866,6 +2866,157 @@ function LidlAccountsCard() {
   );
 }
 
+function UsersCard() {
+  const [users, setUsers] = useState(null);
+  const [me, setMe] = useState(null);
+  const [form, setForm] = useState({ username: "", password: "", role: "user" });
+  const [pwFor, setPwFor] = useState(null); // id uživatele, kterému se mění heslo
+  const [newPw, setNewPw] = useState("");
+  const [msg, setMsg] = useState(null);
+  const load = () => api.adminUsers().then(setUsers).catch(() => setUsers([]));
+  useEffect(() => {
+    load();
+    api.authStatus().then((s) => setMe(s.me)).catch(() => {});
+  }, []);
+  if (users === null) return null;
+
+  const run = async (fn, okMsg) => {
+    setMsg(null);
+    try {
+      const r = await fn();
+      if (r?.self_affected) {
+        setMsg("Změnil sis vlastní přístup – přihlas se znovu.");
+        setTimeout(() => { auth.clear(); window.location.reload(); }, 1200);
+        return;
+      }
+      setMsg(okMsg);
+      load();
+    } catch (e) {
+      setMsg(e?.message || "Chyba");
+    }
+  };
+  const create = () => run(async () => {
+    const r = await api.adminCreateUser(form);
+    setForm({ username: "", password: "", role: "user" });
+    return r;
+  }, "Uživatel vytvořen.");
+  const changePw = (id) => run(async () => {
+    const r = await api.adminUpdateUser(id, { password: newPw });
+    setPwFor(null); setNewPw("");
+    return r;
+  }, "Heslo změněno – uživatel bude přihlášen znovu.");
+
+  return (
+    <Section title="Uživatelé">
+      <p className="mb-4 text-sm text-ink/60">
+        Účty se jménem a heslem. <b>admin</b> vidí administraci, údržbu a crawler;
+        <b> user</b> jen recepty, spíž, plán a nákup. Jakmile existuje první účet,
+        přihlašovací okno chce i jméno; sdílené heslo (karta Zabezpečení) dál
+        funguje jako záložní cesta – prázdné jméno + sdílené heslo = admin.
+      </p>
+
+      {users.length > 0 && (
+        <div className="mb-5 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-ink/45">
+                <th className="py-1 pr-3">Jméno</th>
+                <th className="py-1 pr-3">Role</th>
+                <th className="py-1 pr-3">Stav</th>
+                <th className="py-1 pr-3">Poslední přihlášení</th>
+                <th className="py-1"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => {
+                const self = me?.uid === u.id;
+                return (
+                  <tr key={u.id} className="border-t border-line">
+                    <td className="py-2 pr-3 font-medium">
+                      {u.username}{self && <span className="ml-1 text-xs text-ink/40">(ty)</span>}
+                    </td>
+                    <td className="py-2 pr-3">
+                      <select className="rounded-lg border border-line bg-white px-2 py-1 text-sm"
+                        value={u.role}
+                        onChange={(e) => run(() => api.adminUpdateUser(u.id, { role: e.target.value }), "Role změněna.")}>
+                        <option value="admin">admin</option>
+                        <option value="user">user</option>
+                      </select>
+                    </td>
+                    <td className="py-2 pr-3">
+                      <button
+                        onClick={() => run(() => api.adminUpdateUser(u.id, { active: !u.active }),
+                          u.active ? "Účet deaktivován." : "Účet aktivován.")}
+                        className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                          u.active ? "bg-have/15 text-have" : "bg-line text-ink/50"
+                        }`}>
+                        {u.active ? "aktivní" : "neaktivní"}
+                      </button>
+                    </td>
+                    <td className="nums py-2 pr-3 text-xs text-ink/55">
+                      {u.last_login_at ? new Date(u.last_login_at).toLocaleString("cs-CZ") : "—"}
+                    </td>
+                    <td className="py-2 text-right whitespace-nowrap">
+                      {pwFor === u.id ? (
+                        <span className="inline-flex items-center gap-1">
+                          <input type="password" autoFocus value={newPw}
+                            onChange={(e) => setNewPw(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && newPw && changePw(u.id)}
+                            placeholder="nové heslo"
+                            className="w-32 rounded-lg border border-line bg-white px-2 py-1 text-sm outline-none focus:border-basil" />
+                          <Button variant="ghost" className="!px-3 !py-1" disabled={!newPw}
+                            onClick={() => changePw(u.id)}>OK</Button>
+                          <Button variant="quiet" className="!px-2 !py-1"
+                            onClick={() => { setPwFor(null); setNewPw(""); }}>×</Button>
+                        </span>
+                      ) : (
+                        <>
+                          <Button variant="quiet" className="!px-3 !py-1"
+                            onClick={() => { setPwFor(u.id); setNewPw(""); }}>heslo</Button>
+                          <Button variant="danger" className="!px-3 !py-1"
+                            onClick={() => window.confirm(`Smazat uživatele ${u.username}?`)
+                              && run(() => api.adminDeleteUser(u.id), "Uživatel smazán.")}>
+                            smazat
+                          </Button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <h3 className="mb-2 text-sm font-bold text-ink/70">Nový uživatel</h3>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Field label="Jméno">
+          <input className={input} value={form.username} autoComplete="off"
+            onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="denisa" />
+        </Field>
+        <Field label="Heslo">
+          <input type="password" className={input} value={form.password} autoComplete="new-password"
+            onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="••••••••" />
+        </Field>
+        <Field label="Role">
+          <select className={input} value={form.role}
+            onChange={(e) => setForm({ ...form, role: e.target.value })}>
+            <option value="user">user</option>
+            <option value="admin">admin</option>
+          </select>
+        </Field>
+      </div>
+      <div className="mt-4 flex items-center gap-3">
+        <Button onClick={create} disabled={form.username.trim().length < 2 || form.password.length < 4}>
+          Vytvořit
+        </Button>
+        {msg && <span className="text-sm text-ink/60">{msg}</span>}
+      </div>
+    </Section>
+  );
+}
+
 export default function Admin() {
   return (
     <div className="space-y-6">
@@ -2899,6 +3050,7 @@ export default function Admin() {
       <BackupCard />
       <HmiCard />
       <SystemPanel />
+      <UsersCard />
       <SecurityCard />
     </div>
   );
