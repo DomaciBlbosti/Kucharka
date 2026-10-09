@@ -64,21 +64,33 @@ def test_ollama():
     except Exception as exc:  # noqa: BLE001
         return {"reachable": False, "url": url, "error": str(exc)}
 
+    from ..modules import proxy_catalog
+
+    proxy_catalog.fetch(force=True)
+
     def has(name: str) -> bool:
         base = name.split(":")[0]
         return any(m == name or m.split(":")[0] == base for m in models)
 
-    return {
-        "reachable": True,
-        "url": url,
-        "models": models,
-        "chat_model": settings.ollama_model,
-        "has_chat_model": has(settings.ollama_model),
-        "embed_model": settings.embed_model,
-        "has_embed_model": has(settings.embed_model),
-        "ocr_model": settings.ocr_model,
-        "has_ocr_model": has(settings.ocr_model) if settings.ocr_model else None,
-    }
+    def where(name: str) -> str | None:
+        """'local' = stažený v Ollamě, slug poskytovatele = komerční, None = nikde."""
+        if not name:
+            return None
+        if has(name):
+            return "local"
+        for slug, b in proxy_catalog.fetch().items():
+            if slug != "ollama" and proxy_catalog._in(name, b["models"]):
+                return slug
+        return None
+
+    out = {"reachable": True, "url": url, "models": models}
+    for key, model in (("chat", settings.ollama_model), ("fast", settings.ollama_fast_model),
+                       ("embed", settings.embed_model), ("ocr", settings.ocr_model)):
+        w = where(model)
+        out[f"{key}_model"] = model
+        out[f"{key}_where"] = w
+        out[f"has_{key}_model"] = (w is not None) if model else None
+    return out
 
 
 @router.get("/models")
