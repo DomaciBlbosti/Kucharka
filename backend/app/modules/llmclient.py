@@ -301,6 +301,63 @@ def structured_json_many(
     return out
 
 
+
+# ─── Směrování komerčních volání podle katalogu proxy ────────────────────────
+
+def _chat_request(model: str, content, *, temperature: float, response_format: dict | None,
+                  timeout: float, max_tokens: int = 4096) -> tuple[str, dict]:
+    """Pošle jeden chat dotaz tam, kam model podle proxy patří, a vrátí (text, usage)
+    ve tvaru OpenAI (prompt_tokens/completion_tokens). `content` je str nebo
+    OpenAI-styl seznam bloků (text + image_url); pro Anthropic se přeloží."""
+    from . import proxy_catalog
+
+    kind, base = proxy_catalog.backend_for(model)
+    headers = {"Authorization": f"Bearer {settings.api_key}"}
+    if kind == "anthropic":
+        blocks: list[dict] = []
+        if isinstance(content, str):
+            blocks.append({"type": "text", "text": content})
+        else:
+            for c in content:
+                if c.get("type") == "text":
+                    blocks.append({"type": "text", "text": c["text"]})
+                elif c.get("type") == "image_url":
+                    url = c["image_url"]["url"]
+                    b64 = url.split(",", 1)[1] if "," in url else url
+                    blocks.append({"type": "image", "source": {
+                        "type": "base64", "media_type": "image/jpeg", "data": b64}})
+        if response_format is not None:
+            blocks.append({"type": "text", "text": "Odpověz pouze platným JSON objektem, bez komentáře a bez ```."})
+        payload = {"model": model, "max_tokens": max_tokens, "temperature": temperature,
+                   "messages": [{"role": "user", "content": blocks}]}
+        r = httpx.post(f"{base}/v1/messages", json=payload, headers=headers, timeout=timeout)
+        r.raise_for_status()
+        body = r.json()
+        text = "".join(b.get("text", "") for b in body.get("content") or [] if b.get("type") == "text")
+        u = body.get("usage") or {}
+        return text, {"prompt_tokens": int(u.get("input_tokens") or 0),
+                      "completion_tokens": int(u.get("output_tokens") or 0)}
+    payload = {"model": model, "messages": [{"role": "user", "content": content}],
+               "temperature": temperature}
+    if response_format is not None:
+        payload["response_format"] = response_format
+    r = httpx.post(f"{base}/chat/completions", json=payload, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    body = r.json()
+    raw = (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    u = body.get("usage") or {}
+    return raw, {"prompt_tokens": int(u.get("prompt_tokens") or 0),
+                 "completion_tokens": int(u.get("completion_tokens") or 0)}
+
+
+def _embed_base() -> str:
+    from . import proxy_catalog
+
+    kind, base = proxy_catalog.backend_for(settings.llm_api_embed_model)
+    if kind == "anthropic":
+        raise RuntimeError("Anthropic nemá embeddingy – vyber jiný embed model.")
+    return base
+
 # ─── OCR / obrázky ───────────────────────────────────────────────────────────
 
 def vision_error() -> str | None:
@@ -369,35 +426,22 @@ def _api_vision_json(
     prompt: str, *, images: list[str], schema: dict | None, timeout: float,
     usage_out: dict | None = None,
 ) -> tuple[dict | None, str]:
-    """OpenAI-kompatibilní vision volání (obrázky jako data URL v obsahu)."""
+    """Vision volání přes proxy (OpenAI-kompatibilní nebo Anthropic podle modelu)."""
     content: list[dict] = [{"type": "text", "text": prompt}]
     for b64 in images:
         content.append({
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
         })
-    payload = {
-        "model": settings.llm_api_vision_model,
-        "messages": [{"role": "user", "content": content}],
-        "temperature": 0,
+    try:
         # u vision necháváme jen json_object – json_schema některé modely
         # v kombinaci s obrázky odmítají a struktura je popsaná v promptu
-        "response_format": {"type": "json_object"},
-    }
-    try:
-        r = httpx.post(
-            f"{settings.api_url.rstrip('/')}/chat/completions",
-            json=payload,
-            headers={"Authorization": f"Bearer {settings.api_key}"},
-            timeout=timeout,
+        raw, usage = _chat_request(
+            settings.llm_api_vision_model, content, temperature=0,
+            response_format={"type": "json_object"}, timeout=timeout,
         )
-        r.raise_for_status()
-        body = r.json()
-        raw = (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
         if usage_out is not None:
-            u = body.get("usage") or {}
-            usage_out["prompt_tokens"] = int(u.get("prompt_tokens") or 0)
-            usage_out["completion_tokens"] = int(u.get("completion_tokens") or 0)
+            usage_out.update(usage)
     except Exception as exc:  # noqa: BLE001 - síť, timeout, HTTP…
         log.warning("LLM API OCR volání selhalo: %s", exc)
         _set_error(str(exc)[:300])
@@ -467,7 +511,7 @@ def _finish_embed(api: bool, t0: float, usage: dict, *, ok: bool, detail: str) -
 
 def _api_embed(texts: list[str], *, timeout: float, usage_out: dict | None = None) -> list[list[float]]:
     r = httpx.post(
-        f"{settings.api_url.rstrip('/')}/embeddings",
+        f"{_embed_base()}/embeddings",
         json={"model": settings.llm_api_embed_model, "input": texts},
         headers={"Authorization": f"Bearer {settings.api_key}"},
         timeout=timeout,
@@ -504,27 +548,13 @@ def _api_chat_json(
     formats.append({"type": "json_object"})
 
     for i, fmt in enumerate(formats):
-        payload = {
-            "model": settings.llm_api_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
-            "response_format": fmt,
-        }
         try:
-            r = httpx.post(
-                f"{settings.api_url.rstrip('/')}/chat/completions",
-                json=payload,
-                headers={"Authorization": f"Bearer {settings.api_key}"},
-                timeout=timeout,
+            raw, usage = _chat_request(
+                settings.llm_api_model, prompt, temperature=temperature,
+                response_format=fmt, timeout=timeout,
             )
-            r.raise_for_status()
-            body = r.json()
-            raw = (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
             if usage_out is not None:
-                # OpenAI-kompatibilní odpověď nese spotřebu v `usage`
-                u = body.get("usage") or {}
-                usage_out["prompt_tokens"] = int(u.get("prompt_tokens") or 0)
-                usage_out["completion_tokens"] = int(u.get("completion_tokens") or 0)
+                usage_out.update(usage)
         except httpx.HTTPStatusError as exc:
             code = exc.response.status_code
             if 400 <= code < 500 and i + 1 < len(formats):

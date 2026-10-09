@@ -104,15 +104,17 @@ def list_models():
         )
     except Exception as exc:  # noqa: BLE001
         out["error"] = str(exc)[:300]
-    # OpenAI-kompatibilní cesta (/v1) – proxy tudy vidí i komerční modely.
-    try:
-        r = httpx.get(f"{settings.api_url}/models", headers=hdr, timeout=8)
-        r.raise_for_status()
-        out["api_models"] = sorted(
-            {m.get("id", "") for m in r.json().get("data", []) if m.get("id")}
-        )
-    except Exception as exc:  # noqa: BLE001
-        out["api_error"] = str(exc)[:300]
+    # Komerční i lokální modely z katalogu proxy (/mgmt/v1/models), po
+    # poskytovatelích; llmclient podle téhož katalogu směruje volání.
+    from ..modules import proxy_catalog
+
+    proxy_catalog.fetch(force=True)  # admin chce aktuální stav, ne cache
+    chat_groups = proxy_catalog.groups(proxy_catalog.CHAT_KINDS)
+    out["api_groups"] = chat_groups
+    out["api_embed_groups"] = proxy_catalog.groups(proxy_catalog.EMBED_KINDS)
+    out["api_models"] = sorted({m for g in chat_groups for m in g["models"]})
+    if not chat_groups and proxy_catalog.last_error():
+        out["api_error"] = proxy_catalog.last_error()
     return out
 
 
