@@ -1,14 +1,15 @@
-"""Testy přepínání providerů: text, OCR (obrázky) a embeddingy.
+"""Testy směrování podle modelu: text, OCR (obrázky) a embeddingy.
 
-Každá oblast má vlastní přepínač a výchozí stav je „ollama", takže se nic
-nezmění, dokud se to ručně nepřepne. Testy jdou přes fake HTTP vrstvu –
-žádná síť, žádná Ollama.
+Přepínač poskytovatele není – každé políčko modelu může ukazovat na lokální
+Ollamu nebo komerčního poskytovatele a cesta se volí podle katalogu proxy
+(/mgmt/v1/models). Testy katalog podstrčí přímo do cache; žádná síť.
 """
 from __future__ import annotations
 
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -19,7 +20,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_tmpdir}/test.db"
 import app.models  # noqa: E402,F401 - naplní metadata před create_all
 from app.config import settings  # noqa: E402
 from app.db import Base, engine  # noqa: E402
-from app.modules import llmclient  # noqa: E402
+from app.modules import llmclient, proxy_catalog  # noqa: E402
 
 Base.metadata.create_all(engine)
 
@@ -47,30 +48,53 @@ class FakeResp:
         return self._payload
 
 
+FAKE_CATALOG = {
+    "ollama": {"kind": "ollama", "base_url": "https://api.example.com/v1",
+               "models": ["gemma4:12b", "nomic-embed-text:latest"], "ok": True, "error": None},
+    "openai": {"kind": "openai", "base_url": "https://api.example.com/providers/openai/v1",
+               "models": ["gpt-4o-mini", "text-embedding-3-small"], "ok": True, "error": None},
+    "anthropic": {"kind": "anthropic", "base_url": "https://api.example.com/providers/anthropic",
+                  "models": ["claude-haiku-5-5"], "ok": True, "error": None},
+}
+
+
 def with_api(**over):
-    """Nastaví komerční API a vrátí funkci pro obnovení původního stavu.
+    """Nastaví proxy (klíč + katalog) a vrátí funkci pro obnovení původního stavu.
 
     Komerční cesta jde vždy přes proxy: adresa je OLLAMA_URL + /v1 a klíč
     je klíč proxy (settings.api_url / settings.api_key).
     """
-    keys = ("llm_provider", "llm_vision_provider", "llm_embed_provider",
-            "llm_proxy_key", "llm_api_model",
-            "llm_api_vision_model", "llm_api_embed_model", "ocr_model",
-            "embed_model", "ollama_url")
+    keys = ("llm_proxy_key", "ocr_model", "embed_model", "ollama_url", "_fast_model", "ollama_model")
     old = {k: getattr(settings, k) for k in keys}
+    old_cache = dict(proxy_catalog._cache)
     settings.llm_proxy_key = "sk-test"
     settings.ollama_url = "https://api.example.com"
+    proxy_catalog._cache.update(ts=time.time(), backends=FAKE_CATALOG, error=None)
     for k, v in over.items():
         setattr(settings, k, v)
-    return lambda: [setattr(settings, k, v) for k, v in old.items()]
+
+    def restore():
+        for k, v in old.items():
+            setattr(settings, k, v)
+        proxy_catalog._cache.update(old_cache)
+    return restore
 
 
 def main():
     # ── výchozí stav: všechno lokálně ──────────────────────────────────
-    check("výchozí provider textu je ollama", settings.llm_provider == "ollama")
-    check("výchozí provider OCR je ollama", settings.llm_vision_provider == "ollama")
-    check("výchozí provider embeddingů je ollama", settings.llm_embed_provider == "ollama")
-    check("samotný API klíč OCR nepřepne", not settings.llm_vision_api_enabled)
+    check("bez katalogu je textový model lokální", not settings.llm_api_enabled)
+    check("bez katalogu je OCR model lokální", not settings.llm_vision_api_enabled)
+    check("bez katalogu je embed model lokální", not settings.llm_embed_api_enabled)
+    restore = with_api(ocr_model="gemma4:12b", embed_model="nomic-embed-text")
+    try:
+        check("lokální model z katalogu není komerční", not settings.llm_vision_api_enabled)
+        check("`nomic-embed-text` == `nomic-embed-text:latest`", not settings.llm_embed_api_enabled)
+        check("model mimo katalog se bere jako lokální", not proxy_catalog.is_remote("neznamy:1b"))
+        check("claude je komerční", proxy_catalog.is_remote("claude-haiku-5-5"))
+        check("anthropic jde na /v1/messages",
+              proxy_catalog.backend_for("claude-haiku-5-5") == ("anthropic", "https://api.example.com/providers/anthropic"))
+    finally:
+        restore()
 
     # ── OCR přes komerční API ──────────────────────────────────────────
     seen: dict = {}
@@ -90,7 +114,7 @@ def main():
             "usage": {"prompt_tokens": 100, "completion_tokens": 7},
         })
 
-    restore = with_api(llm_vision_provider="api", llm_api_vision_model="gpt-4o-mini")
+    restore = with_api(ocr_model="gpt-4o-mini")
     orig_post = llmclient.httpx.post
     try:
         llmclient.httpx.post = fake_post
@@ -109,7 +133,7 @@ def main():
         restore()
 
     # OCR zpět na Ollamu bez modelu → srozumitelná hláška, ne pád
-    restore = with_api(llm_vision_provider="ollama", ocr_model="", ollama_url="http://x")
+    restore = with_api(ocr_model="")
     try:
         err = llmclient.vision_error()
         check("bez OCR modelu je hláška, ne výjimka", err and "OCR model" in err, str(err))
@@ -119,7 +143,7 @@ def main():
         restore()
 
     # ── embeddingy přes komerční API ───────────────────────────────────
-    restore = with_api(llm_embed_provider="api", llm_api_embed_model="text-embedding-3-small")
+    restore = with_api(embed_model="text-embedding-3-small")
     orig_post = llmclient.httpx.post
     try:
         llmclient.httpx.post = fake_post
@@ -134,11 +158,31 @@ def main():
         llmclient.httpx.post = orig_post
         restore()
 
-    check("aktivní embed model bez přepnutí je lokální",
+    check("aktivní embed model je vždy embed_model",
           llmclient.active_embed_model() == settings.embed_model)
 
+    # ── Anthropic: nativní Messages API, obrázek jako base64 blok ──────
+    restore = with_api(ocr_model="claude-haiku-5-5")
+    orig_post = llmclient.httpx.post
+    try:
+        def fake_anthropic(url, json=None, headers=None, timeout=None):
+            seen["url"] = url
+            seen["json"] = json
+            return FakeResp({"content": [{"type": "text", "text": '{"items": ["sýr"]}'}],
+                             "usage": {"input_tokens": 9, "output_tokens": 4}})
+        llmclient.httpx.post = fake_anthropic
+        out, raw = llmclient.vision_json("přečti", images=["QUJD"], timeout=5)
+        check("anthropic OCR vrátí JSON", out == {"items": ["sýr"]}, str(out))
+        check("anthropic jde na /v1/messages", seen["url"].endswith("/providers/anthropic/v1/messages"), seen["url"])
+        blocks = seen["json"]["messages"][0]["content"]
+        check("obrázek je base64 blok", blocks[1]["type"] == "image" and blocks[1]["source"]["data"] == "QUJD")
+        check("max_tokens je nastavené", seen["json"].get("max_tokens", 0) > 0)
+    finally:
+        llmclient.httpx.post = orig_post
+        restore()
+
     # ── nesouhlas počtu vektorů se pozná ───────────────────────────────
-    restore = with_api(llm_embed_provider="api")
+    restore = with_api(embed_model="text-embedding-3-small")
     orig_post = llmclient.httpx.post
     try:
         llmclient.httpx.post = lambda *a, **k: FakeResp(
