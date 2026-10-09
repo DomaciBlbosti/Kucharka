@@ -266,8 +266,22 @@ class Settings:
                 if self.llm_proxy_key else {})
 
     @property
+    def api_url(self) -> str:
+        """OpenAI-kompatibilní endpoint – VŽDY proxy (`OLLAMA_URL/v1`).
+
+        Proxy stojí před Ollamou i komerčními API, takže není důvod mít
+        druhou adresu a druhý klíč. `llm_api_url` / `llm_api_key` zůstávají
+        v nastavení jen kvůli kompatibilitě starých DB záznamů; nečtou se.
+        """
+        return f"{self.ollama_url.rstrip('/')}/v1" if self.ollama_url else ""
+
+    @property
+    def api_key(self) -> str:
+        return self.llm_proxy_key
+
+    @property
     def _api_configured(self) -> bool:
-        return bool(self.llm_api_key) and bool(self.llm_api_url)
+        return bool(self.api_key) and bool(self.api_url)
 
     @property
     def llm_api_enabled(self) -> bool:

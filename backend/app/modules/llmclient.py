@@ -71,9 +71,9 @@ def _set_error(msg: str | None) -> None:
 def availability_error() -> str | None:
     """None, když je zvolený provider použitelný; jinak lidská hláška."""
     if settings.llm_provider == "api":
-        if not settings.llm_api_key:
+        if not settings.api_key:
             return "Komerční LLM API je zvolené, ale chybí API klíč (Administrace → Nástroje)."
-        if not settings.llm_api_url:
+        if not settings.api_url:
             return "Komerční LLM API je zvolené, ale chybí URL."
         return None
     if not settings.ollama_enabled:
@@ -306,7 +306,7 @@ def structured_json_many(
 def vision_error() -> str | None:
     """None, když je OCR použitelné; jinak lidská hláška."""
     if settings.llm_vision_provider == "api":
-        if not settings.llm_api_key or not settings.llm_api_url:
+        if not settings.api_key or not settings.api_url:
             return "OCR přes komerční API je zvolené, ale chybí klíč nebo URL."
         if not settings.llm_api_vision_model:
             return "OCR přes komerční API je zvolené, ale chybí model."
@@ -386,9 +386,9 @@ def _api_vision_json(
     }
     try:
         r = httpx.post(
-            f"{settings.llm_api_url.rstrip('/')}/chat/completions",
+            f"{settings.api_url.rstrip('/')}/chat/completions",
             json=payload,
-            headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+            headers={"Authorization": f"Bearer {settings.api_key}"},
             timeout=timeout,
         )
         r.raise_for_status()
@@ -467,9 +467,9 @@ def _finish_embed(api: bool, t0: float, usage: dict, *, ok: bool, detail: str) -
 
 def _api_embed(texts: list[str], *, timeout: float, usage_out: dict | None = None) -> list[list[float]]:
     r = httpx.post(
-        f"{settings.llm_api_url.rstrip('/')}/embeddings",
+        f"{settings.api_url.rstrip('/')}/embeddings",
         json={"model": settings.llm_api_embed_model, "input": texts},
-        headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+        headers={"Authorization": f"Bearer {settings.api_key}"},
         timeout=timeout,
     )
     r.raise_for_status()
@@ -512,9 +512,9 @@ def _api_chat_json(
         }
         try:
             r = httpx.post(
-                f"{settings.llm_api_url.rstrip('/')}/chat/completions",
+                f"{settings.api_url.rstrip('/')}/chat/completions",
                 json=payload,
-                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+                headers={"Authorization": f"Bearer {settings.api_key}"},
                 timeout=timeout,
             )
             r.raise_for_status()
@@ -554,8 +554,8 @@ def _api_chat_json(
 
 def test_call() -> dict:
     """Diagnostika komerčního API pro admin UI: mini strukturované volání."""
-    if not settings.llm_api_key:
-        return {"ok": False, "error": "API klíč není nastavený."}
+    if not settings.api_key:
+        return {"ok": False, "error": "Klíč proxy (LLM_PROXY_KEY) není nastavený."}
     schema = {
         "type": "object",
         "properties": {"answer": {"type": "integer"}},
