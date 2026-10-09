@@ -396,34 +396,29 @@ function ToolsCard() {
           {test.reachable ? (
             <>
               <p className="text-have">✓ Ollama odpovídá ({test.url})</p>
-              <p className="mt-1 text-ink/70">
-                Chat model <b>{test.chat_model}</b>:{" "}
-                {test.has_chat_model ? (
-                  <span className="text-have">je k dispozici</span>
-                ) : (
-                  <span className="text-miss">chybí — ollama pull {test.chat_model}</span>
-                )}
-              </p>
-              <p className="text-ink/70">
-                Embed model <b>{test.embed_model}</b>:{" "}
-                {test.has_embed_model ? (
-                  <span className="text-have">je k dispozici</span>
-                ) : (
-                  <span className="text-miss">chybí — ollama pull {test.embed_model}</span>
-                )}
-              </p>
-              {test.ocr_model ? (
-                <p className="text-ink/70">
-                  OCR model <b>{test.ocr_model}</b>:{" "}
-                  {test.has_ocr_model ? (
-                    <span className="text-have">je k dispozici</span>
-                  ) : (
-                    <span className="text-miss">chybí — ollama pull {test.ocr_model}</span>
-                  )}
-                </p>
-              ) : (
-                <p className="text-ink/45">OCR model nenastaven — skenování účtenek nepůjde.</p>
-              )}
+              {[["chat", "Chat model"], ["fast", "Rychlý model"], ["embed", "Embed model"], ["ocr", "OCR model"]].map(([k, label]) => {
+                const model = test[`${k}_model`];
+                const w = test[`${k}_where`];
+                if (!model) {
+                  return (
+                    <p key={k} className="text-ink/45">
+                      {label} nenastaven{k === "ocr" ? " — skenování účtenek nepůjde." : "."}
+                    </p>
+                  );
+                }
+                return (
+                  <p key={k} className="text-ink/70">
+                    {label} <b>{model}</b>:{" "}
+                    {w === "local" ? (
+                      <span className="text-have">lokálně v Ollamě</span>
+                    ) : w ? (
+                      <span className="text-have">☁️ komerční ({w}) – data odejdou ven</span>
+                    ) : (
+                      <span className="text-miss">nikde — ollama pull {model}, nebo ho povol u klíče proxy</span>
+                    )}
+                  </p>
+                );
+              })}
               {test.models?.length > 0 && (
                 <p className="mt-1 text-xs text-ink/45">Modely: {test.models.join(", ")}</p>
               )}

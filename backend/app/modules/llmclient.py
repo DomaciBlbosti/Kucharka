@@ -593,5 +593,5 @@ def test_call() -> dict:
         schema=schema, timeout=30, temperature=0,
     )
     if out is None:
-        return {"ok": False, "error": "Volání selhalo – detail v logu (Služby na pozadí)."}
+        return {"ok": False, "error": last_error() or "Volání selhalo – detail v logu (Služby na pozadí)."}
     return {"ok": True, "model": settings.ollama_fast_model, "answer": out.get("answer")}
