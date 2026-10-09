@@ -94,15 +94,26 @@ def list_models():
     url = settings.ollama_url
     if not url:
         return {"models": [], "error": "Není nastavená adresa (OLLAMA_URL)."}
+    out: dict = {"models": [], "api_models": [], "url": url}
+    hdr = settings.ollama_headers()
     try:
-        r = httpx.get(f"{url}/api/tags", headers=settings.ollama_headers(), timeout=8)
+        r = httpx.get(f"{url}/api/tags", headers=hdr, timeout=8)
         r.raise_for_status()
-        names = sorted(
+        out["models"] = sorted(
             {m.get("name", "") for m in r.json().get("models", []) if m.get("name")}
         )
-        return {"models": names, "url": url}
     except Exception as exc:  # noqa: BLE001
-        return {"models": [], "url": url, "error": str(exc)[:300]}
+        out["error"] = str(exc)[:300]
+    # OpenAI-kompatibilní cesta (/v1) – proxy tudy vidí i komerční modely.
+    try:
+        r = httpx.get(f"{settings.api_url}/models", headers=hdr, timeout=8)
+        r.raise_for_status()
+        out["api_models"] = sorted(
+            {m.get("id", "") for m in r.json().get("data", []) if m.get("id")}
+        )
+    except Exception as exc:  # noqa: BLE001
+        out["api_error"] = str(exc)[:300]
+    return out
 
 
 @router.get("/test-llm-api")

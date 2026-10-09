@@ -142,16 +142,15 @@ function ToolsCard() {
   const [saved, setSaved] = useState(false);
   const [test, setTest] = useState(null);
   const [testing, setTesting] = useState(false);
-  const [apiKey, setApiKey] = useState(""); // klíč se z API nikdy nevrací, drží se zvlášť
   const [proxyKey, setProxyKey] = useState(""); // totéž pro klíč proxy
   const [apiTest, setApiTest] = useState(null);
   const [apiTesting, setApiTesting] = useState(false);
   // Seznam modelů z proxy. `loading` odlišuje „ještě se načítá" od „proxy
   // opravdu žádný model nemá" – obojí je prázdné pole, ale radit se má jinak.
-  const [ml, setMl] = useState({ models: [], loading: true });
+  const [ml, setMl] = useState({ models: [], api_models: [], loading: true });
   useEffect(() => {
     api.adminSettings().then(setS).catch(() => {});
-    api.adminModels().then((r) => setMl({ models: [], ...r, loading: false }));
+    api.adminModels().then((r) => setMl({ models: [], api_models: [], ...r, loading: false }));
   }, []);
   if (!s) return <Spinner label="Načítám nastavení…" />;
 
@@ -177,11 +176,6 @@ function ToolsCard() {
       setApiTesting(false);
     }
   };
-  const forgetApiKey = async () => {
-    const r = await api.adminSaveSettings({ llm_api_key_clear: true });
-    setS({ ...s, ...r.settings });
-    setApiKey("");
-  };
   const clearProxyKey = async () => {
     const r = await api.adminSaveSettings({ llm_proxy_key_clear: true });
     setS({ ...s, ...r.settings });
@@ -200,22 +194,27 @@ function ToolsCard() {
       "llm_embed_provider", "llm_api_embed_model",
       "llm_price_in_usd", "llm_price_out_usd", "usd_rate"];
     const vals = Object.fromEntries(keys.map((k) => [k, s[k]]));
-    if (apiKey.trim()) vals.llm_api_key = apiKey.trim();
     if (proxyKey.trim()) vals.llm_proxy_key = proxyKey.trim();
     const r = await api.adminSaveSettings(vals);
     setS({ ...s, ...r.settings });
-    if (apiKey.trim()) setApiKey("");
     setSaved(true);
     // Adresa nebo klíč proxy se mohly právě změnit – seznam modelů se do té
     // doby nemusel dát načíst vůbec. Zkusit znovu, ať se výběr rozjede hned
     // po uložení a nemusí se kvůli tomu obnovovat stránka.
     if (proxyKey.trim()) setProxyKey("");
-    api.adminModels().then((r) => setMl({ models: [], ...r, loading: false }));
+    api.adminModels().then((r) => setMl({ models: [], api_models: [], ...r, loading: false }));
   };
 
   // Proč se u modelů někdy místo nabídky ukáže textové pole: ať se nehádá,
   // jestli je seznam prázdný proto, že proxy nic nemá, nebo proto, že se
   // nedala dovolat.
+  const apiModelsHint = ml.api_error
+    ? `/v1/models se nepodařilo načíst (${ml.api_error}) – vyplň ručně`
+    : ml.api_models.length
+      ? `${ml.api_models.length} modelů z ${ml.url || "proxy"}/v1`
+      : ml.loading
+        ? "načítám seznam modelů…"
+        : "proxy na /v1/models nic nehlásí – vyplň ručně";
   const modelsHint = ml.error
     ? `seznam modelů se nepodařilo načíst (${ml.error}) – vyplň ručně`
     : ml.models.length
@@ -319,40 +318,25 @@ function ToolsCard() {
         )}
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Poskytovatel" hint="Ollama = lokální GPU · API = komerční služba (přesnější a rychlejší, platí se za tokeny)">
+        <Field label="Cesta pro textové úlohy"
+          hint="obojí jde přes proxy (adresa a klíč výš) · nativní = /api/chat (num_ctx, keep_alive, JSON schéma) · /v1 = OpenAI-kompatibilní, tudy proxy pouští i komerční modely">
           <select className={input} value={s.llm_provider || "ollama"}
             onChange={(e) => set("llm_provider", e.target.value)}>
-            <option value="ollama">Lokální Ollama</option>
-            <option value="api">Komerční API (OpenAI-kompatibilní)</option>
+            <option value="ollama">Nativní Ollama protokol (lokální modely)</option>
+            <option value="api">OpenAI-kompatibilní /v1 (komerční i lokální)</option>
           </select>
         </Field>
       </div>
       {s.llm_provider === "api" && (
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <Field label="API URL" hint="OpenAI: https://api.openai.com/v1 · DeepSeek: https://api.deepseek.com/v1 · funguje cokoliv s /chat/completions">
-            <input className={input} value={s.llm_api_url || ""}
-              onChange={(e) => set("llm_api_url", e.target.value)}
-              placeholder="https://api.openai.com/v1" />
-          </Field>
-          <Field label="Model" hint="levné mini modely bohatě stačí, např. gpt-4o-mini, deepseek-chat">
-            <input className={input} value={s.llm_api_model || ""}
-              onChange={(e) => set("llm_api_model", e.target.value)} placeholder="gpt-4o-mini" />
-          </Field>
-          <Field label="API klíč"
-            hint={s.llm_api_key_set ? "klíč je uložený – vyplň jen pro změnu" : "zatím žádný klíč"}>
-            <input type="password" className={input} value={apiKey}
-              onChange={(e) => { setApiKey(e.target.value); setSaved(false); }}
-              placeholder={s.llm_api_key_set ? "•••••••• (uloženo)" : "sk-…"} />
+          <Field label="Model" hint={apiModelsHint}>
+            <ModelSelect value={s.llm_api_model} onChange={(v) => set("llm_api_model", v)}
+              models={ml.api_models} error={ml.api_error} placeholder="gpt-4o-mini" />
           </Field>
           <div className="flex items-end gap-2 pb-1">
-            <Button variant="ghost" onClick={testApi} disabled={apiTesting || !s.llm_api_key_set}>
-              {apiTesting ? "Testuji…" : "Test API"}
+            <Button variant="ghost" onClick={testApi} disabled={apiTesting || !s.llm_proxy_key_set}>
+              {apiTesting ? "Testuji…" : "Test /v1"}
             </Button>
-            {s.llm_api_key_set && (
-              <button onClick={forgetApiKey} className="text-sm text-miss hover:underline">
-                zapomenout klíč
-              </button>
-            )}
           </div>
           {apiTest && (
             <p className={`sm:col-span-2 text-sm ${apiTest.ok ? "text-have" : "text-miss"}`}>
@@ -372,30 +356,28 @@ function ToolsCard() {
       </p>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="OCR (účtenky, recept z fotky)"
-          hint="obrázky umí např. gpt-4o-mini; lokálně vision model z Ollamy">
+          hint="obrázky umí např. gpt-4o-mini; nativně vision model z Ollamy (OCR model výš)">
           <select className={input} value={s.llm_vision_provider || "ollama"}
             onChange={(e) => set("llm_vision_provider", e.target.value)}>
-            <option value="ollama">Ollama (lokální OCR model)</option>
-            <option value="api">Komerční API</option>
+            <option value="ollama">Nativní Ollama (OCR model výš)</option>
+            <option value="api">OpenAI-kompatibilní /v1</option>
           </select>
         </Field>
-        <Field label="Model pro OCR přes API">
-          <input className={input} value={s.llm_api_vision_model || ""}
-            onChange={(e) => set("llm_api_vision_model", e.target.value)}
-            placeholder="gpt-4o-mini" />
+        <Field label="Model pro OCR přes /v1" hint={apiModelsHint}>
+          <ModelSelect value={s.llm_api_vision_model} onChange={(v) => set("llm_api_vision_model", v)}
+            models={ml.api_models} error={ml.api_error} placeholder="gpt-4o-mini" />
         </Field>
         <Field label="Embeddingy (RAG, nápověda k párování)"
           hint="POZOR: jiný model = jiný rozměr vektorů → nutné přeindexovat">
           <select className={input} value={s.llm_embed_provider || "ollama"}
             onChange={(e) => set("llm_embed_provider", e.target.value)}>
-            <option value="ollama">Ollama (lokální, zdarma)</option>
-            <option value="api">Komerční API</option>
+            <option value="ollama">Nativní Ollama (embed model výš)</option>
+            <option value="api">OpenAI-kompatibilní /v1</option>
           </select>
         </Field>
-        <Field label="Model pro embeddingy přes API">
-          <input className={input} value={s.llm_api_embed_model || ""}
-            onChange={(e) => set("llm_api_embed_model", e.target.value)}
-            placeholder="text-embedding-3-small" />
+        <Field label="Model pro embeddingy přes /v1" hint={apiModelsHint}>
+          <ModelSelect value={s.llm_api_embed_model} onChange={(v) => set("llm_api_embed_model", v)}
+            models={ml.api_models} error={ml.api_error} placeholder="text-embedding-3-small" />
         </Field>
       </div>
 
