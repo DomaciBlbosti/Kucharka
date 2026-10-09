@@ -79,14 +79,42 @@ def last_error() -> str | None:
     return _cache["error"]
 
 
+def _same(a: str, b: str) -> bool:
+    """`nomic-embed-text` == `nomic-embed-text:latest` – Ollama obojí bere."""
+    return a == b or a + ":latest" == b or a == b + ":latest"
+
+
+def _in(model: str, models: list[str]) -> bool:
+    return any(_same(model, m) for m in models)
+
+
+def is_remote(model: str) -> bool:
+    """True = model je u komerčního poskytovatele (volá se jeho protokolem).
+
+    Lokální Ollama má přednost. Když katalog není k dispozici (stará proxy,
+    přímá Ollama, výpadek) nebo model nikde není, bere se jako lokální –
+    appka se pak chová přesně jako dřív."""
+    if not model:
+        return False
+    backends = fetch()
+    local = backends.get("ollama")
+    if local and _in(model, local["models"]):
+        return False
+    return any(slug != "ollama" and _in(model, b["models"]) for slug, b in backends.items())
+
+
+def is_local(model: str) -> bool:
+    return not is_remote(model)
+
+
 def backend_for(model: str) -> tuple[str, str]:
     """(kind, base_url) pro model. Lokální Ollama vítězí nad shodou u poskytovatele."""
     backends = fetch()
     local = backends.get("ollama")
-    if local and model in local["models"]:
+    if local and _in(model, local["models"]):
         return "openai", local["base_url"]
     for slug, b in backends.items():
-        if slug != "ollama" and model in b["models"]:
+        if slug != "ollama" and _in(model, b["models"]):
             return b["kind"], b["base_url"]
     return "openai", f"{settings.ollama_url.rstrip('/')}/v1"
 

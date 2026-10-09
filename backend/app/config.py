@@ -285,26 +285,28 @@ class Settings:
 
     @property
     def llm_api_enabled(self) -> bool:
-        """Komerční API je zvolené A nakonfigurované (textové úlohy)."""
-        return self.llm_provider == "api" and self._api_configured
+        """Hlavní (rychlý) textový model je u komerčního poskytovatele.
+
+        Přepínač poskytovatele už není – každé políčko modelu nabízí lokální
+        i komerční modely a cesta se volí podle toho, kde model podle katalogu
+        proxy je. `llm_provider` zůstává jen v DB kvůli starým záznamům."""
+        from .modules import proxy_catalog
+
+        return self._api_configured and proxy_catalog.is_remote(self.ollama_fast_model)
 
     @property
     def llm_vision_api_enabled(self) -> bool:
-        """OCR (obrázky) má jít přes komerční API."""
-        return (
-            self.llm_vision_provider == "api"
-            and self._api_configured
-            and bool(self.llm_api_vision_model)
-        )
+        """OCR model je u komerčního poskytovatele."""
+        from .modules import proxy_catalog
+
+        return self._api_configured and proxy_catalog.is_remote(self.ocr_model)
 
     @property
     def llm_embed_api_enabled(self) -> bool:
-        """Embeddingy (RAG) mají jít přes komerční API."""
-        return (
-            self.llm_embed_provider == "api"
-            and self._api_configured
-            and bool(self.llm_api_embed_model)
-        )
+        """Embed model je u komerčního poskytovatele."""
+        from .modules import proxy_catalog
+
+        return self._api_configured and proxy_catalog.is_remote(self.embed_model)
 
     ADMIN_KEYS = (
         "ollama_url", "ollama_model", "ollama_fast_model", "embed_model", "searxng_url",

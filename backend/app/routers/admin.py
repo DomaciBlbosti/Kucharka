@@ -112,6 +112,11 @@ def list_models():
     chat_groups = proxy_catalog.groups(proxy_catalog.CHAT_KINDS)
     out["api_groups"] = chat_groups
     out["api_embed_groups"] = proxy_catalog.groups(proxy_catalog.EMBED_KINDS)
+    if not chat_groups and out["models"]:
+        # stará proxy / přímá Ollama bez /mgmt/v1/models – aspoň lokální skupina
+        chat_groups = [{"provider": "ollama", "kind": "ollama", "models": out["models"]}]
+        out["api_groups"] = chat_groups
+        out["api_embed_groups"] = chat_groups
     out["api_models"] = sorted({m for g in chat_groups for m in g["models"]})
     if not chat_groups and proxy_catalog.last_error():
         out["api_error"] = proxy_catalog.last_error()

@@ -42,7 +42,7 @@ def _fast_model_error() -> str | None:
 
     from ..modules import llmclient
 
-    if settings.llm_provider == "api":
+    if settings.llm_api_enabled:
         return llmclient.availability_error()
 
     model = settings.ollama_fast_model

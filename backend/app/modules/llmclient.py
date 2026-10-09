@@ -1,7 +1,7 @@
 """Jednotný vstup pro strukturovaná (JSON) LLM volání dávkových úloh.
 
 Dávkové úlohy (párování surovin, tagování, kategorizace) volají tento modul
-místo přímého `ollamachat.chat_json`. Podle `settings.llm_provider` se dotaz
+místo přímého `ollamachat.chat_json`. Podle katalogu proxy (lokální vs. komerční model) se dotaz
 pošle buď na lokální Ollamu (default, beze změny chování), nebo na komerční
 OpenAI-kompatibilní API (`/chat/completions` – OpenAI, DeepSeek, Groq,
 Mistral, OpenRouter…). Lokální GPU pak zůstává jen na embeddingy/OCR/RAG.
@@ -70,14 +70,10 @@ def _set_error(msg: str | None) -> None:
 
 def availability_error() -> str | None:
     """None, když je zvolený provider použitelný; jinak lidská hláška."""
-    if settings.llm_provider == "api":
-        if not settings.api_key:
-            return "Komerční LLM API je zvolené, ale chybí API klíč (Administrace → Nástroje)."
-        if not settings.api_url:
-            return "Komerční LLM API je zvolené, ale chybí URL."
-        return None
     if not settings.ollama_enabled:
-        return "Ollama není dostupná (OLLAMA_URL)."
+        return "Proxy/Ollama není dostupná (OLLAMA_URL)."
+    if settings.llm_api_enabled and not settings.api_key:
+        return "Hlavní model je komerční, ale chybí klíč proxy (Administrace → Nástroje)."
     return None
 
 
@@ -87,8 +83,6 @@ def is_available() -> bool:
 
 def active_model(ollama_model: str | None = None) -> str:
     """Název modelu, který by structured_json použil (pro log/decision záznamy)."""
-    if settings.llm_api_enabled:
-        return settings.llm_api_model
     return ollama_model or settings.ollama_fast_model
 
 
@@ -163,8 +157,9 @@ def structured_json(
 ) -> dict | None:
     """Vrátí naparsovaný JSON, nebo None při jakékoli chybě (volající má fallback).
 
-    `num_ctx` a `ollama_model` se týkají jen Ollamy – komerční API má kontext
-    dost velký a model globálně nastavený (`settings.llm_api_model`).
+    Model = `ollama_model` nebo rychlý model. Lokální (podle katalogu proxy)
+    jde nativně na /api/chat (num_ctx, keep_alive, JSON schéma), komerční
+    protokolem svého poskytovatele – `num_ctx` se tam neuplatní.
     `component` říká, kdo se ptá (překlad / kategorie / tagy / párování …) –
     slouží jen telemetrii v Admin → Spotřeba LLM.
     """
@@ -173,9 +168,9 @@ def structured_json(
     t0 = time.monotonic()
     usage: dict = {}
 
-    if settings.llm_api_enabled:
+    if _is_remote(model):
         out = _api_chat_json(
-            prompt, schema=schema, timeout=timeout, temperature=temperature,
+            prompt, model=model, schema=schema, timeout=timeout, temperature=temperature,
             usage_out=usage,
         )
         _finish(component=component, provider="api", model=model, t0=t0, out=out,
@@ -254,7 +249,8 @@ def structured_json_many(
         return []
     model = active_model(ollama_model)
 
-    if not _jobs_usable():
+    # Fronta proxy drží GPU modely; komerční model jde po jednom přímo.
+    if not _jobs_usable() or _is_remote(model):
         return [
             structured_json(p, schema=schema, timeout=timeout,
                             temperature=temperature, num_ctx=num_ctx,
@@ -350,10 +346,16 @@ def _chat_request(model: str, content, *, temperature: float, response_format: d
                  "completion_tokens": int(u.get("completion_tokens") or 0)}
 
 
+def _is_remote(model: str) -> bool:
+    from . import proxy_catalog
+
+    return bool(settings.api_key) and proxy_catalog.is_remote(model)
+
+
 def _embed_base() -> str:
     from . import proxy_catalog
 
-    kind, base = proxy_catalog.backend_for(settings.llm_api_embed_model)
+    kind, base = proxy_catalog.backend_for(settings.embed_model)
     if kind == "anthropic":
         raise RuntimeError("Anthropic nemá embeddingy – vyber jiný embed model.")
     return base
@@ -362,16 +364,12 @@ def _embed_base() -> str:
 
 def vision_error() -> str | None:
     """None, když je OCR použitelné; jinak lidská hláška."""
-    if settings.llm_vision_provider == "api":
-        if not settings.api_key or not settings.api_url:
-            return "OCR přes komerční API je zvolené, ale chybí klíč nebo URL."
-        if not settings.llm_api_vision_model:
-            return "OCR přes komerční API je zvolené, ale chybí model."
-        return None
     if not settings.ollama_enabled:
-        return "Ollama není dostupná (OLLAMA_URL)."
+        return "Proxy/Ollama není dostupná (OLLAMA_URL)."
     if not settings.ocr_model:
         return "OCR model není nastaven (Administrace → Nástroje → OCR model)."
+    if settings.llm_vision_api_enabled and not settings.api_key:
+        return "OCR model je komerční, ale chybí klíč proxy."
     return None
 
 
@@ -394,8 +392,8 @@ def vision_json(
         _set_error(err)
         return None, f"<{err}>"
 
-    api = settings.llm_vision_api_enabled
-    model = settings.llm_api_vision_model if api else settings.ocr_model
+    model = settings.ocr_model
+    api = _is_remote(model)
     _trace.info("→ %s (OCR, %s obr.) | %s", model, len(images), _one_line(prompt))
     t0 = time.monotonic()
     usage: dict = {}
@@ -437,7 +435,7 @@ def _api_vision_json(
         # u vision necháváme jen json_object – json_schema některé modely
         # v kombinaci s obrázky odmítají a struktura je popsaná v promptu
         raw, usage = _chat_request(
-            settings.llm_api_vision_model, content, temperature=0,
+            settings.ocr_model, content, temperature=0,
             response_format={"type": "json_object"}, timeout=timeout,
         )
         if usage_out is not None:
@@ -461,8 +459,6 @@ def _api_vision_json(
 def active_embed_model() -> str:
     """Model, kterým se právě embedduje. Uloží se ke každému vektoru, aby
     se po přepnutí providera nemíchaly nekompatibilní rozměry."""
-    if settings.llm_embed_api_enabled:
-        return settings.llm_api_embed_model
     return settings.embed_model
 
 
@@ -473,7 +469,7 @@ def embed_texts(texts: list[str], *, timeout: float = 60) -> list[list[float]]:
         return []
     t0 = time.monotonic()
     usage: dict = {}
-    api = settings.llm_embed_api_enabled
+    api = _is_remote(settings.embed_model)
     try:
         if api:
             vecs = _api_embed(texts, timeout=timeout, usage_out=usage)
@@ -512,7 +508,7 @@ def _finish_embed(api: bool, t0: float, usage: dict, *, ok: bool, detail: str) -
 def _api_embed(texts: list[str], *, timeout: float, usage_out: dict | None = None) -> list[list[float]]:
     r = httpx.post(
         f"{_embed_base()}/embeddings",
-        json={"model": settings.llm_api_embed_model, "input": texts},
+        json={"model": settings.embed_model, "input": texts},
         headers={"Authorization": f"Bearer {settings.api_key}"},
         timeout=timeout,
     )
@@ -528,6 +524,7 @@ def _api_embed(texts: list[str], *, timeout: float, usage_out: dict | None = Non
 def _api_chat_json(
     prompt: str,
     *,
+    model: str | None = None,
     schema: dict | None,
     timeout: float,
     temperature: float,
@@ -550,7 +547,7 @@ def _api_chat_json(
     for i, fmt in enumerate(formats):
         try:
             raw, usage = _chat_request(
-                settings.llm_api_model, prompt, temperature=temperature,
+                model or settings.ollama_fast_model, prompt, temperature=temperature,
                 response_format=fmt, timeout=timeout,
             )
             if usage_out is not None:
@@ -597,4 +594,4 @@ def test_call() -> dict:
     )
     if out is None:
         return {"ok": False, "error": "Volání selhalo – detail v logu (Služby na pozadí)."}
-    return {"ok": True, "model": settings.llm_api_model, "answer": out.get("answer")}
+    return {"ok": True, "model": settings.ollama_fast_model, "answer": out.get("answer")}

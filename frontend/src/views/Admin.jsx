@@ -18,72 +18,9 @@ const input =
 
 const CUSTOM = "__vlastni__";
 
-/** Výběr modelu ze seznamu, který vidí proxy.
- *
- *  Tři věci, na kterých to stojí:
- *
- *  1. Když se seznam nepodařilo načíst (proxy neběží, chybí klíč), zůstane
- *     obyčejné textové pole. Jinak by se s nepojízdnou proxy nedala
- *     administrace opravit – vybíralo by se z prázdna.
- *  2. Uložená hodnota, která v seznamu není (model zmizel, psalo se ručně),
- *     se do nabídky přidá zvlášť. Bez toho by ji `select` tiše přepsal na
- *     první položku a nastavení by se ztratilo pouhým otevřením stránky.
- *  3. Volba „vlastní…" pustí zpátky volný text – pro modely, které proxy
- *     nevidí (komerční API mimo proxy).
- */
-function ModelSelect({ value, onChange, models, error, placeholder, allowEmpty }) {
-  const val = value || "";
-  const [custom, setCustom] = useState(false);
-
-  if (error || !models?.length || custom) {
-    return (
-      <div>
-        <input className={input} value={val} placeholder={placeholder}
-          onChange={(e) => onChange(e.target.value)} />
-        {models?.length > 0 && (
-          <button type="button" onClick={() => setCustom(false)}
-            className="mt-1 text-xs text-ink/45 hover:text-basil">
-            zpět na výběr ze seznamu
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  // Uložená hodnota mimo seznam se nabídne taky, ať se nepřepíše.
-  const opts = models.includes(val) || !val ? models : [val, ...models];
-  return (
-    <select className={input} value={val}
-      onChange={(e) => {
-        if (e.target.value === CUSTOM) setCustom(true);
-        else onChange(e.target.value);
-      }}>
-      {/* Prázdná položka musí být i tam, kde prázdno není platné nastavení:
-          jinak by `select` ukazoval první model, ale uloženo by zůstalo
-          prázdno – vidět by bylo něco jiného, než co appka používá. */}
-      {(allowEmpty || !val) && (
-        <option value="">{allowEmpty ? "— nevyplněno —" : "— vyber model —"}</option>
-      )}
-      {opts.map((m) => (
-        <option key={m} value={m}>
-          {m}{models.includes(m) ? "" : " (proxy ho nevidí)"}
-        </option>
-      ))}
-      <option value={CUSTOM}>vlastní…</option>
-    </select>
-  );
-}
-
-// Sbalovací karta administrace. Ve sbaleném stavu je vidět jen nadpis –
-// stránka se tak dá projít pohledem místo dlouhého skrolování (obzvlášť
-// když čeká hodně položek k ručnímu rozhodnutí).
-//
-// Tělo se ve sbaleném stavu VŮBEC nevykresluje, takže se nespustí ani jeho
-// dotazy na API (většina karet se doptává v intervalu). Otevřít se dá víc
-// karet naráz; volba přežije refresh (localStorage), ať se člověk nemusí
-// proklikávat pořád dokola k tomu, co zrovna sleduje.
-/** Totéž co ModelSelect, ale položky po poskytovatelích (optgroup) –
- *  pro modely z katalogu proxy, kde vedle lokální Ollamy jsou i komerční. */
+/** Výběr modelu z katalogu proxy, položky po poskytovatelích (optgroup):
+ *  🖥️ lokální Ollama a ☁️ komerční. Uložená hodnota mimo seznam se nabídne
+ *  taky, ať se nepřepíše; „vlastní…“ pustí volný text. */
 function GroupedModelSelect({ value, onChange, groups, error, placeholder, allowEmpty }) {
   const val = value || "";
   const [custom, setCustom] = useState(false);
@@ -257,13 +194,7 @@ function ToolsCard() {
       : ml.loading
         ? "načítám seznam modelů…"
         : "proxy v katalogu nic nehlásí – vyplň ručně";
-  const modelsHint = ml.error
-    ? `seznam modelů se nepodařilo načíst (${ml.error}) – vyplň ručně`
-    : ml.models.length
-      ? `${ml.models.length} modelů z ${ml.url || "Ollamy"}`
-      : ml.loading
-        ? "načítám seznam modelů…"
-        : "Ollama nehlásí žádný model – vyplň ručně";
+  const modelsHint = apiModelsHint;
 
   return (
     <Section title="Nástroje (servery)">
@@ -279,26 +210,28 @@ function ToolsCard() {
             placeholder="http://…:8088 (nepovinné)" />
         </Field>
         <Field label="Model pro chat/generování" hint={modelsHint}>
-          <ModelSelect value={s.ollama_model} onChange={(v) => set("ollama_model", v)}
-            models={ml.models} error={ml.error} placeholder="qwen3:8b" />
+          <GroupedModelSelect value={s.ollama_model} onChange={(v) => set("ollama_model", v)}
+            groups={ml.api_groups} error={ml.api_error} placeholder="qwen3:8b" />
         </Field>
-        <Field label="Rychlý model (překlad/parsování/kategorie)" hint="prázdné = stejný jako hlavní">
-          <ModelSelect value={s.ollama_fast_model} onChange={(v) => set("ollama_fast_model", v)}
-            models={ml.models} error={ml.error} placeholder="qwen3:1.7b" allowEmpty />
+        <Field label="Rychlý model (překlad/parsování/kategorie/párování)"
+          hint="prázdné = stejný jako hlavní · lokální model jede nativně (num_ctx, fronta), komerční protokolem poskytovatele">
+          <GroupedModelSelect value={s.ollama_fast_model} onChange={(v) => set("ollama_fast_model", v)}
+            groups={ml.api_groups} error={ml.api_error} placeholder="qwen3:1.7b" allowEmpty />
         </Field>
         <Field label="Model jen pro překlad receptů"
-          hint="prázdné = rychlý model · zkus multilingvální (aya-expanse:8b, mistral-nemo) · při komerčním API se nepoužije">
-          <ModelSelect value={s.translate_model} onChange={(v) => set("translate_model", v)}
-            models={ml.models} error={ml.error} placeholder="aya-expanse:8b" allowEmpty />
+          hint="prázdné = rychlý model · lokálně zkus multilingvální (aya-expanse:8b, mistral-nemo), nebo levný komerční">
+          <GroupedModelSelect value={s.translate_model} onChange={(v) => set("translate_model", v)}
+            groups={ml.api_groups} error={ml.api_error} placeholder="aya-expanse:8b" allowEmpty />
         </Field>
         <Field label="Model pro embeddingy (RAG)"
-          hint="POZOR: jiný model = jiný rozměr vektorů → nutné přeindexovat">
-          <ModelSelect value={s.embed_model} onChange={(v) => set("embed_model", v)}
-            models={ml.models} error={ml.error} placeholder="nomic-embed-text" />
+          hint="POZOR: jiný model = jiný rozměr vektorů → nutné přeindexovat · Anthropic embeddingy nemá">
+          <GroupedModelSelect value={s.embed_model} onChange={(v) => set("embed_model", v)}
+            groups={ml.api_embed_groups} error={ml.api_error} placeholder="nomic-embed-text" />
         </Field>
-        <Field label="OCR model (skenování účtenek)" hint="vision model, např. qwen2.5vl, minicpm-v">
-          <ModelSelect value={s.ocr_model} onChange={(v) => set("ocr_model", v)}
-            models={ml.models} error={ml.error} placeholder="qwen2.5vl:7b" />
+        <Field label="OCR model (účtenky, recept z fotky)"
+          hint="musí umět obrázky: lokálně qwen3-vl / minicpm-v, komerčně gpt-4o-mini nebo claude · fotky u komerčního modelu odejdou ven">
+          <GroupedModelSelect value={s.ocr_model} onChange={(v) => set("ocr_model", v)}
+            groups={ml.api_groups} error={ml.api_error} placeholder="qwen3-vl:8b" />
         </Field>
         <Field label="RAG – počet receptů jako kontext">
           <input type="number" className={input} value={s.rag_k ?? 6}
@@ -359,68 +292,15 @@ function ToolsCard() {
           </Field>
         )}
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Cesta pro textové úlohy"
-          hint="obojí jde přes proxy (adresa a klíč výš) · nativní = /api/chat (num_ctx, keep_alive, JSON schéma) · katalog = model se najde v /mgmt/v1/models proxy a volá se správným protokolem (OpenAI, Anthropic, jiná Ollama)">
-          <select className={input} value={s.llm_provider || "ollama"}
-            onChange={(e) => set("llm_provider", e.target.value)}>
-            <option value="ollama">Nativní Ollama protokol (lokální modely)</option>
-            <option value="api">Katalog proxy (komerční i lokální, směruje se podle modelu)</option>
-          </select>
-        </Field>
-      </div>
-      {s.llm_provider === "api" && (
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <Field label="Model" hint={apiModelsHint}>
-            <GroupedModelSelect value={s.llm_api_model} onChange={(v) => set("llm_api_model", v)}
-              groups={ml.api_groups} error={ml.api_error} placeholder="gpt-4o-mini" />
-          </Field>
-          <div className="flex items-end gap-2 pb-1">
-            <Button variant="ghost" onClick={testApi} disabled={apiTesting || !s.llm_proxy_key_set}>
-              {apiTesting ? "Testuji…" : "Test /v1"}
-            </Button>
-          </div>
-          {apiTest && (
-            <p className={`sm:col-span-2 text-sm ${apiTest.ok ? "text-have" : "text-miss"}`}>
-              {apiTest.ok ? `✓ API odpovídá (model ${apiTest.model})` : `✗ ${apiTest.error}`}
-            </p>
-          )}
-        </div>
-      )}
-
-      <h3 className="mb-3 mt-6 text-sm font-bold text-ink/70">
-        OCR a embeddingy (vlastní přepínače)
-      </h3>
-      <p className="mb-3 text-sm text-ink/60">
-        Nejedou podle hlavního přepínače výš: ne každý textový model umí
-        obrázky (DeepSeek ne) a embeddingy jsou lokálně levné, takže je často
-        rozumné nechat je na GPU i při zapnutém API.
-      </p>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="OCR (účtenky, recept z fotky)"
-          hint="obrázky umí např. gpt-4o-mini; nativně vision model z Ollamy (OCR model výš)">
-          <select className={input} value={s.llm_vision_provider || "ollama"}
-            onChange={(e) => set("llm_vision_provider", e.target.value)}>
-            <option value="ollama">Nativní Ollama (OCR model výš)</option>
-            <option value="api">OpenAI-kompatibilní /v1</option>
-          </select>
-        </Field>
-        <Field label="Model pro OCR přes /v1" hint={apiModelsHint}>
-          <GroupedModelSelect value={s.llm_api_vision_model} onChange={(v) => set("llm_api_vision_model", v)}
-            groups={ml.api_groups} error={ml.api_error} placeholder="gpt-4o-mini" />
-        </Field>
-        <Field label="Embeddingy (RAG, nápověda k párování)"
-          hint="POZOR: jiný model = jiný rozměr vektorů → nutné přeindexovat">
-          <select className={input} value={s.llm_embed_provider || "ollama"}
-            onChange={(e) => set("llm_embed_provider", e.target.value)}>
-            <option value="ollama">Nativní Ollama (embed model výš)</option>
-            <option value="api">OpenAI-kompatibilní /v1</option>
-          </select>
-        </Field>
-        <Field label="Model pro embeddingy přes /v1" hint={apiModelsHint}>
-          <GroupedModelSelect value={s.llm_api_embed_model} onChange={(v) => set("llm_api_embed_model", v)}
-            groups={ml.api_embed_groups} error={ml.api_error} placeholder="text-embedding-3-small" />
-        </Field>
+      <div className="mt-2 flex items-center gap-3">
+        <Button variant="ghost" onClick={testApi} disabled={apiTesting || !s.llm_proxy_key_set}>
+          {apiTesting ? "Testuji…" : "Test rychlého modelu přes proxy"}
+        </Button>
+        {apiTest && (
+          <span className={`text-sm ${apiTest.ok ? "text-have" : "text-miss"}`}>
+            {apiTest.ok ? `✓ odpovídá (model ${apiTest.model})` : `✗ ${apiTest.error}`}
+          </span>
+        )}
       </div>
 
       <h3 className="mb-3 mt-6 text-sm font-bold text-ink/70">
@@ -449,8 +329,8 @@ function ToolsCard() {
       </h3>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Model pro dávkové párování" hint="prázdné = rychlý model výše">
-          <ModelSelect value={s.llm_match_model} onChange={(v) => set("llm_match_model", v)}
-            models={ml.models} error={ml.error} placeholder="gemma4:12b" allowEmpty />
+          <GroupedModelSelect value={s.llm_match_model} onChange={(v) => set("llm_match_model", v)}
+            groups={ml.api_groups} error={ml.api_error} placeholder="gemma4:12b" allowEmpty />
         </Field>
         <Field label="Velikost dávky" hint="surovin na jedno LLM volání">
           <input type="number" min="1" className={input} value={s.llm_match_batch_size ?? 40}

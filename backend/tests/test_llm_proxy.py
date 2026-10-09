@@ -128,8 +128,10 @@ def main():
     rec = with_recorder(
         lambda: llmclient.embed_texts(["ahoj"], timeout=5),
         payload={"embeddings": [[0.1, 0.2]]})
+    # před voláním si llmclient může sáhnout pro katalog (/mgmt/v1/models) –
+    # to není chyba, embed samotný musí jít nativně na /api/embed
     check("embed volá /api/embed",
-          rec.calls and rec.calls[0]["url"].endswith("/api/embed"),
+          rec.calls and rec.calls[-1]["url"].endswith("/api/embed"),
           str([c["url"] for c in rec.calls]))
     check("embed posílá klíč", rec.auth() == f"Bearer {KEY}", str(rec.auth()))
 
