@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { IngredientPicker } from "../components/IngredientPicker";
+import { IngredientBrowser } from "../components/IngredientBrowser";
 import { CookMeter, EmptyState, Meta, ReadyStamp, Spinner, Stars } from "../components/ui";
 
 const SORTS = [
@@ -117,6 +118,8 @@ export default function Recipes() {
     if (!pickedIds.includes(o.id)) setPar({ ing: [...pickedIds, o.id] });
   };
   const removePick = (id) => setPar({ ing: pickedIds.filter((p) => p !== id) });
+  const togglePick = (o) => (pickedIds.includes(o.id) ? removePick(o.id) : addPick(o));
+  const [browseOpen, setBrowseOpen] = useState(false);
 
   const filters = {
     q,
@@ -183,11 +186,26 @@ export default function Recipes() {
         <div className="mb-2 flex items-center gap-2">
           <span className="text-lg">🧑‍🍳</span>
           <h2 className="font-display text-base font-bold">Vařím z…</h2>
-          <span className="text-xs text-ink/45">
+          <span className="hidden text-xs text-ink/45 sm:inline">
             vyber suroviny a najdu recepty, které z nich uvaříš
           </span>
+          <button
+            onClick={() => setBrowseOpen((v) => !v)}
+            className={`ml-auto rounded-full px-3 py-1 text-xs font-medium transition ${
+              browseOpen
+                ? "bg-basil text-white"
+                : "border border-line bg-white text-ink/70 hover:border-basil"
+            }`}
+          >
+            🗂️ {browseOpen ? "Skrýt kategorie" : "Podle kategorií"}
+          </button>
         </div>
         <IngredientPicker onPick={addPick} placeholder="Přidat surovinu, kterou mám…" />
+        {browseOpen && (
+          <div className="mt-3">
+            <IngredientBrowser pickedIds={pickedIds} onToggle={togglePick} />
+          </div>
+        )}
         {cookMode && (
           <div className="mt-3 flex flex-wrap gap-2">
             {picked.map((p) => (
