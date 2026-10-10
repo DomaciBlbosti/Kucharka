@@ -331,7 +331,7 @@ def _chat_request(model: str, content, *, temperature: float, response_format: d
                    "messages": [{"role": "user", "content": blocks}]}
         r = httpx.post(f"{base}/v1/messages", json=payload, headers=headers, timeout=timeout)
         r.raise_for_status()
-        body = r.json()
+        body = _body_json(r)
         text = "".join(b.get("text", "") for b in body.get("content") or [] if b.get("type") == "text")
         u = body.get("usage") or {}
         return text, {"prompt_tokens": int(u.get("input_tokens") or 0),
@@ -342,7 +342,7 @@ def _chat_request(model: str, content, *, temperature: float, response_format: d
         payload["response_format"] = response_format
     r = httpx.post(f"{base}/chat/completions", json=payload, headers=headers, timeout=timeout)
     r.raise_for_status()
-    body = r.json()
+    body = _body_json(r)
     raw = (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
     u = body.get("usage") or {}
     return raw, {"prompt_tokens": int(u.get("prompt_tokens") or 0),
@@ -362,16 +362,33 @@ def _provider_headers() -> dict:
     return {"Authorization": f"Bearer {settings.api_key}", "Accept-Encoding": "identity"}
 
 
+def _body_bytes(resp) -> bytes:
+    """Tělo odpovědi rozbalené, i když dorazilo komprimované bez
+    content-encoding (proxy streamuje upstream beze změny a hlavičku zahodí)."""
+    raw = resp.content or b""
+    if not raw or raw[:1] in (b"{", b"[", b" ", b"\n"):
+        return raw
+    for dec in (_gunzip, _unbr, _inflate):
+        try:
+            return dec(raw)
+        except Exception:  # noqa: BLE001
+            continue
+    return raw
+
+
+def _body_json(resp) -> dict:
+    import json as _json
+
+    return _json.loads(_body_bytes(resp).decode("utf-8"))
+
+
 def _err_body(resp) -> str:
     """Text chybové odpovědi i když přišla (omylem) komprimovaná."""
     raw = resp.content or b""
-    for dec in (lambda b: b, _gunzip, _unbr, _inflate):
-        try:
-            txt = dec(raw).decode("utf-8")
-            if txt.isprintable() or "\n" in txt:
-                return txt[:300]
-        except Exception:  # noqa: BLE001
-            continue
+    try:
+        return _body_bytes(resp).decode("utf-8")[:300]
+    except Exception:  # noqa: BLE001
+        pass
     enc = resp.headers.get("content-encoding", "-")
     ctype = resp.headers.get("content-type", "-")
     return f"<{len(raw)} B binárně, hex {raw[:12].hex()}…, content-encoding={enc}, content-type={ctype}>"
@@ -556,7 +573,7 @@ def _api_embed(texts: list[str], *, timeout: float, usage_out: dict | None = Non
         timeout=timeout,
     )
     r.raise_for_status()
-    body = r.json()
+    body = _body_json(r)
     if usage_out is not None:
         usage_out["prompt_tokens"] = int((body.get("usage") or {}).get("prompt_tokens") or 0)
     # API nezaručuje pořadí – seřadíme podle indexu

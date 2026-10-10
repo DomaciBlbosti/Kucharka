@@ -6,6 +6,7 @@ Ollamu nebo komerčního poskytovatele a cesta se volí podle katalogu proxy
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -40,6 +41,8 @@ def check(name, cond, detail=""):
 class FakeResp:
     def __init__(self, payload):
         self._payload = payload
+        self.content = json.dumps(payload).encode()
+        self.headers = {}
 
     def raise_for_status(self):
         pass
