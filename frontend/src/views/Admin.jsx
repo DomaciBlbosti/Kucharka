@@ -193,7 +193,9 @@ function ToolsCard() {
       ? `${ml.api_models.length} modelů od ${ml.api_groups.length} poskytovatelů z ${ml.url || "proxy"} · komerční model = data odejdou ven`
       : ml.loading
         ? "načítám seznam modelů…"
-        : "proxy v katalogu nic nehlásí – vyplň ručně";
+        : ml.models.length
+          ? `${ml.models.length} lokálních modelů z ${ml.url || "Ollamy"} · bez katalogu (/mgmt/v1/models) – pro komerční modely nastav URL na proxy`
+          : "proxy v katalogu nic nehlásí – vyplň ručně";
   const modelsHint = apiModelsHint;
 
   return (

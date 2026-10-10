@@ -22,12 +22,13 @@ from ..config import settings
 log = logging.getLogger("kucharka.proxy_catalog")
 
 TTL_S = 600
+FAIL_TTL_S = 120   # po neúspěchu se nezkouší při každém volání znovu
 # Protokoly, kterými umí llmclient mluvit. `google` zatím ne.
 CHAT_KINDS = ("openai", "anthropic", "ollama", "gpu")
 EMBED_KINDS = ("openai", "ollama", "gpu")
 
 _lock = threading.Lock()
-_cache: dict = {"ts": 0.0, "backends": {}, "error": None}
+_cache: dict = {"ts": 0.0, "backends": {}, "error": None, "no_catalog": False}
 
 
 def _base_for(kind: str, base_url: str) -> str:
@@ -40,11 +41,18 @@ def _base_for(kind: str, base_url: str) -> str:
 
 def fetch(force: bool = False) -> dict:
     """{slug: {"kind", "base_url", "models": [...], "ok", "error"}} – s cache."""
-    now = time.time()
-    if not force and _cache["backends"] and now - _cache["ts"] < TTL_S:
+    def fresh() -> bool:
+        age = time.time() - _cache["ts"]
+        if _cache["backends"]:
+            return age < TTL_S
+        # prázdný výsledek: 404 (přímá Ollama / stará proxy) držíme stejně
+        # dlouho jako platný katalog, jinou chybu krátce
+        return _cache["ts"] > 0 and age < (TTL_S if _cache["no_catalog"] else FAIL_TTL_S)
+
+    if not force and fresh():
         return _cache["backends"]
     with _lock:
-        if not force and _cache["backends"] and time.time() - _cache["ts"] < TTL_S:
+        if not force and fresh():
             return _cache["backends"]
         url = settings.ollama_url.rstrip("/")
         if not url:
@@ -52,6 +60,13 @@ def fetch(force: bool = False) -> dict:
             return {}
         try:
             r = httpx.get(f"{url}/mgmt/v1/models", headers=settings.ollama_headers(), timeout=20)
+            if r.status_code == 404:
+                # Přímá Ollama nebo proxy bez katalogu – není to chyba, jen
+                # nejsou komerční modely. Zaloguje se jednou, pak ticho.
+                if not _cache["no_catalog"]:
+                    log.info("%s nemá /mgmt/v1/models (přímá Ollama?) – k dispozici jsou jen lokální modely.", url)
+                _cache.update(ts=time.time(), backends={}, error=None, no_catalog=True)
+                return {}
             r.raise_for_status()
             raw = r.json()
             backends: dict = {}
@@ -67,10 +82,12 @@ def fetch(force: bool = False) -> dict:
                     "ok": bool(entry.get("ok", True)),
                     "error": entry.get("error"),
                 }
-            _cache.update(ts=time.time(), backends=backends, error=None)
+            _cache.update(ts=time.time(), backends=backends, error=None, no_catalog=False)
         except Exception as exc:  # noqa: BLE001
-            log.warning("Katalog modelů z proxy se nepodařilo načíst: %s", exc)
-            _cache.update(ts=time.time(), error=str(exc)[:300])
+            msg = str(exc)[:300]
+            if msg != _cache["error"]:
+                log.warning("Katalog modelů z proxy se nepodařilo načíst: %s", msg)
+            _cache.update(ts=time.time(), error=msg, no_catalog=False)
             # starý katalog ponechat, je lepší než nic
         return _cache["backends"]
 
