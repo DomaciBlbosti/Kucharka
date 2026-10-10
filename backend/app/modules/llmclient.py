@@ -308,7 +308,7 @@ def _chat_request(model: str, content, *, temperature: float, response_format: d
     from . import proxy_catalog
 
     kind, base = proxy_catalog.backend_for(model)
-    headers = {"Authorization": f"Bearer {settings.api_key}"}
+    headers = _provider_headers()
     if kind == "anthropic":
         blocks: list[dict] = []
         if isinstance(content, str):
@@ -350,6 +350,38 @@ def _is_remote(model: str) -> bool:
     from . import proxy_catalog
 
     return bool(settings.api_key) and proxy_catalog.is_remote(model)
+
+
+def _provider_headers() -> dict:
+    """Proxy přeposílá klientův Accept-Encoding upstreamu a odpověď streamuje
+    beze změny – komprimované tělo (br/gzip) od poskytovatele by k nám došlo
+    nerozbalené a bez hlavičky. Proto jen identity."""
+    return {"Authorization": f"Bearer {settings.api_key}", "Accept-Encoding": "identity"}
+
+
+def _err_body(resp) -> str:
+    """Text chybové odpovědi i když přišla (omylem) komprimovaná."""
+    raw = resp.content or b""
+    for dec in (lambda b: b, _gunzip, _unbr):
+        try:
+            txt = dec(raw).decode("utf-8")
+            if txt.isprintable() or "\n" in txt:
+                return txt[:300]
+        except Exception:  # noqa: BLE001
+            continue
+    return f"<{len(raw)} B binárně>"
+
+
+def _gunzip(b: bytes) -> bytes:
+    import gzip
+
+    return gzip.decompress(b)
+
+
+def _unbr(b: bytes) -> bytes:
+    import brotli  # type: ignore[import-not-found]
+
+    return brotli.decompress(b)
 
 
 def _embed_base() -> str:
@@ -509,7 +541,7 @@ def _api_embed(texts: list[str], *, timeout: float, usage_out: dict | None = Non
     r = httpx.post(
         f"{_embed_base()}/embeddings",
         json={"model": settings.embed_model, "input": texts},
-        headers={"Authorization": f"Bearer {settings.api_key}"},
+        headers=_provider_headers(),
         timeout=timeout,
     )
     r.raise_for_status()
@@ -560,7 +592,7 @@ def _api_chat_json(
                     fmt.get("type"), code, formats[i + 1].get("type"),
                 )
                 continue
-            body = exc.response.text[:300]
+            body = _err_body(exc.response)
             log.warning("LLM API volání selhalo (HTTP %s): %s", code, body)
             _set_error(f"HTTP {code}: {body}")
             return None
