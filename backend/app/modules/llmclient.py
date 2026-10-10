@@ -362,14 +362,16 @@ def _provider_headers() -> dict:
 def _err_body(resp) -> str:
     """Text chybové odpovědi i když přišla (omylem) komprimovaná."""
     raw = resp.content or b""
-    for dec in (lambda b: b, _gunzip, _unbr):
+    for dec in (lambda b: b, _gunzip, _unbr, _inflate):
         try:
             txt = dec(raw).decode("utf-8")
             if txt.isprintable() or "\n" in txt:
                 return txt[:300]
         except Exception:  # noqa: BLE001
             continue
-    return f"<{len(raw)} B binárně>"
+    enc = resp.headers.get("content-encoding", "-")
+    ctype = resp.headers.get("content-type", "-")
+    return f"<{len(raw)} B binárně, hex {raw[:12].hex()}…, content-encoding={enc}, content-type={ctype}>"
 
 
 def _gunzip(b: bytes) -> bytes:
@@ -382,6 +384,12 @@ def _unbr(b: bytes) -> bytes:
     import brotli  # type: ignore[import-not-found]
 
     return brotli.decompress(b)
+
+
+def _inflate(b: bytes) -> bytes:
+    import zlib
+
+    return zlib.decompress(b, -zlib.MAX_WBITS)
 
 
 def _embed_base() -> str:
