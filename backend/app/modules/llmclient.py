@@ -324,7 +324,10 @@ def _chat_request(model: str, content, *, temperature: float, response_format: d
                         "type": "base64", "media_type": "image/jpeg", "data": b64}})
         if response_format is not None:
             blocks.append({"type": "text", "text": "Odpověz pouze platným JSON objektem, bez komentáře a bez ```."})
-        payload = {"model": model, "max_tokens": max_tokens, "temperature": temperature,
+        # Anthropic: `temperature` u nových modelů vrací 400 ("deprecated for
+        # this model") – neposílá se vůbec; výstup je stejně deterministický
+        # jen přes instrukci v promptu. `response_format` neexistuje.
+        payload = {"model": model, "max_tokens": max_tokens,
                    "messages": [{"role": "user", "content": blocks}]}
         r = httpx.post(f"{base}/v1/messages", json=payload, headers=headers, timeout=timeout)
         r.raise_for_status()
@@ -583,6 +586,11 @@ def _api_chat_json(
             "json_schema": {"name": "result", "schema": schema},
         })
     formats.append({"type": "json_object"})
+    # Anthropic response_format nezná – jeden pokus, ať se 4xx neopakuje.
+    from . import proxy_catalog
+
+    if proxy_catalog.backend_for(model or settings.ollama_fast_model)[0] == "anthropic":
+        formats = formats[-1:]
 
     for i, fmt in enumerate(formats):
         try:
